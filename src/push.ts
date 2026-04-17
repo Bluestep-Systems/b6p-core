@@ -5,6 +5,7 @@ import { B6PUri } from './B6PUri';
 import { GlobMatcher } from './data/GlobMatcher';
 import { ScriptUrlParser } from './data/ScriptUrlParser';
 import { ScriptFactory } from './script/ScriptFactory';
+import { SnapshotHistoryRecorder } from './script/SnapshotHistoryRecorder';
 import type { ScriptContext } from './script/ScriptContext';
 import type { IFileSystem, IProgress, ProgressTask } from './providers';
 import { Err } from './Err';
@@ -61,8 +62,9 @@ export async function executePush(opts: {
   targetUrl: string;
   rootPath: string;
   snapshot: boolean;
+  message?: string;
 }): Promise<void> {
-  const { ctx, progress, targetUrl, rootPath, snapshot } = opts;
+  const { ctx, progress, targetUrl, rootPath, snapshot, message } = opts;
   const { fs, prompt, logger, sessionManager } = ctx;
   const draftPath = path.join(rootPath, FolderNames.DRAFT);
 
@@ -124,6 +126,14 @@ export async function executePush(opts: {
     draftPath,
     gitignoreMatcher,
   });
+
+  if (snapshot) {
+    try {
+      await SnapshotHistoryRecorder.record(scriptRoot, message ?? '');
+    } catch (e) {
+      logger.warn(`Failed to record snapshot history: ${e instanceof Error ? e.message : e}`);
+    }
+  }
 
   prompt.info(snapshot ? 'Snapshot complete!' : 'Push complete!');
 }

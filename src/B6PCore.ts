@@ -144,6 +144,7 @@ export class B6PCore implements ScriptContext {
     targetUrl?: string;
     rootPath: string;
     snapshot?: boolean;
+    message?: string;
   }): Promise<void> {
     const targetUrl = opts.targetUrl ?? await this.prompt.inputBox({ prompt: 'Paste in the target formula URI' });
     if (targetUrl === undefined) {
@@ -157,12 +158,14 @@ export class B6PCore implements ScriptContext {
       targetUrl,
       rootPath: opts.rootPath,
       snapshot: opts.snapshot ?? false,
+      message: opts.message,
     });
   }
 
   async pushCurrent(opts: {
     filePath: string;
     snapshot?: boolean;
+    message?: string;
   }): Promise<void> {
     this.logger.info(`Push current for file: ${opts.filePath}`);
     const baseUrl = await this.deriveBaseUrl(opts.filePath, '');
@@ -171,11 +174,11 @@ export class B6PCore implements ScriptContext {
       if (!url) {return;}
       // Derive rootPath from the file's path structure
       const parser = new DownstairsPathParser(opts.filePath);
-      await this.push({ targetUrl: url, rootPath: parser.getShavedName(), snapshot: opts.snapshot });
+      await this.push({ targetUrl: url, rootPath: parser.getShavedName(), snapshot: opts.snapshot, message: opts.message });
       return;
     }
     const parser = new DownstairsPathParser(opts.filePath);
-    await this.push({ targetUrl: baseUrl, rootPath: parser.getShavedName(), snapshot: opts.snapshot });
+    await this.push({ targetUrl: baseUrl, rootPath: parser.getShavedName(), snapshot: opts.snapshot, message: opts.message });
   }
 
   async pull(opts: {
