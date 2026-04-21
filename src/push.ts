@@ -85,6 +85,13 @@ export async function executePush(opts: {
   const scriptRoot = factory.createScriptRoot(rootUri);
   scriptRoot.withParser(parser);
 
+  // Snapshots transpile TS into the draft build folder so both the source
+  // and emitted JS get uploaded and captured in history. Must run before
+  // flattenDirectory so the emitted files are included in the upload set.
+  if (snapshot) {
+    await scriptRoot.compileDraftFolder();
+  }
+
   const allFiles = await flattenDirectory(draftPath, fs);
   logger.info(`Found ${allFiles.length} files in draft folder`);
 

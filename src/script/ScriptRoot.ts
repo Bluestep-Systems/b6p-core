@@ -11,16 +11,9 @@ import { B6PUri } from '../B6PUri';
 import { ScriptFile } from './ScriptFile';
 import type { ScriptFolder } from './ScriptFolder';
 import { ScriptNode } from './ScriptNode';
-import { SnapshotHistoryRecorder } from './SnapshotHistoryRecorder';
 import { ScriptTranspiler } from './ScriptTranspiler';
 import { TsConfig } from './TsConfig';
 import type { ScriptContext } from './ScriptContext';
-
-/**
- * Optional callback type used by {@link ScriptRoot.snapshot} to delegate the
- * actual push to the consumer (avoids depending on a particular ctrl-p command).
- */
-export type SnapshotPushCallback = (sr: ScriptRoot) => Promise<void>;
 
 /**
  * Object representing the root of an individual script on the filesystem.
@@ -235,24 +228,6 @@ export class ScriptRoot {
 
   equals(b: ScriptRoot) {
     return this.rootUri.fsPath === b.rootUri.fsPath;
-  }
-
-  /**
-   * Performs the "snapshot" operation by compiling the draft folder and pushing
-   * its contents to the server. The actual push step is delegated to a callback
-   * supplied by the consumer to keep this class free of UI/command dependencies.
-   */
-  public async snapshot(pushCallback: SnapshotPushCallback) {
-    const message = await this.ctx.prompt.inputBox({
-      prompt: 'Snapshot commit message (optional)',
-    });
-    if (message === undefined) {
-      return; // user cancelled
-    }
-
-    await this.compileDraftFolder();
-    await pushCallback(this);
-    await SnapshotHistoryRecorder.record(this, message);
   }
 
   public async deleteBuildFolder() {
