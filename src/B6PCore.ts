@@ -200,6 +200,26 @@ export class B6PCore implements ScriptContext {
     }
 
     const U = await parser.getU();
+    const scriptName = await parser.getScriptName();
+    this.logger.info(`Resolved script name: "${scriptName}" (webdavId: ${parser.webDavId})`);
+
+    // Guard against a known bug where getScriptName() returns the name of a
+    // recently-pulled script instead of the correct one (observed when two
+    // merge reports share a common name prefix, e.g. "Test_Green" and
+    // "Test_bp6_CLI"). If the resolved name is already linked to a *different*
+    // webdavId in local metadata, aborting here prevents overwriting the wrong
+    // directory and corrupting both scripts.
+    const conflictingEntry = this.scriptMetadataStore.findByScriptName(U, scriptName);
+    if (conflictingEntry && conflictingEntry.webdavId !== parser.webDavId) {
+      this.prompt.error(
+        `Pull aborted: the server returned script name "${scriptName}" for webdavId ${parser.webDavId}, ` +
+        `but that name is already linked locally to webdavId ${conflictingEntry.webdavId}. ` +
+        `Proceeding would overwrite the wrong directory. ` +
+        `Please report this issue — try pulling again or clearing your local metadata.`
+      );
+      return;
+    }
+
     const factory = this.getScriptFactory();
 
     const pullTasks = fetchedScriptObject.map(entry => ({
