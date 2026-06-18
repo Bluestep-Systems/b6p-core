@@ -1,6 +1,7 @@
 {
   "name": "@bluestep-systems/b6p-core",
   "version": "0.1.0",
+  "private": true,
   "description": "Core (vscode-free) library for BlueStep B6P script management",
   "license": "MIT",
   "main": "./dist/index.js",
