@@ -52,7 +52,7 @@ export class TypedPersistable<T extends Record<string, Serializable>> extends Ty
     return JSON.stringify(this.obj);
   }
 
-  store(): Thenable<void> {
+  store(): PromiseLike<void> {
     return this.persistence.set(this.key, JSON.stringify(this.obj));
   }
 }

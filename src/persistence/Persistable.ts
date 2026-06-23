@@ -5,5 +5,5 @@ export interface Persistable {
   /**
    * Stores the current state of the object in the appropriate storage.
    */
-  store(): Thenable<void>;
+  store(): PromiseLike<void>;
 }

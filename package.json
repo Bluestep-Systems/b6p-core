@@ -1,27 +1,43 @@
 {
   "name": "@bluestep-systems/b6p-core",
   "version": "0.1.0",
-  "private": true,
   "description": "Core (vscode-free) library for BlueStep B6P script management",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bluestep-systems/b6p-core.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "compile": "tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
     "check-types": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format-check": "prettier --check \"src/**/*.ts\"",
+    "prepublishOnly": "npm run clean && npm run lint && npm run check-types && npm run compile"
   },
   "dependencies": {
     "fast-xml-parser": "^5.5.6"
   },
   "devDependencies": {
     "@types/node": "^22.19.15",
+    "@typescript-eslint/eslint-plugin": "^8.41.0",
+    "@typescript-eslint/parser": "^8.41.0",
+    "eslint": "^9.34.0",
+    "prettier": "^3.0.0",
     "typescript": "^5.9.2"
   }
 }

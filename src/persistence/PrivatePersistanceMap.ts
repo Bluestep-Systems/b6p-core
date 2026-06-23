@@ -77,7 +77,7 @@ export class PrivateGenericMap<T extends Serializable> extends PersistablePseudo
   }
 
 
-  override store(): Thenable<void> {
+  override store(): PromiseLike<void> {
     this.requiresInit();
     return this.persistence.setSecret(this.key, JSON.stringify(this.obj));
   }

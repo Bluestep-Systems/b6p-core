@@ -62,7 +62,7 @@ export abstract class PersistablePseudoMap<T extends Serializable> extends Pseud
   /**
    * Stores the current state of the of the map in the appropriate storage.
    */
-  abstract store(): Thenable<void>;
+  abstract store(): PromiseLike<void>;
 
   /**
    * produces a copy of the internal object.

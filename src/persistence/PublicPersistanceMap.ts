@@ -34,7 +34,7 @@ export class PublicPersistanceMap<T extends Serializable> extends PersistablePse
   /**
    * Stores the current state of the map using the persistence provider.
    */
-  override store(): Thenable<void> {
+  override store(): PromiseLike<void> {
     return this.persistence.set(this.key, this.obj);
   }
 }

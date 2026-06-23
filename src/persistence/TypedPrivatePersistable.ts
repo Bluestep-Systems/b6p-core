@@ -179,7 +179,7 @@ export class PrivateTypedPersistable<T extends Record<string, Serializable>> ext
    * Ensures the map is fully initialized before delegating to parent implementation.
    * @lastreviewed 2025-10-01
    */
-  override store(): Thenable<void> {
+  override store(): PromiseLike<void> {
     this.checkIsInitialized();
     return this.persistence.setSecret(this.key, JSON.stringify(this.obj));
   }
