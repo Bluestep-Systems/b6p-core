@@ -27,6 +27,7 @@
     "lint": "eslint src",
     "format": "prettier --write \"src/**/*.ts\"",
     "format-check": "prettier --check \"src/**/*.ts\"",
+    "test": "npm run compile && node test/DownstairsPathParser.test.js",
     "prepublishOnly": "npm run clean && npm run lint && npm run check-types && npm run compile"
   },
   "dependencies": {
