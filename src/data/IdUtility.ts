@@ -1,8 +1,8 @@
-import * as path from 'path';
-import type { MetaDataDotJsonContent } from '../types';
-import { Err } from '../Err';
-import { B6PUri } from '../B6PUri';
-import type { IFileSystem, IPrompt } from '../providers';
+import * as path from "path";
+import type { MetaDataDotJsonContent } from "../types";
+import { Err } from "../Err";
+import { B6PUri } from "../B6PUri";
+import type { IFileSystem, IPrompt } from "../providers";
 
 /**
  * Core-layer utility for dealing with IDs in the format `363769__FID_dummyTestEndpoint`.
@@ -10,7 +10,6 @@ import type { IFileSystem, IPrompt } from '../providers';
  * Replaces the vscode-dependent `IdUtility` with provider-based file operations.
  */
 export class IdUtility {
-
   classId: string;
   altIdValue: string;
   altIdKey?: string;
@@ -33,7 +32,7 @@ export class IdUtility {
   private async isContainedInThisMetadataJsonFile(filePath: string, fs: IFileSystem): Promise<boolean> {
     const uri = B6PUri.fromFsPath(filePath);
     const raw = await fs.readFile(uri);
-    const textContent = Buffer.from(raw).toString('utf-8');
+    const textContent = Buffer.from(raw).toString("utf-8");
     const metadata = JSON.parse(textContent) as MetaDataDotJsonContent;
     if (!metadata.altIds) {
       throw new Err.MetadataFormatError("altIds");
@@ -50,7 +49,7 @@ export class IdUtility {
     const entries = await fs.readDirectory(folderUri);
 
     for (const [name, type] of entries) {
-      if (type === 'directory') {
+      if (type === "directory") {
         const nestedPath = path.join(folderPath, name);
         try {
           const metadataFiles = await this.findMetadataFiles(nestedPath, fs);
@@ -77,10 +76,10 @@ export class IdUtility {
 
     for (const [name, type] of entries) {
       const full = path.join(dirPath, name);
-      if (type === 'directory') {
+      if (type === "directory") {
         const nested = await this.findMetadataFiles(full, fs);
         results.push(...nested);
-      } else if (name === 'metadata.json') {
+      } else if (name === "metadata.json") {
         results.push(full);
       }
     }

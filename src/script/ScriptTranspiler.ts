@@ -3,7 +3,7 @@ import { Err } from "../Err";
 import type { ScriptNode } from "./ScriptNode";
 import type { ScriptRoot } from "./ScriptRoot";
 import { FolderNames } from "../constants";
-import { B6PUri } from '../B6PUri';
+import { B6PUri } from "../B6PUri";
 import type { ScriptContext } from "./ScriptContext";
 import { ScriptFactory } from "./ScriptFactory";
 
@@ -49,17 +49,20 @@ export class ScriptTranspiler {
     }
 
     const tsconfigTextArray = await this.ctx.fs.readFile(B6PUri.fromFsPath(tsConfigFile.uri().fsPath));
-    const pseudoParsedConfig = ts.parseConfigFileTextToJson(tsConfigFile.path(), Buffer.from(tsconfigTextArray).toString('utf-8'));
+    const pseudoParsedConfig = ts.parseConfigFileTextToJson(
+      tsConfigFile.path(),
+      Buffer.from(tsconfigTextArray).toString("utf-8")
+    );
     pseudoParsedConfig.config.compilerOptions.rootDir = tsConfigFile.folder().path();
     if (pseudoParsedConfig.error) {
-      const message = ts.flattenDiagnosticMessageText(pseudoParsedConfig.error.messageText, '\n');
+      const message = ts.flattenDiagnosticMessageText(pseudoParsedConfig.error.messageText, "\n");
       throw new Err.CompilationError(`Error parsing tsconfig.json at ${tsConfigFile.path()}: ${message}`);
     }
     const parsedConfig = ts.parseJsonConfigFileContent(
       pseudoParsedConfig.config,
       {
         ...ts.sys,
-        readDirectory: () => []
+        readDirectory: () => [],
       },
       tsConfigFile.folder().path(),
       undefined,
@@ -80,7 +83,7 @@ export class ScriptTranspiler {
     }
     const newTsConfigFile = await sn.getClosestTsConfigFile();
     const vals = this.projects.get(newTsConfigFile.path()) || [];
-    if (!vals.some(existingSn => existingSn.path() === sn.path())) {
+    if (!vals.some((existingSn) => existingSn.path() === sn.path())) {
       vals.push(sn);
     } else {
       this.ctx.logger.warn("Ignoring duplicate file in ScriptCompiler.addFile:", sn.path());
@@ -98,27 +101,32 @@ export class ScriptTranspiler {
       }
       const sf = f.createFile(B6PUri.fromFsPath(tsConfigPath), sharedRoot);
       const compilerOptions = await this.getCompilerOptions(sf);
-      const sfUris = sfList.map(sf => sf.uri());
-      const program = ts.createProgram(sfUris.map(uri => uri.fsPath), compilerOptions);
+      const sfUris = sfList.map((sf) => sf.uri());
+      const program = ts.createProgram(
+        sfUris.map((uri) => uri.fsPath),
+        compilerOptions
+      );
       const emitResult = program.emit();
       emittedFiles.push(...(emitResult.emittedFiles || []));
 
       const allDiagnostics = ts.getPreEmitDiagnostics(program).concat(emitResult.diagnostics);
       if (allDiagnostics.length > 0) {
-        const diagnosticMessages = allDiagnostics.map(diagnostic => {
-          if (diagnostic.file) {
-            const { line, character } = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start!);
-            const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
-            return `${diagnostic.file.fileName} (${line + 1},${character + 1}): ${message}`;
-          } else {
-            return ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
-          }
-        }).join('\n');
+        const diagnosticMessages = allDiagnostics
+          .map((diagnostic) => {
+            if (diagnostic.file) {
+              const { line, character } = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start!);
+              const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+              return `${diagnostic.file.fileName} (${line + 1},${character + 1}): ${message}`;
+            } else {
+              return ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+            }
+          })
+          .join("\n");
         this.ctx.logger.error("TypeScript compilation errors:\n" + diagnosticMessages);
       } else {
-        this.ctx.prompt.info('TypeScript compiled successfully.');
+        this.ctx.prompt.info("TypeScript compiled successfully.");
       }
-    };
+    }
     return emittedFiles;
   }
 }

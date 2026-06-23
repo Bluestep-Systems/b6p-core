@@ -1,16 +1,16 @@
-import * as path from 'path';
-import { BasicAuthProvider } from './auth/BasicAuthProvider';
-import { B6PUri } from './B6PUri';
-import { ScriptUrlParser } from './data/ScriptUrlParser';
-import { DownstairsPathParser } from './data/DownstairsPathParser';
-import { SessionManager } from './session/SessionManager';
-import type { B6PProviders, IFileSystem, ILogger, IPersistence, IProgress, IPrompt } from './providers';
-import { executePush } from './push';
-import { ScriptMetaDataStore } from './cache/ScriptMetaDataStore';
-import { OrgCache, type IOrgCacheSettings } from './cache/OrgCache';
-import type { ScriptContext } from './script/ScriptContext';
-import { ScriptFactory } from './script/ScriptFactory';
-import { UpdateService } from './update/UpdateService';
+import * as path from "path";
+import { BasicAuthProvider } from "./auth/BasicAuthProvider";
+import { B6PUri } from "./B6PUri";
+import { ScriptUrlParser } from "./data/ScriptUrlParser";
+import { DownstairsPathParser } from "./data/DownstairsPathParser";
+import { SessionManager } from "./session/SessionManager";
+import type { B6PProviders, IFileSystem, ILogger, IPersistence, IProgress, IPrompt } from "./providers";
+import { executePush } from "./push";
+import { ScriptMetaDataStore } from "./cache/ScriptMetaDataStore";
+import { OrgCache, type IOrgCacheSettings } from "./cache/OrgCache";
+import type { ScriptContext } from "./script/ScriptContext";
+import { ScriptFactory } from "./script/ScriptFactory";
+import { UpdateService } from "./update/UpdateService";
 
 const NOOP_ORG_CACHE_SETTINGS: IOrgCacheSettings = {
   getParsedAnyDomainOverrideUrl: () => null,
@@ -71,7 +71,7 @@ export class B6PCore implements ScriptContext {
       this.auth,
       this._isDebugMode,
       this.prompt,
-      providers.fetchFn,
+      providers.fetchFn
     );
     this.scriptMetadataStore = new ScriptMetaDataStore(this.persistence);
     this.orgCache = new OrgCache(
@@ -79,7 +79,7 @@ export class B6PCore implements ScriptContext {
       this.logger,
       providers.orgCacheSettings ?? NOOP_ORG_CACHE_SETTINGS,
       this._isDebugMode,
-      this.prompt,
+      this.prompt
     );
 
     // Initialize update service if configuration is provided
@@ -140,18 +140,13 @@ export class B6PCore implements ScriptContext {
 
   // ── Push / Pull ───────────────────────────────────────────────────
 
-  async push(opts: {
-    targetUrl?: string;
-    rootPath: string;
-    snapshot?: boolean;
-    message?: string;
-  }): Promise<void> {
-    const targetUrl = opts.targetUrl ?? await this.prompt.inputBox({ prompt: 'Paste in the target formula URI' });
+  async push(opts: { targetUrl?: string; rootPath: string; snapshot?: boolean; message?: string }): Promise<void> {
+    const targetUrl = opts.targetUrl ?? (await this.prompt.inputBox({ prompt: "Paste in the target formula URI" }));
     if (targetUrl === undefined) {
-      this.prompt.error('No target formula URI provided');
+      this.prompt.error("No target formula URI provided");
       return;
     }
-    this.logger.info(`Pushing script from ${opts.rootPath} to ${targetUrl}${opts.snapshot ? ' (snapshot)' : ''}`);
+    this.logger.info(`Pushing script from ${opts.rootPath} to ${targetUrl}${opts.snapshot ? " (snapshot)" : ""}`);
     await executePush({
       ctx: this,
       progress: this.progress,
@@ -162,32 +157,39 @@ export class B6PCore implements ScriptContext {
     });
   }
 
-  async pushCurrent(opts: {
-    filePath: string;
-    snapshot?: boolean;
-    message?: string;
-  }): Promise<void> {
+  async pushCurrent(opts: { filePath: string; snapshot?: boolean; message?: string }): Promise<void> {
     this.logger.info(`Push current for file: ${opts.filePath}`);
-    const baseUrl = await this.deriveBaseUrl(opts.filePath, '');
+    const baseUrl = await this.deriveBaseUrl(opts.filePath, "");
     if (!baseUrl) {
-      const url = await this.prompt.inputBox({ prompt: 'Could not determine script URL. Paste the target formula URI:' });
-      if (!url) {return;}
+      const url = await this.prompt.inputBox({
+        prompt: "Could not determine script URL. Paste the target formula URI:",
+      });
+      if (!url) {
+        return;
+      }
       // Derive rootPath from the file's path structure
       const parser = new DownstairsPathParser(opts.filePath);
-      await this.push({ targetUrl: url, rootPath: parser.getShavedName(), snapshot: opts.snapshot, message: opts.message });
+      await this.push({
+        targetUrl: url,
+        rootPath: parser.getShavedName(),
+        snapshot: opts.snapshot,
+        message: opts.message,
+      });
       return;
     }
     const parser = new DownstairsPathParser(opts.filePath);
-    await this.push({ targetUrl: baseUrl, rootPath: parser.getShavedName(), snapshot: opts.snapshot, message: opts.message });
+    await this.push({
+      targetUrl: baseUrl,
+      rootPath: parser.getShavedName(),
+      snapshot: opts.snapshot,
+      message: opts.message,
+    });
   }
 
-  async pull(opts: {
-    formulaUrl?: string;
-    workspacePath: string;
-  }): Promise<void> {
-    const formulaUrl = opts.formulaUrl ?? await this.prompt.inputBox({ prompt: 'Paste in the desired formula URL' });
+  async pull(opts: { formulaUrl?: string; workspacePath: string }): Promise<void> {
+    const formulaUrl = opts.formulaUrl ?? (await this.prompt.inputBox({ prompt: "Paste in the desired formula URL" }));
     if (formulaUrl === undefined) {
-      this.prompt.error('No formula URL provided');
+      this.prompt.error("No formula URL provided");
       return;
     }
     this.logger.info(`Pulling script from ${formulaUrl} into ${opts.workspacePath}`);
@@ -195,7 +197,7 @@ export class B6PCore implements ScriptContext {
     const parser = this.createParser(formulaUrl);
     const fetchedScriptObject = await parser.getScript();
     if (!fetchedScriptObject) {
-      this.logger.warn('fetchedScriptObject is null');
+      this.logger.warn("fetchedScriptObject is null");
       return;
     }
 
@@ -213,19 +215,19 @@ export class B6PCore implements ScriptContext {
     if (conflictingEntry && conflictingEntry.webdavId !== parser.webDavId) {
       this.prompt.error(
         `Pull aborted: the server returned script name "${scriptName}" for webdavId ${parser.webDavId}, ` +
-        `but that name is already linked locally to webdavId ${conflictingEntry.webdavId}. ` +
-        `Proceeding would overwrite the wrong directory. ` +
-        `Please report this issue — try pulling again or clearing your local metadata.`
+          `but that name is already linked locally to webdavId ${conflictingEntry.webdavId}. ` +
+          `Proceeding would overwrite the wrong directory. ` +
+          `Please report this issue — try pulling again or clearing your local metadata.`
       );
       return;
     }
 
     const factory = this.getScriptFactory();
 
-    const pullTasks = fetchedScriptObject.map(entry => ({
+    const pullTasks = fetchedScriptObject.map((entry) => ({
       execute: async () => {
         const ultimatePath = path.join(opts.workspacePath, U, entry.downstairsPath);
-        const isDirectory = ultimatePath.endsWith('/') || entry.downstairsPath.endsWith('/');
+        const isDirectory = ultimatePath.endsWith("/") || entry.downstairsPath.endsWith("/");
 
         if (isDirectory) {
           const uri = B6PUri.fromFsPath(ultimatePath);
@@ -249,25 +251,24 @@ export class B6PCore implements ScriptContext {
         }
         return ultimatePath;
       },
-      description: 'scripts',
+      description: "scripts",
     }));
 
     await this.progress.withProgress(pullTasks, {
-      title: 'Pulling Script...',
-      cleanupMessage: 'Cleaning up the downstairs folder...',
+      title: "Pulling Script...",
+      cleanupMessage: "Cleaning up the downstairs folder...",
     });
 
-    this.prompt.info('Pull complete!');
+    this.prompt.info("Pull complete!");
   }
 
-  async pullCurrent(opts: {
-    filePath: string;
-    workspacePath: string;
-  }): Promise<void> {
+  async pullCurrent(opts: { filePath: string; workspacePath: string }): Promise<void> {
     const baseUrl = await this.deriveBaseUrl(opts.filePath, opts.workspacePath);
     if (!baseUrl) {
-      const url = await this.prompt.inputBox({ prompt: 'Could not determine script URL. Paste the formula URL:' });
-      if (!url) {return;}
+      const url = await this.prompt.inputBox({ prompt: "Could not determine script URL. Paste the formula URL:" });
+      if (!url) {
+        return;
+      }
       await this.pull({ formulaUrl: url, workspacePath: opts.workspacePath });
       return;
     }
@@ -276,16 +277,15 @@ export class B6PCore implements ScriptContext {
 
   // ── Audit ─────────────────────────────────────────────────────────
 
-  async audit(opts: {
-    filePath: string;
-    workspacePath: string;
-  }): Promise<AuditResult | null> {
+  async audit(opts: { filePath: string; workspacePath: string }): Promise<AuditResult | null> {
     this.logger.info(`Auditing file: ${opts.filePath}`);
 
     const baseUrl = await this.deriveBaseUrl(opts.filePath, opts.workspacePath);
     if (!baseUrl) {
-      const url = await this.prompt.inputBox({ prompt: 'Could not determine script URL. Paste the formula URL:' });
-      if (!url) {return null;}
+      const url = await this.prompt.inputBox({ prompt: "Could not determine script URL. Paste the formula URL:" });
+      if (!url) {
+        return null;
+      }
       return this.auditWithUrl(url, opts.workspacePath);
     }
     return this.auditWithUrl(baseUrl, opts.workspacePath);
@@ -295,7 +295,7 @@ export class B6PCore implements ScriptContext {
     const parser = this.createParser(baseUrl);
     const fetchedScriptObject = await parser.getScript();
     if (!fetchedScriptObject) {
-      this.logger.warn('fetchedScriptObject is null during audit');
+      this.logger.warn("fetchedScriptObject is null during audit");
       return null;
     }
 
@@ -305,12 +305,12 @@ export class B6PCore implements ScriptContext {
 
     for (const entry of fetchedScriptObject) {
       const ultimatePath = path.join(workspacePath, U, entry.downstairsPath);
-      if (ultimatePath.endsWith('/') || entry.downstairsPath.endsWith('/')) {
+      if (ultimatePath.endsWith("/") || entry.downstairsPath.endsWith("/")) {
         continue; // skip directories
       }
       const fileUri = B6PUri.fromFsPath(ultimatePath);
       if (!(await this.fs.exists(fileUri))) {
-        changedFiles.push(entry.downstairsPath + ' (new)');
+        changedFiles.push(entry.downstairsPath + " (new)");
         continue;
       }
       // Use ScriptFile.currentIntegrityMatches() so that we get the same robust
@@ -326,32 +326,29 @@ export class B6PCore implements ScriptContext {
     }
 
     if (changedFiles.length === 0) {
-      this.prompt.info('No differences detected. Local script is in sync with the server.');
+      this.prompt.info("No differences detected. Local script is in sync with the server.");
     } else {
-      this.prompt.info(`Detected ${changedFiles.length} file(s) with differences:\n\n${changedFiles.join('\n')}`);
+      this.prompt.info(`Detected ${changedFiles.length} file(s) with differences:\n\n${changedFiles.join("\n")}`);
     }
 
     return { changedFiles, baseUrl };
   }
 
-  async auditPull(opts: {
-    filePath: string;
-    workspacePath: string;
-  }): Promise<void> {
+  async auditPull(opts: { filePath: string; workspacePath: string }): Promise<void> {
     const result = await this.audit(opts);
     if (!result || result.changedFiles.length === 0) {
       return;
     }
 
-    const YES = 'Sync';
-    const NO = 'Cancel';
+    const YES = "Sync";
+    const NO = "Cancel";
     const response = await this.prompt.confirm(
-      `Detected ${result.changedFiles.length} file(s) with differences:\n\n${result.changedFiles.join('\n')}\n\nSync local copy with the server?`,
+      `Detected ${result.changedFiles.length} file(s) with differences:\n\n${result.changedFiles.join("\n")}\n\nSync local copy with the server?`,
       [YES, NO]
     );
 
     if (response !== YES) {
-      this.logger.info('User declined audit-pull sync');
+      this.logger.info("User declined audit-pull sync");
       return;
     }
 
@@ -360,9 +357,7 @@ export class B6PCore implements ScriptContext {
 
   // ── Deploy ────────────────────────────────────────────────────────
 
-  async deploy(opts: {
-    configPath: string;
-  }): Promise<void> {
+  async deploy(opts: { configPath: string }): Promise<void> {
     this.logger.info(`Quick deploy from config: ${opts.configPath}`);
 
     // Read config file
@@ -373,7 +368,7 @@ export class B6PCore implements ScriptContext {
     }
 
     const configContent = await this.fs.readFile(configUri);
-    const configText = Buffer.from(configContent).toString('utf-8');
+    const configText = Buffer.from(configContent).toString("utf-8");
 
     interface DeployConfig {
       sourceRootPath: string;
@@ -392,7 +387,7 @@ export class B6PCore implements ScriptContext {
     }
 
     if (!config.sourceRootPath || !config.targets || config.targets.length === 0) {
-      this.prompt.error('Invalid config file. Required fields: sourceRootPath, targets[]');
+      this.prompt.error("Invalid config file. Required fields: sourceRootPath, targets[]");
       return;
     }
 
@@ -411,7 +406,7 @@ export class B6PCore implements ScriptContext {
       }
     }
 
-    this.prompt.info('Deploy complete!');
+    this.prompt.info("Deploy complete!");
   }
 
   // ── Credentials ───────────────────────────────────────────────────
@@ -423,19 +418,19 @@ export class B6PCore implements ScriptContext {
   // ── Session Management ────────────────────────────────────────────
 
   async clearSessions(): Promise<void> {
-    this.prompt.info('Clearing all sessions');
+    this.prompt.info("Clearing all sessions");
     await this.sessionManager.clearAll();
   }
 
   // ── Settings ──────────────────────────────────────────────────────
 
   async clearSettings(): Promise<void> {
-    this.prompt.info('Reverting to default settings');
+    this.prompt.info("Reverting to default settings");
     await this.persistence.clearPublic();
   }
 
   async clearAll(): Promise<void> {
-    this.prompt.info('Clearing sessions, auth, and settings');
+    this.prompt.info("Clearing sessions, auth, and settings");
     await this.persistence.clearPublic();
     await this.sessionManager.clearAll();
     await this.auth.clear();
@@ -446,15 +441,15 @@ export class B6PCore implements ScriptContext {
   async report(): Promise<ReportResult> {
     // Note: This is a basic implementation. Full functionality requires
     // IPersistence to support listing keys by prefix.
-    this.logger.info('Generating state report...');
+    this.logger.info("Generating state report...");
 
     const details = [
-      'Script Metadata and Org Cache reporting requires persistence layer',
-      'to support key enumeration. This feature is pending full implementation.',
-      '',
-      'In the CLI, persistence is stored in .b6p/ directory.',
-      'Use file system tools to inspect the raw JSON files for now.',
-    ].join('\n');
+      "Script Metadata and Org Cache reporting requires persistence layer",
+      "to support key enumeration. This feature is pending full implementation.",
+      "",
+      "In the CLI, persistence is stored in .b6p/ directory.",
+      "Use file system tools to inspect the raw JSON files for now.",
+    ].join("\n");
 
     this.prompt.info(details);
 
@@ -469,11 +464,11 @@ export class B6PCore implements ScriptContext {
 
   async checkForUpdates(): Promise<void> {
     if (!this.updateService) {
-      this.prompt.error('Update service is not configured');
+      this.prompt.error("Update service is not configured");
       return;
     }
 
-    this.logger.info('Checking for updates...');
+    this.logger.info("Checking for updates...");
 
     try {
       const updateInfo = await this.updateService.checkForUpdates();
@@ -481,9 +476,9 @@ export class B6PCore implements ScriptContext {
       if (updateInfo) {
         this.prompt.info(
           `A new version is available!\n` +
-          `Current: v${this.updateService.getCurrentVersion()}\n` +
-          `Latest:  v${updateInfo.version}\n\n` +
-          `Download from: ${updateInfo.downloadUrl}`
+            `Current: v${this.updateService.getCurrentVersion()}\n` +
+            `Latest:  v${updateInfo.version}\n\n` +
+            `Download from: ${updateInfo.downloadUrl}`
         );
       } else {
         this.prompt.info(`You are running the latest version (v${this.updateService.getCurrentVersion()})`);

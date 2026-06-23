@@ -4,7 +4,7 @@ import { Persistable } from "./Persistable";
 import { PrivateKeys } from "./PersistenceKeys";
 import type { Serializable } from "./Serializable";
 import { revive } from "./Serializable";
-import { Err } from '../Err';
+import { Err } from "../Err";
 
 /**
  * A persistable map that uses the IPersistence interface for secret storage.
@@ -12,7 +12,6 @@ import { Err } from '../Err';
  * you'll need to wait until `isInitialized()` returns true.
  */
 export class PrivateGenericMap<T extends Serializable> extends PersistablePseudoMap<T> implements Persistable {
-
   protected initialized: boolean = false;
 
   /**
@@ -22,8 +21,8 @@ export class PrivateGenericMap<T extends Serializable> extends PersistablePseudo
    */
   constructor(key: PrivateKeys, persistence: IPersistence) {
     super(key, persistence);
-    this.persistence.getSecret(this.key).then(jsonString => {
-      this.obj = revive(JSON.parse(jsonString || '{}'));
+    this.persistence.getSecret(this.key).then((jsonString) => {
+      this.obj = revive(JSON.parse(jsonString || "{}"));
       this.initialized = true;
     });
   }
@@ -37,18 +36,15 @@ export class PrivateGenericMap<T extends Serializable> extends PersistablePseudo
     }
   }
 
-
   override get(key: string): T | undefined {
     this.requiresInit();
     return super.get(key);
   }
 
-
   override has(key: string): boolean {
     this.requiresInit();
     return super.has(key);
   }
-
 
   override async set(key: string, value: T) {
     this.requiresInit();
@@ -56,12 +52,10 @@ export class PrivateGenericMap<T extends Serializable> extends PersistablePseudo
     return await this.store();
   }
 
-
   override forEach(callback: (value: T, key: string, map: this) => void): void {
     this.requiresInit();
     super.forEach(callback);
   }
-
 
   override delete(key: string) {
     this.requiresInit();
@@ -69,13 +63,11 @@ export class PrivateGenericMap<T extends Serializable> extends PersistablePseudo
     return this.store();
   }
 
-
   override async clear() {
     this.requiresInit();
     super.clear();
     return await this.store();
   }
-
 
   override store(): PromiseLike<void> {
     this.requiresInit();

@@ -15,11 +15,19 @@ export class TypedPersistable<T extends Record<string, Serializable>> extends Ty
   protected persistence: IPersistence;
   protected initialized: boolean = false;
 
-  constructor({key, persistence, defaultValue}: {key: PublicKeys | PrivateKeys, persistence: IPersistence, defaultValue: T}) {
+  constructor({
+    key,
+    persistence,
+    defaultValue,
+  }: {
+    key: PublicKeys | PrivateKeys;
+    persistence: IPersistence;
+    defaultValue: T;
+  }) {
     super();
     this.key = key;
     this.persistence = persistence;
-    this.persistence.get<T>(this.key).then(data => {
+    this.persistence.get<T>(this.key).then((data) => {
       this.obj = revive(data || defaultValue);
       this.initialized = true;
     });
@@ -46,7 +54,6 @@ export class TypedPersistable<T extends Record<string, Serializable>> extends Ty
     super.set(key, value);
     update && this.store();
   }
-
 
   override toJSON(): string {
     return JSON.stringify(this.obj);

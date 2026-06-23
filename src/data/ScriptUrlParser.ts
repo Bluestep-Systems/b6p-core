@@ -1,11 +1,11 @@
-import { XMLParser } from 'fast-xml-parser';
-import type { GqlParentNameResp, XMLResponse } from '../types';
-import { ApiEndpoints, FolderNames, Http, MimeTypes, WebDAVElements } from '../constants';
-import { Err } from '../Err';
-import { ScriptKey } from './ScriptKey';
-import type { SessionManager } from '../session/SessionManager';
-import type { ILogger, IPrompt } from '../providers';
-import { OrgWorker } from './OrgWorker';
+import { XMLParser } from "fast-xml-parser";
+import type { GqlParentNameResp, XMLResponse } from "../types";
+import { ApiEndpoints, FolderNames, Http, MimeTypes, WebDAVElements } from "../constants";
+import { Err } from "../Err";
+import { ScriptKey } from "./ScriptKey";
+import type { SessionManager } from "../session/SessionManager";
+import type { ILogger, IPrompt } from "../providers";
+import { OrgWorker } from "./OrgWorker";
 
 type FilePointers = { upstairsPath: string; downstairsPath: string; trailing?: string };
 type GetScriptRet = FilePointers[] | null;
@@ -16,11 +16,10 @@ type GetScriptRet = FilePointers[] | null;
  * Takes a {@link SessionManager}, `ILogger`, and `IPrompt` via constructor injection.
  */
 export class ScriptUrlParser {
-
-  static readonly URL_TYPES = ['files', 'public'] as const;
+  static readonly URL_TYPES = ["files", "public"] as const;
 
   url: URL;
-  filesOrPublic: typeof ScriptUrlParser.URL_TYPES[number];
+  filesOrPublic: (typeof ScriptUrlParser.URL_TYPES)[number];
   webDavId: string;
   trailing?: string;
   trailingFolder?: string;
@@ -33,10 +32,10 @@ export class ScriptUrlParser {
     public readonly rawUrlString: string,
     private readonly sessionManager: SessionManager,
     private readonly logger: ILogger,
-    private readonly prompt: IPrompt,
+    private readonly prompt: IPrompt
   ) {
     if (!rawUrlString || !rawUrlString.trim()) {
-      throw new Err.UrlParsingError('URL string cannot be empty');
+      throw new Err.UrlParsingError("URL string cannot be empty");
     }
     const str = rawUrlString.trim();
     try {
@@ -53,20 +52,20 @@ export class ScriptUrlParser {
     const [, type, webDavId, trailing] = match;
 
     if (!/^\d+$/.test(webDavId) || webDavId.length > 10) {
-      throw new Err.UrlParsingError('the parsed WebDAV ID is probably too large to be legitimate');
+      throw new Err.UrlParsingError("the parsed WebDAV ID is probably too large to be legitimate");
     }
     if (!this.isValidType(type)) {
-      throw new Err.UrlParsingError(`Invalid path type: ${type}. Expected: ${ScriptUrlParser.URL_TYPES.join(', ')}`);
+      throw new Err.UrlParsingError(`Invalid path type: ${type}. Expected: ${ScriptUrlParser.URL_TYPES.join(", ")}`);
     }
 
-    this.filesOrPublic = type as typeof ScriptUrlParser.URL_TYPES[number];
+    this.filesOrPublic = type as (typeof ScriptUrlParser.URL_TYPES)[number];
     this.webDavId = webDavId;
     this.trailing = trailing;
-    this.trailingFolder = trailing?.includes('/') ? trailing.split('/')[0] : undefined;
+    this.trailingFolder = trailing?.includes("/") ? trailing.split("/")[0] : undefined;
   }
 
-  private isValidType(type: string): type is typeof ScriptUrlParser.URL_TYPES[number] {
-    return ScriptUrlParser.URL_TYPES.includes(type as typeof ScriptUrlParser.URL_TYPES[number]);
+  private isValidType(type: string): type is (typeof ScriptUrlParser.URL_TYPES)[number] {
+    return ScriptUrlParser.URL_TYPES.includes(type as (typeof ScriptUrlParser.URL_TYPES)[number]);
   }
 
   async getU(): Promise<string> {
@@ -74,34 +73,38 @@ export class ScriptUrlParser {
   }
 
   async getScriptBaseKey(): Promise<ScriptKey> {
-    if (this._scriptKey !== null) {return this._scriptKey;}
+    if (this._scriptKey !== null) {
+      return this._scriptKey;
+    }
     await this.getGrandparentInfo();
     if (this._scriptKey === null) {
-      throw new Err.ScriptUrlParserError('Failed to fetch script key');
+      throw new Err.ScriptUrlParserError("Failed to fetch script key");
     }
     return this._scriptKey;
   }
 
   async getScriptName(): Promise<string> {
-    if (this._scriptName !== null) {return this._scriptName;}
+    if (this._scriptName !== null) {
+      return this._scriptName;
+    }
     await this.getGrandparentInfo();
     if (this._scriptName === null) {
-      throw new Err.ScriptUrlParserError('Failed to fetch script name');
+      throw new Err.ScriptUrlParserError("Failed to fetch script name");
     }
     return this._scriptName;
   }
 
   private async getGrandparentInfo(): Promise<void> {
     if (this._scriptName !== null || this._scriptKey !== null) {
-      throw new Err.ScriptUrlParserError('Script name or key already fetched');
+      throw new Err.ScriptUrlParserError("Script name or key already fetched");
     }
     const gqlUrl = this.urlCopy();
-    const scriptRootId = '530001___' + this.webDavId;
+    const scriptRootId = "530001___" + this.webDavId;
     const parentQuery = (id: string) =>
       `{"query":"query ObjectData($id: String!) {\\n  parents(childId: $id) {\\n    id\\n    displayName\\n  }\\n}","variables":{"id":"${id}"},"operationName":"ObjectData"}`;
 
     try {
-      gqlUrl.pathname = 'gql';
+      gqlUrl.pathname = "gql";
 
       const res1 = await this.sessionManager.csrfFetch(gqlUrl, {
         method: Http.Methods.POST,
@@ -121,7 +124,9 @@ export class ScriptUrlParser {
       try {
         json1 = JSON.parse(responseText1) as GqlParentNameResp;
       } catch {
-        throw new Err.ScriptUrlParserError(`Failed to parse GraphQL response for ${scriptRootId}. Response was: ${responseText1.substring(0, 500)}`);
+        throw new Err.ScriptUrlParserError(
+          `Failed to parse GraphQL response for ${scriptRootId}. Response was: ${responseText1.substring(0, 500)}`
+        );
       }
 
       const parents = json1?.data?.parents;
@@ -162,23 +167,27 @@ export class ScriptUrlParser {
         );
       }
 
-      const parts = parents2[0].id.split('___');
+      const parts = parents2[0].id.split("___");
       if (parts.length !== 2) {
-        throw new Err.ScriptUrlParserError(`Script ID has unexpected format. Expected "classid___seqnum", got: ${parents2[0].id}`);
+        throw new Err.ScriptUrlParserError(
+          `Script ID has unexpected format. Expected "classid___seqnum", got: ${parents2[0].id}`
+        );
       }
 
       const displayName = parents2[0].displayName;
       if (!displayName) {
-        throw new Err.ScriptUrlParserError(
-          `Script displayName is null or empty. Script ID: ${parents2[0].id}.`
-        );
+        throw new Err.ScriptUrlParserError(`Script displayName is null or empty. Script ID: ${parents2[0].id}.`);
       }
 
-      this._scriptName = displayName.replaceAll(/\/|\\/g, '_');
+      this._scriptName = displayName.replaceAll(/\/|\\/g, "_");
       this._scriptKey = new ScriptKey(parts[0], parts[1]);
     } catch (e) {
-      if (e instanceof Err.ScriptUrlParserError) {throw e;}
-      throw new Err.ScriptUrlParserError(`Unexpected error fetching script info via GraphQL from ${gqlUrl.href}: ${(e as Error).message}`);
+      if (e instanceof Err.ScriptUrlParserError) {
+        throw e;
+      }
+      throw new Err.ScriptUrlParserError(
+        `Unexpected error fetching script info via GraphQL from ${gqlUrl.href}: ${(e as Error).message}`
+      );
     }
   }
 
@@ -197,7 +206,7 @@ export class ScriptUrlParser {
   async getScript(): Promise<GetScriptRet> {
     const url = this.urlCopy();
     url.pathname = `${ApiEndpoints.FILES}${this.webDavId}/`;
-    this.logger.info('Fetching script from URL:', url.href);
+    this.logger.info("Fetching script from URL:", url.href);
     const scriptName = await this.getScriptName();
     return this.getSubScript(url, scriptName);
   }
@@ -210,7 +219,7 @@ export class ScriptUrlParser {
           [Http.Headers.ACCEPT_LANGUAGE]: Http.Headers.ACCEPT_LANGUAGE_EN_US,
           [Http.Headers.CACHE_CONTROL]: Http.Headers.NO_CACHE,
           [Http.Headers.PRAGMA]: Http.Headers.NO_CACHE,
-          [Http.Headers.UPGRADE_INSECURE_REQUESTS]: '1',
+          [Http.Headers.UPGRADE_INSECURE_REQUESTS]: "1",
         },
         method: Http.Methods.PROPFIND,
       });
@@ -229,28 +238,38 @@ export class ScriptUrlParser {
 
       const firstLayer: FilePointers[] = await Promise.all(
         dResponses
-          .map(terminal => {
+          .map((terminal) => {
             // Parse as a URL parser — only need URL fields, not the full session-aware parser
             const href = terminal[WebDAVElements.HREF];
             const parsedUrl = new URL(href, this.url.origin);
             const pathRegex = /^\/(files|public)\/(\d+)(?:\/(.*))?$/;
             const match = parsedUrl.pathname.match(pathRegex);
-            return { href: parsedUrl.href, trailing: match?.[3], trailingFolder: match?.[3]?.includes('/') ? match[3].split('/')[0] : undefined };
+            return {
+              href: parsedUrl.href,
+              trailing: match?.[3],
+              trailingFolder: match?.[3]?.includes("/") ? match[3].split("/")[0] : undefined,
+            };
           })
-          .filter(entry => {
-            if (entry.trailing === undefined) {return false;}
-            if (entry.trailingFolder === FolderNames.SNAPSHOT) {return false;}
+          .filter((entry) => {
+            if (entry.trailing === undefined) {
+              return false;
+            }
+            if (entry.trailingFolder === FolderNames.SNAPSHOT) {
+              return false;
+            }
             return true;
           })
-          .map(async entry => {
+          .map(async (entry) => {
             const newPath = `${scriptName}/${entry.trailing}`;
             return { upstairsPath: entry.href, downstairsPath: newPath, trailing: entry.trailing };
           })
       );
 
       for (const rawFile of firstLayer) {
-        if (repository.find(rf => rf.upstairsPath === rawFile.upstairsPath)) {continue;}
-        if (rawFile.trailing?.endsWith('/')) {
+        if (repository.find((rf) => rf.upstairsPath === rawFile.upstairsPath)) {
+          continue;
+        }
+        if (rawFile.trailing?.endsWith("/")) {
           const subUrl = new URL(rawFile.upstairsPath);
           if (subUrl.toString() === url.toString()) {
             repository.push(rawFile);
@@ -263,21 +282,25 @@ export class ScriptUrlParser {
       }
       return repository;
     } catch (e) {
-      this.logger.error('Error getting URL', url.toString());
+      this.logger.error("Error getting URL", url.toString());
       throw e;
     }
   }
 
   toString(): string {
-    return JSON.stringify({
-      rawUrlString: this.rawUrlString,
-      url: this.url.href,
-      filesOrPublic: this.filesOrPublic,
-      webDavId: this.webDavId,
-      trailing: this.trailing,
-      trailingFolder: this.trailingFolder,
-      scriptName: this._scriptName,
-      scriptKey: this._scriptKey,
-    }, null, 2);
+    return JSON.stringify(
+      {
+        rawUrlString: this.rawUrlString,
+        url: this.url.href,
+        filesOrPublic: this.filesOrPublic,
+        webDavId: this.webDavId,
+        trailing: this.trailing,
+        trailingFolder: this.trailingFolder,
+        scriptName: this._scriptName,
+        scriptKey: this._scriptKey,
+      },
+      null,
+      2
+    );
   }
 }

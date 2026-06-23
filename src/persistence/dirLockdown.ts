@@ -1,6 +1,6 @@
-import { execFile } from 'child_process';
-import * as fs from 'fs/promises';
-import { promisify } from 'util';
+import { execFile } from "child_process";
+import * as fs from "fs/promises";
+import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,18 +16,13 @@ const execFileAsync = promisify(execFile);
  * The directory must already exist.
  */
 export async function lockdownDir(dir: string): Promise<void> {
-  if (process.platform === 'win32') {
+  if (process.platform === "win32") {
     const user = process.env.USERNAME || process.env.USER;
     if (!user) {
       return;
     }
     try {
-      await execFileAsync('icacls', [
-        dir,
-        '/inheritance:r',
-        '/grant:r',
-        `${user}:(OI)(CI)F`,
-      ]);
+      await execFileAsync("icacls", [dir, "/inheritance:r", "/grant:r", `${user}:(OI)(CI)F`]);
     } catch {
       // Best-effort: if icacls is missing or fails, leave the directory alone.
     }

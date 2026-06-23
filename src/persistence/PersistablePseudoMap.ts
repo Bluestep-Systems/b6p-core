@@ -10,8 +10,10 @@ import type { Serializable } from "./Serializable";
  * Now uses IPersistence interface for storage, allowing the same persistence layer
  * to be shared between legacy extension code and the new B6PCore.
  */
-export abstract class PersistablePseudoMap<T extends Serializable> extends PseudoMap<string, T> implements Persistable, Iterable<[string, T]> {
-
+export abstract class PersistablePseudoMap<T extends Serializable>
+  extends PseudoMap<string, T>
+  implements Persistable, Iterable<[string, T]>
+{
   /**
    * The key used for persisting the map.
    */

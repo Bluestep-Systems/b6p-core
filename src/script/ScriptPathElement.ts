@@ -1,4 +1,4 @@
-import type { B6PUri } from '../B6PUri';
+import type { B6PUri } from "../B6PUri";
 
 /**
  * Interface representing an element with a file system path and URI.
@@ -9,7 +9,6 @@ import type { B6PUri } from '../B6PUri';
  * @lastreviewed 2025-10-01
  */
 export interface ScriptPathElement {
-
   /**
    * Gets the file system path of this element.
    * @returns The file system path as a string
@@ -31,7 +30,4 @@ export interface ScriptPathElement {
    * @lastreviewed 2025-10-01
    */
   equals(other: ScriptPathElement): boolean;
-
-
 }
-

@@ -1,19 +1,19 @@
-import path from 'path';
-import { ScriptMetaData } from '../types';
-import { FileExtensions, FolderNames, SpecialFiles } from '../constants';
-import { DownstairsPathParser } from '../data/DownstairsPathParser';
-import { OrgWorker } from '../data/OrgWorker';
-import { ScriptKey } from '../data/ScriptKey';
-import { ScriptUrlParser } from '../data/ScriptUrlParser';
-import { Err } from '../Err';
-import { ScriptFactory } from './ScriptFactory';
-import { B6PUri } from '../B6PUri';
-import { ScriptFile } from './ScriptFile';
-import type { ScriptFolder } from './ScriptFolder';
-import { ScriptNode } from './ScriptNode';
-import { ScriptTranspiler } from './ScriptTranspiler';
-import { TsConfig } from './TsConfig';
-import type { ScriptContext } from './ScriptContext';
+import path from "path";
+import { ScriptMetaData } from "../types";
+import { FileExtensions, FolderNames, SpecialFiles } from "../constants";
+import { DownstairsPathParser } from "../data/DownstairsPathParser";
+import { OrgWorker } from "../data/OrgWorker";
+import { ScriptKey } from "../data/ScriptKey";
+import { ScriptUrlParser } from "../data/ScriptUrlParser";
+import { Err } from "../Err";
+import { ScriptFactory } from "./ScriptFactory";
+import { B6PUri } from "../B6PUri";
+import { ScriptFile } from "./ScriptFile";
+import type { ScriptFolder } from "./ScriptFolder";
+import { ScriptNode } from "./ScriptNode";
+import { ScriptTranspiler } from "./ScriptTranspiler";
+import { TsConfig } from "./TsConfig";
+import type { ScriptContext } from "./ScriptContext";
 
 /**
  * Object representing the root of an individual script on the filesystem.
@@ -29,7 +29,10 @@ export class ScriptRoot {
   private scriptParser: ScriptUrlParser | null;
   private _factory: ScriptFactory | null = null;
 
-  constructor(public readonly uri: B6PUri, public readonly ctx: ScriptContext) {
+  constructor(
+    public readonly uri: B6PUri,
+    public readonly ctx: ScriptContext
+  ) {
     this.parser = new DownstairsPathParser(uri.fsPath);
     const shavedName = this.parser.getShavedName();
     this.rootUri = B6PUri.fromFsPath(path.join(shavedName, "/"));
@@ -39,7 +42,7 @@ export class ScriptRoot {
 
   /** Lazily-instantiated factory bound to this root's context. */
   public get factory(): ScriptFactory {
-    return this._factory ??= new ScriptFactory(this.ctx);
+    return (this._factory ??= new ScriptFactory(this.ctx));
   }
 
   public orgWorker(): OrgWorker {
@@ -73,10 +76,26 @@ export class ScriptRoot {
 
     if (!entry) {
       if (this.scriptParser !== null) {
-        const scriptName = await this.scriptParser.getScriptName() || (() => { throw new Err.FileReadError("Missing script name"); })();
-        const U = await this.scriptParser.getU() || (() => { throw new Err.FileReadError("Missing U"); })();
-        const webdavId = this.scriptParser.webDavId || (() => { throw new Err.FileReadError("Missing webdavId"); })();
-        const scriptKey = await this.scriptParser.getScriptBaseKey() || (() => { throw new Err.FileReadError("Missing scriptKey"); })();
+        const scriptName =
+          (await this.scriptParser.getScriptName()) ||
+          (() => {
+            throw new Err.FileReadError("Missing script name");
+          })();
+        const U =
+          (await this.scriptParser.getU()) ||
+          (() => {
+            throw new Err.FileReadError("Missing U");
+          })();
+        const webdavId =
+          this.scriptParser.webDavId ||
+          (() => {
+            throw new Err.FileReadError("Missing webdavId");
+          })();
+        const scriptKey =
+          (await this.scriptParser.getScriptBaseKey()) ||
+          (() => {
+            throw new Err.FileReadError("Missing scriptKey");
+          })();
 
         entry = { scriptName, U, webdavId, pushPullRecords: [], scriptKey };
       } else {
@@ -115,17 +134,18 @@ export class ScriptRoot {
         throw new Err.FileNotFoundError("Gitignore file does not exist at: `" + gitIgnoreUri.fsPath + "`");
       }
       const fileContents = await this.ctx.fs.readFile(gitIgnoreUri);
-      const fileString = Buffer.from(fileContents).toString('utf-8');
-      currentContents = fileString.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0);
+      const fileString = Buffer.from(fileContents).toString("utf-8");
+      currentContents = fileString
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
     } catch (e) {
       this.ctx.logger.error("Error reading .gitignore file: " + e);
       if (!(e instanceof Err.FileNotFoundError)) {
         throw e;
       }
       this.ctx.logger.warn(".gitignore file does not exist; creating a new one.");
-      currentContents = [
-        "**/.DS_Store",
-      ];
+      currentContents = ["**/.DS_Store"];
       modified = true;
     }
     const preSerialized = JSON.stringify(currentContents);
@@ -158,7 +178,12 @@ export class ScriptRoot {
     if (!metadata) {
       throw new Err.InvalidStateError("Missing metadata");
     }
-    return metadata.scriptName || (() => { throw new Err.InvalidStateError("Missing scriptName in metadata"); })();
+    return (
+      metadata.scriptName ||
+      (() => {
+        throw new Err.InvalidStateError("Missing scriptName in metadata");
+      })()
+    );
   }
 
   async getWebdavId() {
@@ -169,7 +194,12 @@ export class ScriptRoot {
     if (!metadata) {
       throw new Err.InvalidStateError("Missing metadata");
     }
-    return metadata.webdavId || (() => { throw new Err.InvalidStateError("Missing webdavId in metadata"); })();
+    return (
+      metadata.webdavId ||
+      (() => {
+        throw new Err.InvalidStateError("Missing webdavId in metadata");
+      })()
+    );
   }
 
   async getScriptKey(): Promise<ScriptKey> {
@@ -184,14 +214,21 @@ export class ScriptRoot {
       return metadata.scriptKey;
     }
     try {
-      this.scriptParser = new ScriptUrlParser((await this.getBaseWebDavUrl()).toString(), this.ctx.sessionManager, this.ctx.logger, this.ctx.prompt);
+      this.scriptParser = new ScriptUrlParser(
+        (await this.getBaseWebDavUrl()).toString(),
+        this.ctx.sessionManager,
+        this.ctx.logger,
+        this.ctx.prompt
+      );
       const key = await this.scriptParser.getScriptBaseKey();
-      await this.modifyMetaData(meta => {
+      await this.modifyMetaData((meta) => {
         meta.scriptKey = key;
       });
       return key;
     } catch (e) {
-      throw new Err.FileReadError("Can't obtain scriptKey in metadata, even after trying to instantiate a scriptParser.");
+      throw new Err.FileReadError(
+        "Can't obtain scriptKey in metadata, even after trying to instantiate a scriptParser."
+      );
     }
   }
 
@@ -246,29 +283,31 @@ export class ScriptRoot {
     const allDraftFiles = await draftFolder.flatten();
     const transpiler = new ScriptTranspiler(this.ctx);
     for (const file of allDraftFiles) {
-      if (await file.isFile() && (file as ScriptFile).isMarkdown() ||
-        await file.isInItsRespectiveBuildFolder() ||
-        await file.isFolder()) {
+      if (
+        ((await file.isFile()) && (file as ScriptFile).isMarkdown()) ||
+        (await file.isInItsRespectiveBuildFolder()) ||
+        (await file.isFolder())
+      ) {
         continue;
       }
 
-      if ([FileExtensions.TYPESCRIPT, FileExtensions.TYPESCRIPT_JSX].some(ext => file.path().endsWith(ext))) {
+      if ([FileExtensions.TYPESCRIPT, FileExtensions.TYPESCRIPT_JSX].some((ext) => file.path().endsWith(ext))) {
         await transpiler.addFile(file);
       }
     }
     const emittedEntries = await transpiler.transpile(this);
     this.ctx.logger.info(`Transpiled ${emittedEntries.length} TypeScript files.`);
     this.ctx.logger.info(`Emitted Files: \n${emittedEntries.join("\n")}`);
-    const emittedScriptNodes = emittedEntries.map(e => this.factory.createNode(B6PUri.fromFsPath(e), this));
-    this.ctx.logger.info(`Emitted ScriptNodes: \n${emittedScriptNodes.map(n => n.path()).join("\n")}`);
+    const emittedScriptNodes = emittedEntries.map((e) => this.factory.createNode(B6PUri.fromFsPath(e), this));
+    this.ctx.logger.info(`Emitted ScriptNodes: \n${emittedScriptNodes.map((n) => n.path()).join("\n")}`);
     await this.tidyMetadataFile();
   }
 
   private async tidyMetadataFile() {
     const draftFolder = this.getDraftFolder();
-    const draftFiles = (await draftFolder.flattenRaw()).map(uri => uri.fsPath);
+    const draftFiles = (await draftFolder.flattenRaw()).map((uri) => uri.fsPath);
     await this.modifyMetaData((meta) => {
-      meta.pushPullRecords = meta.pushPullRecords.filter(record => {
+      meta.pushPullRecords = meta.pushPullRecords.filter((record) => {
         return draftFiles.includes(record.downstairsPath);
       });
     });
@@ -288,8 +327,8 @@ export class ScriptRoot {
   }
 
   public async findTsConfigFiles(): Promise<TsConfig[]> {
-    const tsConfigFiles = await this.ctx.fs.findFiles(this.getDraftFolder().uri(), '**/' + TsConfig.NAME);
-    return tsConfigFiles.map(f => this.factory.createTsConfig(f, this));
+    const tsConfigFiles = await this.ctx.fs.findFiles(this.getDraftFolder().uri(), "**/" + TsConfig.NAME);
+    return tsConfigFiles.map((f) => this.factory.createTsConfig(f, this));
   }
 
   public async getBadTsFiles(): Promise<string[]> {

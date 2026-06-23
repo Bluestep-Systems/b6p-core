@@ -19,7 +19,6 @@ export namespace BlueHQ {
    */
   export const ENDPOINT = () => new URL(Http.Schemes.HTTPS + HOST + ENDPOINT_PATH);
 
-
   export const getAnyDomainUrl = (u: string) => {
     const url = ENDPOINT();
     url.searchParams.set(Actions.PARAM_NAME, Actions.GET_ANY_DOMAIN);

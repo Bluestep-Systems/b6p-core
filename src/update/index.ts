@@ -1,2 +1,2 @@
-export { UpdateService } from './UpdateService';
-export type { UpdateInfo, GithubRelease, ClientInfo, UpdateServiceConfig } from './types';
+export { UpdateService } from "./UpdateService";
+export type { UpdateInfo, GithubRelease, ClientInfo, UpdateServiceConfig } from "./types";

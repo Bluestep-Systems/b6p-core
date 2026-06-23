@@ -1,5 +1,5 @@
-import { HttpClientProvider, GlobalHttpClient, MockHttpClient } from './HttpClientProvider';
-import type { TestableFactoryStatic } from '../testing/TestableFactory';
+import { HttpClientProvider, GlobalHttpClient, MockHttpClient } from "./HttpClientProvider";
+import type { TestableFactoryStatic } from "../testing/TestableFactory";
 
 /**
  * Namespace for managing the HTTP client provider.

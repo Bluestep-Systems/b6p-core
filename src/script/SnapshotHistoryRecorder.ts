@@ -1,16 +1,29 @@
-import * as path from 'path';
-import { Http } from '../constants';
-import { MimeTypes } from '../constants/MimeTypes';
-import { Err } from '../Err';
-import { B6PUri } from '../B6PUri';
-import type { ScriptRoot } from './ScriptRoot';
+import * as path from "path";
+import { Http } from "../constants";
+import { MimeTypes } from "../constants/MimeTypes";
+import { Err } from "../Err";
+import { B6PUri } from "../B6PUri";
+import type { ScriptRoot } from "./ScriptRoot";
 
 /**
  * Text file extensions that should have their content included in history snapshots.
  */
 const TEXT_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.json', '.md', '.css', '.scss',
-  '.html', '.htm', '.xml', '.svg', '.txt', '.yaml', '.yml',
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".json",
+  ".md",
+  ".css",
+  ".scss",
+  ".html",
+  ".htm",
+  ".xml",
+  ".svg",
+  ".txt",
+  ".yaml",
+  ".yml",
 ]);
 
 /**
@@ -19,7 +32,6 @@ const TEXT_EXTENSIONS = new Set([
  * browser IDE's "Project History" view.
  */
 export class SnapshotHistoryRecorder {
-
   static async record(scriptRoot: ScriptRoot, message: string): Promise<void> {
     const ctx = scriptRoot.ctx;
     const scriptKey = await scriptRoot.getScriptKey();
@@ -42,15 +54,17 @@ export class SnapshotHistoryRecorder {
     const draftValue = JSON.stringify({ ...saveState, settings: this.stripContent(saveState.settings) });
 
     const origin = await scriptRoot.anyOrigin();
-    const gqlUrl = new URL('gql', origin);
+    const gqlUrl = new URL("gql", origin);
 
     const query = `mutation Snapshot($inputs: [${inputType}!]!) { ${mutationName}(inputs: $inputs) { id } }`;
     const variables = {
-      inputs: [{
-        topId: scriptKey.toCompoundId(),
-        draft: draftValue,
-        addMapObjectEntries: [{ key: historyKey, value: historyValue }],
-      }],
+      inputs: [
+        {
+          topId: scriptKey.toCompoundId(),
+          draft: draftValue,
+          addMapObjectEntries: [{ key: historyKey, value: historyValue }],
+        },
+      ],
     };
 
     ctx.logger.info(`Recording snapshot history for ${scriptKey.toCompoundId()}`);
@@ -68,12 +82,14 @@ export class SnapshotHistoryRecorder {
       throw new Err.HttpResponseError(`Failed to record snapshot history: ${response.status} ${text}`);
     }
 
-    const json = await response.json() as { errors?: { message: string }[] };
+    const json = (await response.json()) as { errors?: { message: string }[] };
     if (json.errors?.length) {
-      throw new Err.HttpResponseError(`GraphQL errors recording snapshot history: ${json.errors.map(e => e.message).join(', ')}`);
+      throw new Err.HttpResponseError(
+        `GraphQL errors recording snapshot history: ${json.errors.map((e) => e.message).join(", ")}`
+      );
     }
 
-    ctx.logger.info('Snapshot history recorded successfully.');
+    ctx.logger.info("Snapshot history recorded successfully.");
   }
 
   private static async getAuthor(scriptRoot: ScriptRoot): Promise<string> {
@@ -81,7 +97,7 @@ export class SnapshotHistoryRecorder {
       const auth = await scriptRoot.ctx.auth.getOrCreate();
       return auth.username;
     } catch {
-      return 'unknown';
+      return "unknown";
     }
   }
 
@@ -93,21 +109,21 @@ export class SnapshotHistoryRecorder {
     const settings: Record<string, FileSetting | FolderSetting> = {};
 
     for (const node of allNodes) {
-      const relativePath = '/' + path.relative(draftRootPath, node.path()).replace(/\\/g, '/');
+      const relativePath = "/" + path.relative(draftRootPath, node.path()).replace(/\\/g, "/");
 
       if (await node.isInItsRespectiveBuildFolder()) {
         continue;
       }
 
       if (await node.isFolder()) {
-        const folderPath = relativePath.endsWith('/') ? relativePath : relativePath + '/';
+        const folderPath = relativePath.endsWith("/") ? relativePath : relativePath + "/";
         settings[folderPath] = {};
       } else {
         const ext = path.extname(node.path()).toLowerCase();
         if (TEXT_EXTENSIONS.has(ext)) {
           try {
             const bytes = await ctx.fs.readFile(B6PUri.fromFsPath(node.uri().fsPath));
-            const content = Buffer.from(bytes).toString('utf-8');
+            const content = Buffer.from(bytes).toString("utf-8");
             settings[relativePath] = { content };
           } catch (e) {
             ctx.logger.warn(`Failed to read file for history: ${node.path()}: ${e}`);
@@ -123,10 +139,12 @@ export class SnapshotHistoryRecorder {
     };
   }
 
-  private static stripContent(settings: Record<string, FileSetting | FolderSetting>): Record<string, Omit<FileSetting, 'content'> | FolderSetting> {
+  private static stripContent(
+    settings: Record<string, FileSetting | FolderSetting>
+  ): Record<string, Omit<FileSetting, "content"> | FolderSetting> {
     const stripped: Record<string, object> = {};
     for (const [key, value] of Object.entries(settings)) {
-      if ('content' in value) {
+      if ("content" in value) {
         const { content, ...rest } = value;
         stripped[key] = rest;
       } else {

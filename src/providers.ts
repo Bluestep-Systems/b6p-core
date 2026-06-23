@@ -1,10 +1,10 @@
-import type { B6PUri } from './B6PUri';
-import type { IOrgCacheSettings } from './cache/OrgCache';
+import type { B6PUri } from "./B6PUri";
+import type { IOrgCacheSettings } from "./cache/OrgCache";
 
 // ── File System ─────────────────────────────────────────────────────
 
 export interface FileStat {
-  type: 'file' | 'directory';
+  type: "file" | "directory";
   mtime: number;
   size: number;
 }
@@ -13,7 +13,7 @@ export interface IFileSystem {
   readFile(uri: B6PUri): Promise<Uint8Array>;
   writeFile(uri: B6PUri, content: Uint8Array): Promise<void>;
   stat(uri: B6PUri): Promise<FileStat>;
-  readDirectory(uri: B6PUri): Promise<[string, 'file' | 'directory'][]>;
+  readDirectory(uri: B6PUri): Promise<[string, "file" | "directory"][]>;
   delete(uri: B6PUri, options?: { recursive?: boolean }): Promise<void>;
   createDirectory(uri: B6PUri): Promise<void>;
   exists(uri: B6PUri): Promise<boolean>;

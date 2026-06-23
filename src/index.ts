@@ -1,9 +1,9 @@
 // ─── Top-level entry points ──────────────────────────────────────────
-export { B6PCore } from './B6PCore';
-export type { AuditResult, ReportResult } from './B6PCore';
-export { B6PUri } from './B6PUri';
-export { Err } from './Err';
-export { executePush } from './push';
+export { B6PCore } from "./B6PCore";
+export type { AuditResult, ReportResult } from "./B6PCore";
+export { B6PUri } from "./B6PUri";
+export { Err } from "./Err";
+export { executePush } from "./push";
 
 // ─── Provider interfaces ─────────────────────────────────────────────
 export type {
@@ -15,31 +15,31 @@ export type {
   IProgress,
   IPrompt,
   ProgressTask,
-} from './providers';
+} from "./providers";
 
 // ─── Pure data classes ───────────────────────────────────────────────
-export { DownstairsPathParser } from './data/DownstairsPathParser';
-export { GlobMatcher } from './data/GlobMatcher';
-export { IdUtility } from './data/IdUtility';
-export { OrgWorker } from './data/OrgWorker';
-export { ScriptKey } from './data/ScriptKey';
-export { ScriptUrlParser } from './data/ScriptUrlParser';
+export { DownstairsPathParser } from "./data/DownstairsPathParser";
+export { GlobMatcher } from "./data/GlobMatcher";
+export { IdUtility } from "./data/IdUtility";
+export { OrgWorker } from "./data/OrgWorker";
+export { ScriptKey } from "./data/ScriptKey";
+export { ScriptUrlParser } from "./data/ScriptUrlParser";
 
 // ─── Auth + sessions ─────────────────────────────────────────────────
-export { BasicAuthProvider } from './auth/BasicAuthProvider';
-export { SessionManager } from './session/SessionManager';
+export { BasicAuthProvider } from "./auth/BasicAuthProvider";
+export { SessionManager } from "./session/SessionManager";
 
 // ─── Network ─────────────────────────────────────────────────────────
-export { HttpClient } from './network/HttpClient';
-export { ResponseCodes } from './network/StatusCodes';
+export { HttpClient } from "./network/HttpClient";
+export { ResponseCodes } from "./network/StatusCodes";
 
 // ─── Script tree ─────────────────────────────────────────────────────
-export { ScriptFactory } from './script/ScriptFactory';
-export { ScriptNode } from './script/ScriptNode';
-export { ScriptRoot } from './script/ScriptRoot';
-export { ScriptFile } from './script/ScriptFile';
-export type { ScriptFolder } from './script/ScriptFolder';
-export type { ScriptContext } from './script/ScriptContext';
+export { ScriptFactory } from "./script/ScriptFactory";
+export { ScriptNode } from "./script/ScriptNode";
+export { ScriptRoot } from "./script/ScriptRoot";
+export { ScriptFile } from "./script/ScriptFile";
+export type { ScriptFolder } from "./script/ScriptFolder";
+export type { ScriptContext } from "./script/ScriptContext";
 
 // ─── Constants ───────────────────────────────────────────────────────
 export {
@@ -58,7 +58,7 @@ export {
   SettingsKeys,
   SpecialFiles,
   WebDAVElements,
-} from './constants';
+} from "./constants";
 
 // ─── Persistence ─────────────────────────────────────────────────────
 export {
@@ -74,20 +74,20 @@ export {
   PrivateGenericMap,
   TypedPersistable,
   PrivateTypedPersistable,
-} from './persistence';
-export type { SerializableClass, Serializable } from './persistence';
-export { SharedFilePersistence } from './persistence/SharedFilePersistence';
+} from "./persistence";
+export type { SerializableClass, Serializable } from "./persistence";
+export { SharedFilePersistence } from "./persistence/SharedFilePersistence";
 
 // ─── Caches ──────────────────────────────────────────────────────────
-export { OrgCache } from './cache/OrgCache';
-export { ScriptMetaDataStore } from './cache/ScriptMetaDataStore';
+export { OrgCache } from "./cache/OrgCache";
+export { ScriptMetaDataStore } from "./cache/ScriptMetaDataStore";
 
 // ─── Update service ──────────────────────────────────────────────────
-export { UpdateService } from './update/UpdateService';
-export type { UpdateInfo, GithubRelease, ClientInfo, UpdateServiceConfig } from './update/types';
+export { UpdateService } from "./update/UpdateService";
+export type { UpdateInfo, GithubRelease, ClientInfo, UpdateServiceConfig } from "./update/types";
 
 // ─── Test utilities (still in core because they're vscode-free) ──────
-export { MockFileSystem } from './testing/MockFileSystem';
+export { MockFileSystem } from "./testing/MockFileSystem";
 
 // ─── Shared ambient-style types (formerly types/index.d.ts) ──────────
 export type {
@@ -112,4 +112,4 @@ export type {
   ScriptGQLGoodResp,
   ScriptGQLBadResp,
   ConfigJsonContent,
-} from './types';
+} from "./types";

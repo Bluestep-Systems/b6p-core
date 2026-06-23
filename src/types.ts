@@ -1,4 +1,4 @@
-import type { ScriptKey } from './data/ScriptKey';
+import type { ScriptKey } from "./data/ScriptKey";
 
 /**
  * A map-like interface that only allows read operations.
@@ -22,7 +22,7 @@ export type JsonArray = JsonValue[];
 /**
  * A JSON-compatible object.
  */
-export type JsonObject = { [key: string]: JsonValue; };
+export type JsonObject = { [key: string]: JsonValue };
 
 /**
  * A plain JSON-compatible value: a primitive, an array of JSON values, or an object of JSON values.
@@ -60,7 +60,8 @@ export type XMLResponse = {
     "@encoding"?: string;
   };
   "D:multistatus": {
-    "D:response": { //TODO this may not actually return an array every time. Needs more investigation
+    "D:response": {
+      //TODO this may not actually return an array every time. Needs more investigation
       "D:href": string;
       "D:propstat": {
         "D:status": string;
@@ -93,7 +94,6 @@ export type XMLResponse = {
  * data requisite to manage an individual login session
  */
 export type SessionData = {
-
   /**
    * timestamp of the last time this session was used
    */
@@ -130,21 +130,21 @@ export type ScriptGqlResp = ScriptGQLGoodResp | ScriptGQLBadResp;
 
 /**
  * how a GQL response looks when it is "good"
- * 
+ *
  * //TODO this is incomplete for every GQL query possible. This should be tied to specific queries
  */
 export type ScriptGQLGoodResp = {
-  "data": {
-    "children": [
+  data: {
+    children: [
       {
-        "children": {
-          "items": [
+        children: {
+          items: [
             {
-              "id": string;
-            }
+              id: string;
+            },
           ];
         };
-      }
+      },
     ];
   };
 };
@@ -153,24 +153,23 @@ export type ScriptGQLGoodResp = {
  * how a GQL response looks when there were errors with the query
  */
 export type ScriptGQLBadResp = {
-  "errors": [
+  errors: [
     {
-      "message": string;
-    }
+      message: string;
+    },
   ];
 };
 
 /**
  * Options needed to to override the source in a script operation.
  */
-export type SourceOps = { sourceOrigin: string, topId: string; };
+export type SourceOps = { sourceOrigin: string; topId: string };
 
 /**
  * The metadata for the Script objects used locally.
  * //TODO: we should eventually
  */
 export type ScriptMetaData = {
-
   /**
    * The WebDAV ID extracted from the file path.
    */
@@ -198,7 +197,6 @@ export type ScriptMetaData = {
    * push/pull records for the script.
    */
   pushPullRecords: {
-
     /**
      * actual location of the file locally
      */
@@ -209,13 +207,12 @@ export type ScriptMetaData = {
      */
     lastVerifiedHash: string | null;
   }[];
-
 };
 /**
  * This is the content of a metadata.json found in every script folder.
  *
  * It is used to store various metadata about the script.
- * 
+ *
  * //TODO this is incomplete and is not correct for all Script types
  */
 export type MetaDataDotJsonContent = {
@@ -274,8 +271,8 @@ export type MetaDataDotJsonContent = {
    */
   basicPermissionOption: "Error";
   /**
- * //TODO
- */
+   * //TODO
+   */
   httpOption: "HttpsRedirect" | "HttpsOnly" | "HttpAndHttps";
   /**
    * //TODO
@@ -286,15 +283,22 @@ export type MetaDataDotJsonContent = {
 /**
  * propagation behavior options for scripts
  */
-type PropagationBehaviorTypes = "MANDATORY" | "NESTED" | "NEVER" | "NOT_SUPPORTED" | "REQUIRED" | "REQUIRES_NEW" | "SUPPORTS";
+type PropagationBehaviorTypes =
+  | "MANDATORY"
+  | "NESTED"
+  | "NEVER"
+  | "NOT_SUPPORTED"
+  | "REQUIRED"
+  | "REQUIRES_NEW"
+  | "SUPPORTS";
 
 /**
  * sandbox size options for scripts
- * 
+ *
  * see platform documentation for details
  */
 type SandboxSizes =
-  "XXX_SMALL"
+  | "XXX_SMALL"
   | "XX_SMALL"
   | "X_SMALL"
   | "SMALL"
@@ -311,51 +315,50 @@ type SandboxSizes =
  * This is the content of a config.json found in every script folder.
  */
 export type ConfigJsonContent = {
-
   /**
    * the main script file to execute (relative to the script folder)
-   * 
+   *
    * technically this can be any path but by convention it is always "../scripts/app"
    */
-  main: "../scripts/app",
+  main: "../scripts/app";
 
   /**
    * propagation behavior for this script
    */
-  propagationBehavior: PropagationBehaviorTypes,
+  propagationBehavior: PropagationBehaviorTypes;
 
   /**
    * //TODO
    */
-  transactionReadonly: boolean,
+  transactionReadonly: boolean;
 
   /**
    * //TODO
    */
-  transactionTimeout: string | number,
+  transactionTimeout: string | number;
 
   /**
    * sandbox size
    */
-  sandbox: SandboxSizes,
+  sandbox: SandboxSizes;
 
   /**
    * //TODO
    */
-  expiresBy: string,
+  expiresBy: string;
 
   /**
    * "Local external" modules
    */
   models?: {
-    name: string,
+    name: string;
     url: string;
-  }[],
+  }[];
 
   /**
    * //TODO
    */
-  language: "mjs",
+  language: "mjs";
 
   /**
    * //TODO
@@ -392,7 +395,7 @@ export type Settings = {
      */
     versionOverride: string;
   };
-  
+
   /**
    * Settings related to update checks.
    */
@@ -429,7 +432,7 @@ export type Settings = {
      * the push-complete notification
      */
     pushComplete: boolean;
-  }
+  };
 
   /**
    * Settings for the local script root directory.
@@ -440,12 +443,12 @@ export type Settings = {
      * If empty, defaults to the first workspace folder.
      */
     path: string;
-  }
+  };
 };
 
 /**
  * TypeScript configuration options (tsconfig.json structure).
- * 
+ *
  * @see https://www.typescriptlang.org/tsconfig
  */
 export type TsConfig = {
@@ -531,7 +534,7 @@ export type TsConfig = {
     /** Path mapping entries for module resolution */
     paths?: Record<string, string[]>;
     /** List of TypeScript language service plugins to load */
-    plugins?: Array<{ name: string;[key: string]: any; }>;
+    plugins?: Array<{ name: string; [key: string]: any }>;
 
     // Interop Constraints
     /** Ensure that casing is correct in imports */
@@ -602,7 +605,7 @@ export type TsConfig = {
   files?: string[];
 
   /** Project references for multi-project builds */
-  references?: Array<{ path: string; prepend?: boolean; }>;
+  references?: Array<{ path: string; prepend?: boolean }>;
 
   /** Extends another configuration file */
   extends?: string | string[];
@@ -620,9 +623,18 @@ export type TsConfig = {
 
   /** Watch options for file watching in --watch mode */
   watchOptions?: {
-    watchFile?: "fixedPollingInterval" | "priorityPollingInterval" | "dynamicPriorityPolling" | "useFsEvents" | "useFsEventsOnParentDirectory";
+    watchFile?:
+      | "fixedPollingInterval"
+      | "priorityPollingInterval"
+      | "dynamicPriorityPolling"
+      | "useFsEvents"
+      | "useFsEventsOnParentDirectory";
     watchDirectory?: "useFsEvents" | "fixedPollingInterval" | "dynamicPriorityPolling";
-    fallbackPolling?: "fixedPollingInterval" | "priorityPollingInterval" | "dynamicPriorityPolling" | "synchronousWatchDirectory";
+    fallbackPolling?:
+      | "fixedPollingInterval"
+      | "priorityPollingInterval"
+      | "dynamicPriorityPolling"
+      | "synchronousWatchDirectory";
     synchronousWatchDirectory?: boolean;
     excludeDirectories?: string[];
     excludeFiles?: string[];

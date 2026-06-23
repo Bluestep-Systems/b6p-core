@@ -64,4 +64,4 @@ export type TestableFactoryStatic<TProvider, TMock extends TProvider> = {
   enableProductionMode(): void;
   getIsTestMode(): boolean;
   reset(): void;
-}
+};

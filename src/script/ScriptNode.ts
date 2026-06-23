@@ -1,17 +1,17 @@
-import * as path from 'path';
-import { FolderNames, Http } from '../constants';
-import { DownstairsPathParser } from '../data/DownstairsPathParser';
-import { GlobMatcher } from '../data/GlobMatcher';
-import { Err } from '../Err';
-import { ScriptPathElement } from './ScriptPathElement';
-import type { ScriptFolder } from './ScriptFolder';
-import { ScriptRoot } from './ScriptRoot';
-import { TsConfig } from './TsConfig';
-import { ScriptUrlParser } from '../data/ScriptUrlParser';
-import { B6PUri } from '../B6PUri';
-import type { FileStat } from '../providers';
-import type { ScriptContext } from './ScriptContext';
-import type { ScriptFactory } from './ScriptFactory';
+import * as path from "path";
+import { FolderNames, Http } from "../constants";
+import { DownstairsPathParser } from "../data/DownstairsPathParser";
+import { GlobMatcher } from "../data/GlobMatcher";
+import { Err } from "../Err";
+import { ScriptPathElement } from "./ScriptPathElement";
+import type { ScriptFolder } from "./ScriptFolder";
+import { ScriptRoot } from "./ScriptRoot";
+import { TsConfig } from "./TsConfig";
+import { ScriptUrlParser } from "../data/ScriptUrlParser";
+import { B6PUri } from "../B6PUri";
+import type { FileStat } from "../providers";
+import type { ScriptContext } from "./ScriptContext";
+import type { ScriptFactory } from "./ScriptFactory";
 
 /**
  * A class representing a file or folder element of a script.
@@ -19,7 +19,6 @@ import type { ScriptFactory } from './ScriptFactory';
  * @lastreviewed 2025-09-15
  */
 export abstract class ScriptNode implements ScriptPathElement {
-
   /**
    * The parser for the downstairs URI of this file.
    */
@@ -35,7 +34,10 @@ export abstract class ScriptNode implements ScriptPathElement {
    */
   private _exists: boolean | undefined;
 
-  constructor(public readonly downstairsUri: B6PUri, scriptRoot: ScriptRoot) {
+  constructor(
+    public readonly downstairsUri: B6PUri,
+    scriptRoot: ScriptRoot
+  ) {
     this.parser = new DownstairsPathParser(downstairsUri.fsPath);
     this.scriptRoot = scriptRoot;
   }
@@ -70,7 +72,7 @@ export abstract class ScriptNode implements ScriptPathElement {
 
   public async getUpstairsLastModified(): Promise<Date> {
     const response = await this.ctx.sessionManager.fetch(await this.upstairsUrl(), {
-      method: Http.Methods.HEAD
+      method: Http.Methods.HEAD,
     });
     const lastModifiedHeaderValue = response.headers.get("Last-Modified");
     if (!lastModifiedHeaderValue) {
@@ -84,10 +86,12 @@ export abstract class ScriptNode implements ScriptPathElement {
       method: Http.Methods.GET,
       headers: {
         [Http.Headers.ACCEPT]: Http.Headers.ACCEPT_ALL,
-      }
+      },
     });
     if (response.status >= 400) {
-      throw new Err.HttpResponseError(`Error fetching upstairs file. Status: ${response.status}.\n ${response.statusText}`);
+      throw new Err.HttpResponseError(
+        `Error fetching upstairs file. Status: ${response.status}.\n ${response.statusText}`
+      );
     }
     return await response.text();
   }
@@ -228,20 +232,20 @@ export abstract class ScriptNode implements ScriptPathElement {
     return path.relative(closestTsConfigFolderUri.fsPath, this.uri().fsPath);
   }
 
-  abstract upload(arg?: { upstairsUrlOverrideString?: string, isSnapshot?: boolean; }): Promise<Response | void>;
+  abstract upload(arg?: { upstairsUrlOverrideString?: string; isSnapshot?: boolean }): Promise<Response | void>;
 
   abstract download(): Promise<Response>;
 
   public async isFolder() {
     const stat = await this.ctx.fs.stat(this.b6pUri());
-    return stat.type === 'directory';
+    return stat.type === "directory";
   }
 
   public async isFile() {
     return !(await this.isFolder());
   }
 
-  abstract getReasonToNotPush(arg?: { upstairsOverride?: URL; }): Promise<string | null>;
+  abstract getReasonToNotPush(arg?: { upstairsOverride?: URL }): Promise<string | null>;
 
   public async copyDraftFileToBuild() {
     if (await this.isInItsRespectiveBuildFolder()) {
@@ -251,10 +255,10 @@ export abstract class ScriptNode implements ScriptPathElement {
       throw new Err.ScriptNotCopaceticError();
     }
     const tsConfig = await this.getClosestTsConfigFile();
-    const buildUri = tsConfig.folder().uri().joinPath(
-      await tsConfig.relativePathToBuildFolder(),
-      await this.pathWithRespectToTsConfigFolder()
-    );
+    const buildUri = tsConfig
+      .folder()
+      .uri()
+      .joinPath(await tsConfig.relativePathToBuildFolder(), await this.pathWithRespectToTsConfigFolder());
     await this.copyTo(buildUri);
   }
 
@@ -285,7 +289,9 @@ export abstract class ScriptNode implements ScriptPathElement {
   public async rename(newName: string): Promise<void> {
     await this.isCopacetic();
     if (this.uri().fsPath === this.scriptRoot.getRootUri().fsPath) {
-      throw new Err.ScriptOperationError("Cannot rename the script root folder; the folder name is used as a metadata lookup key.");
+      throw new Err.ScriptOperationError(
+        "Cannot rename the script root folder; the folder name is used as a metadata lookup key."
+      );
     }
     if (this.name() === newName) {
       this.ctx.logger.info("Ignoring rename operation; new name is the same as the current name.");

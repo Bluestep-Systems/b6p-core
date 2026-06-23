@@ -1,6 +1,6 @@
-import type { JsonValue } from '../types';
+import type { JsonValue } from "../types";
 
-const SERIALIZABLE_TAG = '__serializable' as const;
+const SERIALIZABLE_TAG = "__serializable" as const;
 
 /**
  * Interface for classes that can be serialized to JSON and revived back into class instances.
@@ -10,18 +10,14 @@ const SERIALIZABLE_TAG = '__serializable' as const;
  * 2. Register a reviver via {@link registerSerializable} so the persistence layer can reconstruct the instance on load
  */
 export interface SerializableClass {
-  toJSON(): { [SERIALIZABLE_TAG]: string;[key: string]: JsonValue; };
+  toJSON(): { [SERIALIZABLE_TAG]: string; [key: string]: JsonValue };
 }
 
 /**
  * Anything that can be persisted: plain {@link JsonValue} data, a class implementing {@link SerializableClass},
  * or arrays/objects whose values are themselves {@link Serializable}.
  */
-export type Serializable =
-  JsonValue
-  | SerializableClass
-  | Serializable[]
-  | { [key: string]: Serializable; };
+export type Serializable = JsonValue | SerializableClass | Serializable[] | { [key: string]: Serializable };
 
 // ---------------------------------------------------------------------------
 // Registry
@@ -57,7 +53,7 @@ export function registerSerializable(tag: string, reviver: Reviver): void {
  * Called automatically by persistence map constructors after loading from storage.
  */
 export function revive<T>(data: T): T {
-  if (data === null || data === undefined || typeof data !== 'object') {
+  if (data === null || data === undefined || typeof data !== "object") {
     return data;
   }
 
@@ -71,7 +67,7 @@ export function revive<T>(data: T): T {
   const obj = data as Record<string, unknown>;
 
   // Check if this object itself is a serializable class
-  if (SERIALIZABLE_TAG in obj && typeof obj[SERIALIZABLE_TAG] === 'string') {
+  if (SERIALIZABLE_TAG in obj && typeof obj[SERIALIZABLE_TAG] === "string") {
     const reviver = REGISTRY.get(obj[SERIALIZABLE_TAG] as string);
     if (reviver) {
       return reviver(obj as Record<string, JsonValue>) as T;

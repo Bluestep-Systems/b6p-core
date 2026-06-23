@@ -1,17 +1,16 @@
-import path from 'path';
-import { Err } from '../Err';
-import { ResponseCodes } from '../network/StatusCodes';
-import { ScriptPathElement } from './ScriptPathElement';
-import type { ScriptFile } from './ScriptFile';
-import { ScriptNode } from './ScriptNode';
-import { TsConfig } from './TsConfig';
-import { B6PUri } from '../B6PUri';
+import path from "path";
+import { Err } from "../Err";
+import { ResponseCodes } from "../network/StatusCodes";
+import { ScriptPathElement } from "./ScriptPathElement";
+import type { ScriptFile } from "./ScriptFile";
+import { ScriptNode } from "./ScriptNode";
+import { TsConfig } from "./TsConfig";
+import { B6PUri } from "../B6PUri";
 
 /**
  * Represents a folder in the script project structure.
  */
 export class ScriptFolder extends ScriptNode {
-
   public createFamilial(downstairsUri: B6PUri): ScriptFolder {
     if (!this.scriptRoot.getAsFolder().contains(downstairsUri)) {
       throw new Err.ScriptOperationError("The provided URI is not a sibling within the same script root.");
@@ -19,12 +18,12 @@ export class ScriptFolder extends ScriptNode {
     return new ScriptFolder(downstairsUri, this.scriptRoot);
   }
 
-  public async upload(_arg?: { upstairsUrlOverrideString?: string, isSnapshot?: boolean; }): Promise<Response | void> {
+  public async upload(_arg?: { upstairsUrlOverrideString?: string; isSnapshot?: boolean }): Promise<Response | void> {
     this.ctx.logger.info(`ScriptFolder.upload() called on ${this.path()}; no action taken.`);
     return;
   }
 
-  async getReasonToNotPush(_arg?: { upstairsOverride?: URL, isSnapshot?: boolean; }): Promise<string | null> {
+  async getReasonToNotPush(_arg?: { upstairsOverride?: URL; isSnapshot?: boolean }): Promise<string | null> {
     return `Node (${this.path()}) is a folder`;
   }
 
@@ -33,8 +32,8 @@ export class ScriptFolder extends ScriptNode {
   }
 
   public async findAllTsConfigFiles(): Promise<TsConfig[]> {
-    const uris = await this.ctx.fs.findFiles(this.uri(), '**/tsconfig.json');
-    return uris.map(uri => this.factory.createTsConfig(uri, this.scriptRoot));
+    const uris = await this.ctx.fs.findFiles(this.uri(), "**/tsconfig.json");
+    return uris.map((uri) => this.factory.createTsConfig(uri, this.scriptRoot));
   }
 
   public equals(other: ScriptFolder): boolean {
@@ -69,7 +68,7 @@ export class ScriptFolder extends ScriptNode {
    */
   public async flatten(): Promise<ScriptNode[]> {
     const rawUris = await this.flattenRaw();
-    const mappedUris = rawUris.map(uri => this.factory.createNode(uri, this.scriptRoot));
+    const mappedUris = rawUris.map((uri) => this.factory.createNode(uri, this.scriptRoot));
     return mappedUris;
   }
 
@@ -85,10 +84,10 @@ export class ScriptFolder extends ScriptNode {
     const dirUri = dir.uri();
     const items = await this.ctx.fs.readDirectory(dirUri);
 
-    result.push(dirUri.joinPath('/')); // include the directory itself
+    result.push(dirUri.joinPath("/")); // include the directory itself
     for (const [name, type] of items) {
       const fullPath = dirUri.joinPath(name);
-      if (type === 'directory') {
+      if (type === "directory") {
         const subFolder = this.factory.createFolder(fullPath, this.scriptRoot);
         result.push(...(await this.flattenDirectory(subFolder)));
       } else {
@@ -102,7 +101,7 @@ export class ScriptFolder extends ScriptNode {
     return path.basename(this.path());
   }
 
-  public currentIntegrityMatches(_ops?: { upstairsOverride?: URL; }): Promise<boolean> {
+  public currentIntegrityMatches(_ops?: { upstairsOverride?: URL }): Promise<boolean> {
     throw new Err.MethodNotImplementedError();
   }
 
@@ -121,5 +120,4 @@ export class ScriptFolder extends ScriptNode {
   getImmediateChildFolder(name: string): ScriptFolder {
     return this.factory.createFolder(this.uri().joinPath(name), this.scriptRoot);
   }
-
 }

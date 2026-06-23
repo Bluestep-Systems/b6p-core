@@ -1,5 +1,5 @@
-import * as path from 'path';
-import { pathToFileURL, fileURLToPath } from 'url';
+import * as path from "path";
+import { pathToFileURL, fileURLToPath } from "url";
 
 /**
  * Cross-platform URI abstraction that replaces `vscode.Uri` in the core layer.
@@ -10,10 +10,7 @@ import { pathToFileURL, fileURLToPath } from 'url';
  * handle Windows drive-letter normalization, backslash conversion, etc.
  */
 export class B6PUri {
-
-  private constructor(
-    private readonly _href: string
-  ) {}
+  private constructor(private readonly _href: string) {}
 
   // ── Constructors ──────────────────────────────────────────────────
 
@@ -41,12 +38,12 @@ export class B6PUri {
 
   /** The scheme portion (`file`, `https`, etc.). */
   get scheme(): string {
-    return new URL(this._href).protocol.replace(/:$/, '');
+    return new URL(this._href).protocol.replace(/:$/, "");
   }
 
   /** Whether this is a `file://` URI. */
   get isFile(): boolean {
-    return this.scheme === 'file';
+    return this.scheme === "file";
   }
 
   // ── Path operations ───────────────────────────────────────────────

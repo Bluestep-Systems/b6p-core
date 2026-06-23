@@ -1,7 +1,7 @@
-import { FileExtensions, GitHubUrls, Http } from '../constants';
-import { PrivateKeys } from '../persistence';
-import type { IPersistence, ILogger } from '../providers';
-import type { UpdateInfo, GithubRelease, ClientInfo, UpdateServiceConfig } from './types';
+import { FileExtensions, GitHubUrls, Http } from "../constants";
+import { PrivateKeys } from "../persistence";
+import type { IPersistence, ILogger } from "../providers";
+import type { UpdateInfo, GithubRelease, ClientInfo, UpdateServiceConfig } from "./types";
 
 /**
  * Core update checking service for checking GitHub releases.
@@ -20,12 +20,12 @@ export class UpdateService {
   ) {
     // Store fetch function, converting signature to match standard fetch
     this.fetchImpl = fetchFn
-      ? ((input: string | URL | Request, init?: RequestInit) => {
+      ? (input: string | URL | Request, init?: RequestInit) => {
           if (input instanceof Request) {
-            throw new Error('Request objects are not supported by UpdateService');
+            throw new Error("Request objects are not supported by UpdateService");
           }
           return fetchFn(input, init);
-        })
+        }
       : globalThis.fetch.bind(globalThis);
   }
 
@@ -60,7 +60,7 @@ export class UpdateService {
   private async getGitHubHeaders(): Promise<Record<string, string>> {
     return {
       [Http.Headers.USER_AGENT]: Http.Headers.USER_AGENT_B6P,
-      [Http.Headers.ACCEPT]: Http.Headers.GITHUB_API_ACCEPT
+      [Http.Headers.ACCEPT]: Http.Headers.GITHUB_API_ACCEPT,
     };
   }
 
@@ -74,7 +74,7 @@ export class UpdateService {
       version: this.config.currentVersion,
       lastChecked: 0,
       githubToken: null,
-      setupShown: false
+      setupShown: false,
     };
 
     const state = await this.persistence.get<ClientInfo>(PrivateKeys.GITHUB_STATE);
@@ -106,7 +106,7 @@ export class UpdateService {
     const lastCheck = state.lastChecked || 0;
     const now = Date.now();
 
-    return (now - lastCheck) >= this.UPDATE_INTERVAL;
+    return now - lastCheck >= this.UPDATE_INTERVAL;
   }
 
   /**
@@ -121,7 +121,7 @@ export class UpdateService {
       const response = await this.fetch(url, {
         method: Http.Methods.GET,
         headers: await this.getGitHubHeaders(),
-        signal: AbortSignal.timeout(10_000) // 10 second timeout
+        signal: AbortSignal.timeout(10_000), // 10 second timeout
       });
 
       if (response.status === 404) {
@@ -133,7 +133,7 @@ export class UpdateService {
         throw new Error(`GitHub API error: ${response.status}`);
       }
 
-      const release = await response.json() as GithubRelease;
+      const release = (await response.json()) as GithubRelease;
 
       // Filter out drafts and pre-releases by default
       if (release.draft || release.prerelease) {
@@ -143,8 +143,8 @@ export class UpdateService {
       return release;
     } catch (error) {
       if (error instanceof Error) {
-        if (error.name === 'AbortError') {
-          throw new Error('Update check timeout');
+        if (error.name === "AbortError") {
+          throw new Error("Update check timeout");
         }
         throw new Error(`GitHub API fetch error: ${error.message}`);
       }
@@ -171,9 +171,9 @@ export class UpdateService {
         throw new Error(`GitHub API error: ${response.status}`);
       }
 
-      const releases = await response.json() as GithubRelease[];
+      const releases = (await response.json()) as GithubRelease[];
 
-      const filteredReleases = releases.filter(release => {
+      const filteredReleases = releases.filter((release) => {
         if (release.draft) {
           return false;
         }
@@ -186,8 +186,8 @@ export class UpdateService {
       return filteredReleases;
     } catch (error) {
       if (error instanceof Error) {
-        if (error.name === 'AbortError') {
-          throw new Error('Update check timeout');
+        if (error.name === "AbortError") {
+          throw new Error("Update check timeout");
         }
         throw new Error(`GitHub API fetch error: ${error.message}`);
       }
@@ -204,7 +204,7 @@ export class UpdateService {
    */
   isNewerVersion(newVersion: string, currentVersion: string): boolean {
     const parseVersion = (version: string) => {
-      return version.split('.').map(num => parseInt(num, 10));
+      return version.split(".").map((num) => parseInt(num, 10));
     };
 
     const newParts = parseVersion(newVersion);
@@ -238,7 +238,7 @@ export class UpdateService {
    */
   getDownloadUrl(release: GithubRelease): string {
     // Look for .vsix file in assets
-    const vsixAsset = release.assets.find(asset => asset.name.endsWith(FileExtensions.VSIX));
+    const vsixAsset = release.assets.find((asset) => asset.name.endsWith(FileExtensions.VSIX));
     if (vsixAsset) {
       return vsixAsset.browser_download_url;
     }
@@ -257,7 +257,7 @@ export class UpdateService {
   async checkForUpdates(): Promise<UpdateInfo | null> {
     try {
       if (!this.config.enabled) {
-        this.logger.info('Update checking is disabled');
+        this.logger.info("Update checking is disabled");
         return null;
       }
 
@@ -265,18 +265,18 @@ export class UpdateService {
       const latestRelease = await this.getLatestRelease();
 
       if (!latestRelease) {
-        this.logger.info('No releases found on GitHub');
+        this.logger.info("No releases found on GitHub");
         return null;
       }
 
-      const latestVersion = latestRelease.tag_name.replace(/^v/, ''); // Remove 'v' prefix if present
+      const latestVersion = latestRelease.tag_name.replace(/^v/, ""); // Remove 'v' prefix if present
 
       if (this.isNewerVersion(latestVersion, currentVersion)) {
         const updateInfo: UpdateInfo = {
           version: latestVersion,
           downloadUrl: this.getDownloadUrl(latestRelease),
           releaseNotes: latestRelease.body,
-          publishedAt: latestRelease.published_at
+          publishedAt: latestRelease.published_at,
         };
 
         this.logger.info(`Update available: v${currentVersion} -> v${latestVersion}`);
@@ -307,7 +307,7 @@ export class UpdateService {
    */
   async checkForUpdatesIfNeeded(): Promise<UpdateInfo | null> {
     if (!(await this.shouldCheckForUpdates())) {
-      this.logger.info('Skipping update check - not enough time has passed since last check');
+      this.logger.info("Skipping update check - not enough time has passed since last check");
       return null;
     }
 
@@ -329,7 +329,7 @@ export class UpdateService {
         headers: {
           [Http.Headers.USER_AGENT]: Http.Headers.USER_AGENT_B6P,
         },
-        signal: AbortSignal.timeout(30_000) // 30 second timeout
+        signal: AbortSignal.timeout(30_000), // 30 second timeout
       });
 
       if (!response.ok) {
@@ -340,12 +340,12 @@ export class UpdateService {
       return new Uint8Array(arrayBuffer);
     } catch (error) {
       if (error instanceof Error) {
-        if (error.name === 'AbortError') {
-          throw new Error('Download timeout');
+        if (error.name === "AbortError") {
+          throw new Error("Download timeout");
         }
         throw new Error(`Download error: ${error.message}`);
       }
-      throw new Error('Download failed with unknown error');
+      throw new Error("Download failed with unknown error");
     }
   }
 
@@ -390,7 +390,7 @@ export class UpdateService {
     return {
       currentVersion,
       storedVersion,
-      hasChanged
+      hasChanged,
     };
   }
 }

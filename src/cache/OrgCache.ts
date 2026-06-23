@@ -1,4 +1,4 @@
-import { BlueHqAnyUrlResp, OrgCacheElement } from '../types';
+import { BlueHqAnyUrlResp, OrgCacheElement } from "../types";
 import { BlueHQ, Http, Numerical } from "../constants";
 import { OrgWorker } from "../data/OrgWorker";
 import { HttpClient } from "../network/HttpClient";
@@ -44,7 +44,7 @@ export class OrgCache implements OrgCacheDisposable {
     private readonly logger: ILogger,
     private readonly settings: IOrgCacheSettings,
     private readonly isDebugMode: () => boolean,
-    private readonly prompt?: IPrompt,
+    private readonly prompt?: IPrompt
   ) {
     this.orgCacheMap = new PublicPersistanceMap(PublicKeys.U_CACHE, persistence);
     this.cleanupOldEntries();
@@ -66,7 +66,7 @@ export class OrgCache implements OrgCacheDisposable {
     const now = Date.now();
     const cutoff = now - Numerical.millisecondsInXDays(3);
     for (const [u, elementArray] of this.orgCacheMap) {
-      const filteredArray = elementArray.filter(element => element.lastAccess >= cutoff);
+      const filteredArray = elementArray.filter((element) => element.lastAccess >= cutoff);
       if (filteredArray.length === 0) {
         this.orgCacheMap.delete(u);
       } else if (filteredArray.length < elementArray.length) {
@@ -86,13 +86,14 @@ export class OrgCache implements OrgCacheDisposable {
       for (const element of elementArray) {
         if (uniqueHosts.has(element.host)) {
           if (throwIfDuplicateExists) {
-            this.isDebugMode() && console.error(`OrgCache contains duplicate host ${element.host}`, this.orgCacheMap.toJSON());
+            this.isDebugMode() &&
+              console.error(`OrgCache contains duplicate host ${element.host}`, this.orgCacheMap.toJSON());
             this.prompt?.error(`OrgCache is invalid!`);
             throw new Err.AlreadyAlertedError(`OrgCache contains duplicate host ${element.host}`);
           } else {
             this.orgCacheMap.delete(u);
             let foundU: string | null = null;
-            while (foundU = this.findUCacheOnly(new URL(Http.Schemes.HTTPS + element.host))) {
+            while ((foundU = this.findUCacheOnly(new URL(Http.Schemes.HTTPS + element.host)))) {
               this.logger.info(`OrgCache contained duplicate host ${element.host}. Cleared U ${foundU}`);
               this.orgCacheMap.delete(foundU);
             }
@@ -122,13 +123,14 @@ export class OrgCache implements OrgCacheDisposable {
     const removalSet = new Set<string>();
     for (const element of elementArr) {
       const orgWorker = OrgWorker.fromHost(element.host, HttpClient.getInstance().fetch.bind(HttpClient.getInstance()));
-      if (!await orgWorker.verifyU(u)) {
-        this.isDebugMode() && console.error(`OrgCache entry for U ${u} with host ${element.host} is invalid`, this.orgCacheMap.toJSON());
+      if (!(await orgWorker.verifyU(u))) {
+        this.isDebugMode() &&
+          console.error(`OrgCache entry for U ${u} with host ${element.host} is invalid`, this.orgCacheMap.toJSON());
         removalSet.add(element.host);
       }
     }
     if (removalSet.size > 0) {
-      const newElementArr = elementArr.filter(element => !removalSet.has(element.host));
+      const newElementArr = elementArr.filter((element) => !removalSet.has(element.host));
       if (newElementArr.length === 0) {
         this.orgCacheMap.delete(u);
       } else {
@@ -162,9 +164,11 @@ export class OrgCache implements OrgCacheDisposable {
     // finally we call the BlueHQ helper endpoint to do a hard-lookup
     const resp = await HttpClient.getInstance().fetch(BlueHQ.getAnyDomainUrl(u));
     if (!resp.ok) {
-      throw new Err.BlueHqHelperEndpointError("Failed to fetch any domain from BlueHQ: " + resp.status + " " + resp.statusText);
+      throw new Err.BlueHqHelperEndpointError(
+        "Failed to fetch any domain from BlueHQ: " + resp.status + " " + resp.statusText
+      );
     }
-    const json = await resp.json() as BlueHqAnyUrlResp;
+    const json = (await resp.json()) as BlueHqAnyUrlResp;
     const retUrl = new URL(json.orgUrl);
     this.orgCacheMap.set(u, [{ host: retUrl.host, lastAccess: Date.now() }]);
     this.onChanged?.();
@@ -178,7 +182,7 @@ export class OrgCache implements OrgCacheDisposable {
     if (this.orgCacheMap.has(u)) {
       const elementArray = this.orgCacheMap.get(u);
       if (elementArray) {
-        const existingElement = elementArray.find(element => element.host === host);
+        const existingElement = elementArray.find((element) => element.host === host);
         if (!existingElement) {
           elementArray.push({ host, lastAccess: Date.now() });
           await this.orgCacheMap.set(u, elementArray);

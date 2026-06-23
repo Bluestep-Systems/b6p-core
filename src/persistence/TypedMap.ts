@@ -8,7 +8,6 @@ import { Err } from "../Err";
  * @lastreviewed 2025-10-01
  */
 export class TypedMap<T extends Record<string, Serializable>> extends PseudoMap<keyof T & string, T[keyof T]> {
-
   constructor(initialData?: T) {
     super();
     if (initialData) {
@@ -38,7 +37,7 @@ export class TypedMap<T extends Record<string, Serializable>> extends PseudoMap<
   public override get<K extends keyof T & string>(key: K): T[K] | undefined;
   public override get<K extends keyof T & string>(key: K, defaultValue?: T[K]): T[K] | undefined {
     const value = this.obj[key];
-    return value !== undefined ? value as T[K] : defaultValue;
+    return value !== undefined ? (value as T[K]) : defaultValue;
   }
 
   /**
@@ -90,7 +89,7 @@ export class TypedMap<T extends Record<string, Serializable>> extends PseudoMap<
    * @lastreviewed 2025-10-01
    */
   public override values(): T[keyof T][] {
-    return Object.values(this.obj).filter(v => v !== undefined) as T[keyof T][];
+    return Object.values(this.obj).filter((v) => v !== undefined) as T[keyof T][];
   }
 
   /**
@@ -98,7 +97,7 @@ export class TypedMap<T extends Record<string, Serializable>> extends PseudoMap<
    * @lastreviewed 2025-10-01
    */
   public override entries(): [keyof T & string, T[keyof T]][] {
-    return this.keys().map(key => [key, this.obj[key]!]);
+    return this.keys().map((key) => [key, this.obj[key]!]);
   }
 
   /**
@@ -115,6 +114,6 @@ export class TypedMap<T extends Record<string, Serializable>> extends PseudoMap<
    * @lastreviewed 2025-10-01
    */
   public override clear(): void {
-    Object.keys(this.obj).forEach(key => delete this.obj[key]);
+    Object.keys(this.obj).forEach((key) => delete this.obj[key]);
   }
 }

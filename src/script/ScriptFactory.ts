@@ -1,4 +1,4 @@
-import * as path from 'path';
+import * as path from "path";
 import { B6PUri } from "../B6PUri";
 import type { ScriptContext } from "./ScriptContext";
 import { ScriptFile } from "./ScriptFile";
@@ -6,7 +6,6 @@ import { ScriptFolder } from "./ScriptFolder";
 import type { ScriptNode } from "./ScriptNode";
 import { ScriptRoot } from "./ScriptRoot";
 import { TsConfig } from "./TsConfig";
-
 
 /**
  * Module-scoped default context. Set via {@link ScriptFactory.setDefaultContext}.
@@ -71,11 +70,11 @@ export class ScriptFactory {
     const fsPath = uri.fsPath;
     const sr = scriptRoot ?? this.createScriptRoot(uri);
 
-    if (fsPath.endsWith(path.sep) || fsPath.endsWith('/')) {
+    if (fsPath.endsWith(path.sep) || fsPath.endsWith("/")) {
       return new ScriptFolder(uri, sr);
     }
     const basename = path.basename(fsPath);
-    if (basename.includes('.')) {
+    if (basename.includes(".")) {
       return new ScriptFile(uri, sr);
     }
     return new ScriptFile(uri, sr);

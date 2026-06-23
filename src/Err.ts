@@ -4,7 +4,6 @@
  * @lastreviewed 2025-10-01
  */
 export namespace Err {
-
   // Base Infrastructure Errors
 
   /**
@@ -259,7 +258,10 @@ export namespace Err {
    * Error thrown when URL parsing fails.
    */
   export class UrlParsingError extends DataParsingError {
-    constructor(message: string, public readonly input?: string) {
+    constructor(
+      message: string,
+      public readonly input?: string
+    ) {
       super(message);
       this.name = "UrlParsingError";
     }
@@ -422,7 +424,7 @@ export namespace Err {
    */
   export class ConfigFileError extends ScriptOperationError {
     constructor(fileName: string, foundCount: number) {
-      super(`Could not find ${fileName} file, found: ${foundCount === 0 ? 'none' : foundCount}`);
+      super(`Could not find ${fileName} file, found: ${foundCount === 0 ? "none" : foundCount}`);
       this.name = "ConfigFileError";
     }
   }
@@ -458,8 +460,8 @@ export namespace Err {
   }
 
   /**
- * Error thrown when trying to operate on snapshot files.
- */
+   * Error thrown when trying to operate on snapshot files.
+   */
   export class SnapshotOperationError extends ScriptOperationError {
     constructor(operation: string) {
       super(`Cannot ${operation} a file that is already in a build folder`);
@@ -738,7 +740,7 @@ export namespace Err {
       this.name = "NoExtractedValueError";
     }
   }
-  
+
   /**
    * Error thrown when an operation is attempted in an invalid state.
    */

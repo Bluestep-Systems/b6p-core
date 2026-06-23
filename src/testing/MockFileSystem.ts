@@ -1,6 +1,6 @@
-import * as path from 'path';
-import { B6PUri } from '../B6PUri';
-import type { FileStat, IFileSystem } from '../providers';
+import * as path from "path";
+import { B6PUri } from "../B6PUri";
+import type { FileStat, IFileSystem } from "../providers";
 
 /**
  * In-memory mock implementation of {@link IFileSystem} for core-level testing.
@@ -13,10 +13,10 @@ export class MockFileSystem implements IFileSystem {
   // ── Test helpers ──────────────────────────────────────────────────
 
   setMockFile(uri: B6PUri, content: string | Uint8Array): void {
-    const buffer = typeof content === 'string' ? Buffer.from(content) : content;
+    const buffer = typeof content === "string" ? Buffer.from(content) : content;
     this.files.set(uri.toString(), buffer);
     this.stats.set(uri.toString(), {
-      type: 'file',
+      type: "file",
       mtime: Date.now(),
       size: buffer.length,
     });
@@ -28,7 +28,7 @@ export class MockFileSystem implements IFileSystem {
 
   setMockDirectory(uri: B6PUri): void {
     this.stats.set(uri.toString(), {
-      type: 'directory',
+      type: "directory",
       mtime: Date.now(),
       size: 0,
     });
@@ -85,7 +85,7 @@ export class MockFileSystem implements IFileSystem {
     if (existing && !(existing instanceof Error)) {
       this.stats.set(uri.toString(), { ...existing, mtime: Date.now(), size: content.length });
     } else {
-      this.stats.set(uri.toString(), { type: 'file', mtime: Date.now(), size: content.length });
+      this.stats.set(uri.toString(), { type: "file", mtime: Date.now(), size: content.length });
     }
   }
 
@@ -100,24 +100,24 @@ export class MockFileSystem implements IFileSystem {
     return stat;
   }
 
-  async readDirectory(uri: B6PUri): Promise<[string, 'file' | 'directory'][]> {
+  async readDirectory(uri: B6PUri): Promise<[string, "file" | "directory"][]> {
     const dirStat = this.stats.get(uri.toString());
-    if (!dirStat || dirStat instanceof Error || dirStat.type !== 'directory') {
+    if (!dirStat || dirStat instanceof Error || dirStat.type !== "directory") {
       throw new Error(`ENOTDIR: not a directory: ${uri.toString()}`);
     }
 
-    const entries: [string, 'file' | 'directory'][] = [];
+    const entries: [string, "file" | "directory"][] = [];
     const seen = new Set<string>();
     const dirPath = uri.toString();
 
     for (const [key] of this.files) {
       if (key.startsWith(dirPath) && key !== dirPath) {
-        const relative = key.slice(dirPath.length).replace(/^\//, '');
-        const topLevel = relative.split('/')[0];
+        const relative = key.slice(dirPath.length).replace(/^\//, "");
+        const topLevel = relative.split("/")[0];
         if (topLevel && !seen.has(topLevel)) {
           seen.add(topLevel);
-          const childStat = this.stats.get(dirPath + (dirPath.endsWith('/') ? '' : '/') + topLevel);
-          entries.push([topLevel, childStat && !(childStat instanceof Error) ? childStat.type : 'file']);
+          const childStat = this.stats.get(dirPath + (dirPath.endsWith("/") ? "" : "/") + topLevel);
+          entries.push([topLevel, childStat && !(childStat instanceof Error) ? childStat.type : "file"]);
         }
       }
     }
@@ -125,8 +125,8 @@ export class MockFileSystem implements IFileSystem {
     // Also check stats-only entries (directories without files)
     for (const [key, stat] of this.stats) {
       if (key.startsWith(dirPath) && key !== dirPath && !(stat instanceof Error)) {
-        const relative = key.slice(dirPath.length).replace(/^\//, '');
-        const topLevel = relative.split('/')[0];
+        const relative = key.slice(dirPath.length).replace(/^\//, "");
+        const topLevel = relative.split("/")[0];
         if (topLevel && !seen.has(topLevel)) {
           seen.add(topLevel);
           entries.push([topLevel, stat.type]);
@@ -148,13 +148,13 @@ export class MockFileSystem implements IFileSystem {
 
     if (options?.recursive) {
       for (const fileKey of [...this.files.keys()]) {
-        if (fileKey.startsWith(key + '/')) {
+        if (fileKey.startsWith(key + "/")) {
           this.files.delete(fileKey);
           this.stats.delete(fileKey);
         }
       }
       for (const statKey of [...this.stats.keys()]) {
-        if (statKey.startsWith(key + '/')) {
+        if (statKey.startsWith(key + "/")) {
           this.stats.delete(statKey);
         }
       }
@@ -204,10 +204,10 @@ export class MockFileSystem implements IFileSystem {
   async findFiles(base: B6PUri, include: string, _exclude?: string): Promise<B6PUri[]> {
     const results: B6PUri[] = [];
     const basePath = base.toString();
-    const targetFile = include.replace(/^\*\*\//, '');
+    const targetFile = include.replace(/^\*\*\//, "");
 
     for (const [uriStr] of this.files) {
-      if (uriStr.startsWith(basePath) && (uriStr.endsWith('/' + targetFile) || uriStr.endsWith(targetFile))) {
+      if (uriStr.startsWith(basePath) && (uriStr.endsWith("/" + targetFile) || uriStr.endsWith(targetFile))) {
         results.push(B6PUri.fromUrl(uriStr));
       }
     }
@@ -239,7 +239,7 @@ export class MockFileSystem implements IFileSystem {
   }
 
   isWritableFileSystem(scheme: string): boolean | undefined {
-    if (scheme === 'file') {
+    if (scheme === "file") {
       return true;
     }
     return undefined;

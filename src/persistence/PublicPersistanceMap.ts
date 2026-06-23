@@ -18,7 +18,7 @@ export class PublicPersistanceMap<T extends Serializable> extends PersistablePse
    */
   constructor(key: PublicKeys, persistence: IPersistence) {
     super(key, persistence);
-    this.persistence.get<Record<string, T>>(this.key).then(data => {
+    this.persistence.get<Record<string, T>>(this.key).then((data) => {
       this.obj = revive(data || {});
       this.initialized = true;
     });

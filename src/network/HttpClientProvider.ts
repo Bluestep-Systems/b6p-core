@@ -91,8 +91,8 @@ export class MockHttpClient implements HttpClientProvider {
       status,
       headers: {
         [Http.Headers.CONTENT_TYPE]: MimeTypes.APPLICATION_JSON,
-        ...headers
-      }
+        ...headers,
+      },
     });
     this.setMockResponse(url, response);
   }
@@ -119,8 +119,8 @@ export class MockHttpClient implements HttpClientProvider {
       status,
       headers: {
         [Http.Headers.CONTENT_TYPE]: MimeTypes.TEXT_PLAIN,
-        ...headers
-      }
+        ...headers,
+      },
     });
     this.setMockResponse(url, response);
   }
@@ -219,7 +219,7 @@ export class MockHttpClient implements HttpClientProvider {
    */
   wasRequested(url: string): boolean {
     const normalized = this.normalizeUrl(url);
-    return this.requestLog.some(req => this.normalizeUrl(req.url) === normalized);
+    return this.requestLog.some((req) => this.normalizeUrl(req.url) === normalized);
   }
 
   /**
@@ -238,7 +238,7 @@ export class MockHttpClient implements HttpClientProvider {
    */
   getRequestCount(url: string): number {
     const normalized = this.normalizeUrl(url);
-    return this.requestLog.filter(req => this.normalizeUrl(req.url) === normalized).length;
+    return this.requestLog.filter((req) => this.normalizeUrl(req.url) === normalized).length;
   }
 
   /**
@@ -267,9 +267,7 @@ export class MockHttpClient implements HttpClientProvider {
   private normalizeUrl(url: string | URL): string {
     const urlString = url instanceof URL ? url.href : url.toString();
     // Remove trailing slash for consistency
-    return urlString.endsWith('/') && urlString.length > 1
-      ? urlString.slice(0, -1)
-      : urlString;
+    return urlString.endsWith("/") && urlString.length > 1 ? urlString.slice(0, -1) : urlString;
   }
 
   async fetch(url: string | URL, options?: RequestInit): Promise<Response> {

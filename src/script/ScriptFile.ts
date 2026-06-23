@@ -1,19 +1,19 @@
-import * as path from 'path';
-import { CryptoAlgorithms, FileExtensions, FolderNames, Http, MimeTypes } from '../constants';
+import * as path from "path";
+import { CryptoAlgorithms, FileExtensions, FolderNames, Http, MimeTypes } from "../constants";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
 import { Err } from "../Err";
 import { ResponseCodes } from "../network/StatusCodes";
 import { ScriptNode } from "./ScriptNode";
-import { TsConfig } from './TsConfig';
-import { B6PUri } from '../B6PUri';
+import { TsConfig } from "./TsConfig";
+import { B6PUri } from "../B6PUri";
 
 /**
  * Represents a script file within the system. This is very similar to the webapps "RemoteObject" concept
  * where this object is only a shell around the concept of the file, but does not actually contain the file data itself.
  */
 export class ScriptFile extends ScriptNode {
-
-  private static ComplexEtagPattern = /^"?\d{10,13}-\{.*?"class":\s*"myassn\.document\.(Proxy|LibraryServlet)MemoryDocumentKey".*?"classId":\s*\d+.*?\}"?$/;
+  private static ComplexEtagPattern =
+    /^"?\d{10,13}-\{.*?"class":\s*"myassn\.document\.(Proxy|LibraryServlet)MemoryDocumentKey".*?"classId":\s*\d+.*?\}"?$/;
   private static NumericEtagPattern = /^"?\d{10,13}-[\d_]+"?$/;
   private static EtagPattern = /^"[a-f0-9]{128}"$/;
   private static WeakEtagPattern = /^W\/"[a-f0-9]{128}"$/;
@@ -35,12 +35,15 @@ export class ScriptFile extends ScriptNode {
     if (hexArray.length !== 64) {
       throw new Err.HashCalculationError();
     }
-    return hexArray.map(b => b.toString(16).padStart(2, '0')).join('').toLowerCase();
+    return hexArray
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+      .toLowerCase();
   }
 
-  public async getUpstairsHash(ops?: { required?: boolean, upstairsOverride?: URL; }): Promise<string | null> {
-    const response = await this.ctx.sessionManager.fetch(ops?.upstairsOverride || await this.upstairsUrl(), {
-      method: Http.Methods.HEAD
+  public async getUpstairsHash(ops?: { required?: boolean; upstairsOverride?: URL }): Promise<string | null> {
+    const response = await this.ctx.sessionManager.fetch(ops?.upstairsOverride || (await this.upstairsUrl()), {
+      method: Http.Methods.HEAD,
     });
     const etagHeader = response.headers.get(Http.Headers.ETAG);
 
@@ -70,26 +73,50 @@ export class ScriptFile extends ScriptNode {
     if (!md) {
       return null;
     }
-    const record = md.pushPullRecords.find(record => record.downstairsPath === this.uri().fsPath);
+    const record = md.pushPullRecords.find((record) => record.downstairsPath === this.uri().fsPath);
     return record ? record.lastVerifiedHash : null;
   }
 
-  public async currentIntegrityMatches(ops?: { upstairsOverride?: URL; }): Promise<boolean> {
+  public async currentIntegrityMatches(ops?: { upstairsOverride?: URL }): Promise<boolean> {
     const localHash = await this.getHash();
     const upstairsHash = await this.getUpstairsHash(ops);
     const matches = localHash === upstairsHash;
-    this.ctx.logger.debug("filename:", this.name(), "\n", "matches:", matches, "\n", "local:", localHash, "\n", "upstairs:", upstairsHash);
+    this.ctx.logger.debug(
+      "filename:",
+      this.name(),
+      "\n",
+      "matches:",
+      matches,
+      "\n",
+      "local:",
+      localHash,
+      "\n",
+      "upstairs:",
+      upstairsHash
+    );
     return matches;
   }
 
-  public async oldIntegrityMatches(ops?: { upstairsOverride?: URL; }): Promise<boolean> {
+  public async oldIntegrityMatches(ops?: { upstairsOverride?: URL }): Promise<boolean> {
     const lastHash = await this.getLastVerifiedHash();
     if (!lastHash) {
       return false;
     }
     const upstairsHash = await this.getUpstairsHash(ops);
     const matches = lastHash === upstairsHash;
-    this.ctx.logger.debug("filename:", this.name(), "\n", "matches:", matches, "\n", "local:", lastHash, "\n", "upstairs:", upstairsHash);
+    this.ctx.logger.debug(
+      "filename:",
+      this.name(),
+      "\n",
+      "matches:",
+      matches,
+      "\n",
+      "local:",
+      lastHash,
+      "\n",
+      "upstairs:",
+      upstairsHash
+    );
     return matches;
   }
 
@@ -118,11 +145,13 @@ export class ScriptFile extends ScriptNode {
       method: Http.Methods.GET,
       headers: {
         [Http.Headers.ACCEPT]: Http.Headers.ACCEPT_ALL,
-      }
+      },
     });
     if (response.status >= ResponseCodes.BAD_REQUEST) {
       this.ctx.logger.error(`Error fetching file ${lookupUri.toString()}: ${response.status} ${response.statusText}`);
-      throw new Err.HttpResponseError(`Error fetching file ${lookupUri.toString()}: ${response.status} ${response.statusText}`);
+      throw new Err.HttpResponseError(
+        `Error fetching file ${lookupUri.toString()}: ${response.status} ${response.statusText}`
+      );
     }
     const buffer = await response.arrayBuffer();
     await this.writeContent(buffer);
@@ -146,7 +175,7 @@ export class ScriptFile extends ScriptNode {
     } else if (ScriptFile.ComplexEtagPattern.test(etagHeader || "")) {
       this.ctx.logger.debug("complex etagHeader:", etagHeader);
     } else {
-      throw new Err.EtagParsingError(etagHeader || 'null');
+      throw new Err.EtagParsingError(etagHeader || "null");
     }
 
     await this.touch();
@@ -155,7 +184,7 @@ export class ScriptFile extends ScriptNode {
 
   private async deleteFromMetadata() {
     await this.getScriptRoot().modifyMetaData((md) => {
-      const index = md.pushPullRecords.findIndex(record => record.downstairsPath === this.uri().fsPath);
+      const index = md.pushPullRecords.findIndex((record) => record.downstairsPath === this.uri().fsPath);
       if (index !== -1) {
         md.pushPullRecords.splice(index, 1);
       }
@@ -188,14 +217,14 @@ export class ScriptFile extends ScriptNode {
     return newUrl;
   }
 
-  public async getReasonToNotPush(ops?: { upstairsOverride?: URL; }): Promise<string | null> {
+  public async getReasonToNotPush(ops?: { upstairsOverride?: URL }): Promise<string | null> {
     if (this._reasonToNotPush !== undefined) {
       return this._reasonToNotPush;
     }
     return await this.setReasonToNotPush(ops);
   }
 
-  private async setReasonToNotPush(ops?: { upstairsOverride?: URL; }): Promise<string | null> {
+  private async setReasonToNotPush(ops?: { upstairsOverride?: URL }): Promise<string | null> {
     if (this.parser.type === "root") {
       this._reasonToNotPush = "Node is the root folder";
     } else if (this.isInDeclarations()) {
@@ -204,7 +233,7 @@ export class ScriptFile extends ScriptNode {
       this._reasonToNotPush = "Node is in .git folder";
     } else if (await this.isInGitIgnore()) {
       this._reasonToNotPush = "Node is ignored by .gitignore";
-    } else if ((await this.isFile()) && await this.currentIntegrityMatches(ops)) {
+    } else if ((await this.isFile()) && (await this.currentIntegrityMatches(ops))) {
       this._reasonToNotPush = "File integrity matches";
     } else if (!this._reasonToNotPush) {
       this._reasonToNotPush = null;
@@ -234,7 +263,7 @@ export class ScriptFile extends ScriptNode {
     return !this.isTypescript();
   }
 
-  async upload(arg?: { upstairsUrlOverrideString?: string, isSnapshot?: boolean; }): Promise<Response | void> {
+  async upload(arg?: { upstairsUrlOverrideString?: string; isSnapshot?: boolean }): Promise<Response | void> {
     if (await this.isFolder()) {
       throw new Err.ScriptOperationError("somehow a folder got created to upload with this method. ");
     }
@@ -244,15 +273,17 @@ export class ScriptFile extends ScriptNode {
     const thisUpstairs = await this.upstairsUrl();
     upstairsOverride.pathname = thisUpstairs.pathname;
     if (!this.isInSnapshot() && !(await this.isInItsRespectiveBuildFolder()) && !(await this.oldIntegrityMatches())) {
-      const OVERWRITE = 'Overwrite';
-      const CANCEL = 'Cancel';
+      const OVERWRITE = "Overwrite";
+      const CANCEL = "Cancel";
       const overwrite = await this.ctx.prompt.confirm(
         `The upstairs file (${upstairsOverride}) has changed since the last time you pushed or pulled. Do you wish to overwrite it?`,
         [OVERWRITE, CANCEL]
       );
       if (overwrite !== OVERWRITE) {
         await this.ctx.prompt.popup((arg?.isSnapshot ? "Snapshot" : "Push") + " cancelled by user.");
-        throw new Err.UserCancelledError(`User ${overwrite ? overwrite + "ed" : "cancelled"} push due to upstairs file change`);
+        throw new Err.UserCancelledError(
+          `User ${overwrite ? overwrite + "ed" : "cancelled"} push due to upstairs file change`
+        );
       }
     }
     const reason = await this.getReasonToNotPush({ upstairsOverride });
@@ -269,7 +300,7 @@ export class ScriptFile extends ScriptNode {
       headers: {
         [Http.Headers.CONTENT_TYPE]: MimeTypes.APPLICATION_JSON,
       },
-      body: fileContents
+      body: fileContents,
     };
     let resp = await this.ctx.sessionManager.fetch(upstairsOverride, requestOptions);
     if (!resp.ok) {
@@ -278,10 +309,15 @@ export class ScriptFile extends ScriptNode {
     }
     if (arg?.isSnapshot) {
       if (this.parser.type !== FolderNames.DRAFT) {
-        throw new Err.ScriptOperationError("This should never happen, this is here as a safetycheck and should be removed when we're confident.");
+        throw new Err.ScriptOperationError(
+          "This should never happen, this is here as a safetycheck and should be removed when we're confident."
+        );
       }
       const snapshotOverride = new URL(upstairsOverride);
-      snapshotOverride.pathname = snapshotOverride.pathname.replace(new RegExp(FolderNames.DRAFT), FolderNames.SNAPSHOT);
+      snapshotOverride.pathname = snapshotOverride.pathname.replace(
+        new RegExp(FolderNames.DRAFT),
+        FolderNames.SNAPSHOT
+      );
 
       resp = await this.ctx.sessionManager.fetch(snapshotOverride, requestOptions);
     }
@@ -315,9 +351,9 @@ export class ScriptFile extends ScriptNode {
     const downstairsUri = this.uri();
     try {
       const fileData = await this.ctx.fs.readFile(B6PUri.fromFsPath(downstairsUri.fsPath));
-      return Buffer.from(fileData).toString('utf8');
+      return Buffer.from(fileData).toString("utf8");
     } catch (e) {
-      if (e instanceof Error || typeof e === 'string') {
+      if (e instanceof Error || typeof e === "string") {
         this.ctx.logger.error(e);
       } else {
         this.ctx.logger.error(`Error reading downstairs file: ${e}`);
@@ -329,15 +365,15 @@ export class ScriptFile extends ScriptNode {
   async touch(): Promise<void> {
     await this.requireExists();
     const lastHash = await this.getHash();
-    const metaData = await this.getScriptRoot().modifyMetaData(md => {
+    const metaData = await this.getScriptRoot().modifyMetaData((md) => {
       const downstairsPath = this.uri().fsPath;
-      const existingEntryIndex = md.pushPullRecords.findIndex(entry => entry.downstairsPath === downstairsPath);
+      const existingEntryIndex = md.pushPullRecords.findIndex((entry) => entry.downstairsPath === downstairsPath);
       if (existingEntryIndex !== -1) {
         md.pushPullRecords[existingEntryIndex].lastVerifiedHash = lastHash;
       } else {
         md.pushPullRecords.push({
           downstairsPath,
-          lastVerifiedHash: lastHash
+          lastVerifiedHash: lastHash,
         });
       }
     });
@@ -345,7 +381,7 @@ export class ScriptFile extends ScriptNode {
   }
 
   private async requireExists(): Promise<void> {
-    if (!await this.exists()) {
+    if (!(await this.exists())) {
       throw new Err.FileNotFoundError(this.uri().fsPath);
     }
   }

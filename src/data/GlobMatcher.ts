@@ -1,4 +1,4 @@
-import * as path from 'path';
+import * as path from "path";
 
 /**
  * Glob matcher that operates on plain filesystem paths.
@@ -6,13 +6,12 @@ import * as path from 'path';
  * Supports common glob patterns: `*`, `**`, `?`, `{a,b}`, `[abc]`.
  */
 export class GlobMatcher {
-
   public readonly basePath: string;
   private readonly regexes: RegExp[];
 
   constructor(basePath: string, patterns: string[]) {
     this.basePath = basePath;
-    this.regexes = patterns.map(p => GlobMatcher.globToRegex(p));
+    this.regexes = patterns.map((p) => GlobMatcher.globToRegex(p));
   }
 
   /**
@@ -22,8 +21,8 @@ export class GlobMatcher {
   public matches(absolutePath: string): boolean {
     const relative = path.relative(this.basePath, absolutePath);
     // Normalize to forward slashes for consistent matching
-    const normalized = relative.split(path.sep).join('/');
-    return this.regexes.some(re => re.test(normalized));
+    const normalized = relative.split(path.sep).join("/");
+    return this.regexes.some((re) => re.test(normalized));
   }
 
   /**
@@ -33,51 +32,54 @@ export class GlobMatcher {
    * `{a,b}` (alternation), `[abc]` (character class).
    */
   private static globToRegex(pattern: string): RegExp {
-    let result = '';
+    let result = "";
     let i = 0;
 
     while (i < pattern.length) {
       const ch = pattern[i];
 
-      if (ch === '*') {
-        if (pattern[i + 1] === '*') {
+      if (ch === "*") {
+        if (pattern[i + 1] === "*") {
           // ** matches any number of path segments
-          if (pattern[i + 2] === '/') {
-            result += '(?:.+/)?';
+          if (pattern[i + 2] === "/") {
+            result += "(?:.+/)?";
             i += 3;
           } else {
-            result += '.*';
+            result += ".*";
             i += 2;
           }
         } else {
           // * matches anything except /
-          result += '[^/]*';
+          result += "[^/]*";
           i++;
         }
-      } else if (ch === '?') {
-        result += '[^/]';
+      } else if (ch === "?") {
+        result += "[^/]";
         i++;
-      } else if (ch === '{') {
-        const close = pattern.indexOf('}', i);
+      } else if (ch === "{") {
+        const close = pattern.indexOf("}", i);
         if (close !== -1) {
-          const alternatives = pattern.slice(i + 1, close).split(',').map(GlobMatcher.escapeRegex);
-          result += `(?:${alternatives.join('|')})`;
+          const alternatives = pattern
+            .slice(i + 1, close)
+            .split(",")
+            .map(GlobMatcher.escapeRegex);
+          result += `(?:${alternatives.join("|")})`;
           i = close + 1;
         } else {
-          result += '\\{';
+          result += "\\{";
           i++;
         }
-      } else if (ch === '[') {
-        const close = pattern.indexOf(']', i);
+      } else if (ch === "[") {
+        const close = pattern.indexOf("]", i);
         if (close !== -1) {
           result += pattern.slice(i, close + 1);
           i = close + 1;
         } else {
-          result += '\\[';
+          result += "\\[";
           i++;
         }
-      } else if ('.+^$|()'.includes(ch)) {
-        result += '\\' + ch;
+      } else if (".+^$|()".includes(ch)) {
+        result += "\\" + ch;
         i++;
       } else {
         result += ch;
@@ -89,6 +91,6 @@ export class GlobMatcher {
   }
 
   private static escapeRegex(s: string): string {
-    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 }

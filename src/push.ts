@@ -1,15 +1,15 @@
-import * as path from 'path';
-import { XMLParser } from 'fast-xml-parser';
-import { FolderNames, Http, SpecialFiles } from './constants';
-import { B6PUri } from './B6PUri';
-import { GlobMatcher } from './data/GlobMatcher';
-import { ScriptUrlParser } from './data/ScriptUrlParser';
-import { ScriptFactory } from './script/ScriptFactory';
-import { SnapshotHistoryRecorder } from './script/SnapshotHistoryRecorder';
-import type { ScriptContext } from './script/ScriptContext';
-import type { IFileSystem, IProgress, ProgressTask } from './providers';
-import { Err } from './Err';
-import type { ScriptFile } from './script/ScriptFile';
+import * as path from "path";
+import { XMLParser } from "fast-xml-parser";
+import { FolderNames, Http, SpecialFiles } from "./constants";
+import { B6PUri } from "./B6PUri";
+import { GlobMatcher } from "./data/GlobMatcher";
+import { ScriptUrlParser } from "./data/ScriptUrlParser";
+import { ScriptFactory } from "./script/ScriptFactory";
+import { SnapshotHistoryRecorder } from "./script/SnapshotHistoryRecorder";
+import type { ScriptContext } from "./script/ScriptContext";
+import type { IFileSystem, IProgress, ProgressTask } from "./providers";
+import { Err } from "./Err";
+import type { ScriptFile } from "./script/ScriptFile";
 
 /**
  * Recursively collect all files under a directory.
@@ -19,7 +19,7 @@ async function flattenDirectory(dirPath: string, fs: IFileSystem): Promise<strin
   const entries = await fs.readDirectory(B6PUri.fromFsPath(dirPath));
   for (const [name, type] of entries) {
     const full = path.join(dirPath, name);
-    if (type === 'directory') {
+    if (type === "directory") {
       const nested = await flattenDirectory(full, fs);
       results.push(...nested);
     } else {
@@ -39,10 +39,13 @@ async function readGitIgnorePatterns(rootPath: string, fs: IFileSystem): Promise
   const uri = B6PUri.fromFsPath(gitignorePath);
   try {
     const raw = await fs.readFile(uri);
-    const text = Buffer.from(raw).toString('utf-8');
-    return text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0 && !l.startsWith('#'));
+    const text = Buffer.from(raw).toString("utf-8");
+    return text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith("#"));
   } catch {
-    return ['**/.DS_Store'];
+    return ["**/.DS_Store"];
   }
 }
 
@@ -81,7 +84,7 @@ export async function executePush(opts: {
 
   // One ScriptRoot for the whole push; all files in this draft tree are
   // siblings under the same root.
-  const rootUri = B6PUri.fromFsPath(path.join(rootPath, '/'));
+  const rootUri = B6PUri.fromFsPath(path.join(rootPath, "/"));
   const scriptRoot = factory.createScriptRoot(rootUri);
   scriptRoot.withParser(parser);
 
@@ -96,11 +99,11 @@ export async function executePush(opts: {
   logger.info(`Found ${allFiles.length} files in draft folder`);
 
   if (allFiles.length === 0) {
-    prompt.info('No files to push — draft folder is empty.');
+    prompt.info("No files to push — draft folder is empty.");
     return;
   }
 
-  const uploadTasks: ProgressTask<void>[] = allFiles.map(filePath => ({
+  const uploadTasks: ProgressTask<void>[] = allFiles.map((filePath) => ({
     execute: async () => {
       const fileUri = B6PUri.fromFsPath(filePath);
       const file = factory.createFile(fileUri, scriptRoot);
@@ -119,9 +122,9 @@ export async function executePush(opts: {
   }));
 
   await progress.withProgress(uploadTasks, {
-    title: snapshot ? 'Pushing Snapshot...' : 'Pushing Script...',
+    title: snapshot ? "Pushing Snapshot..." : "Pushing Script...",
     showItemCount: true,
-    cleanupMessage: 'Cleaning up...',
+    cleanupMessage: "Cleaning up...",
   });
 
   // Cleanup: delete unused upstairs paths.
@@ -136,13 +139,13 @@ export async function executePush(opts: {
 
   if (snapshot) {
     try {
-      await SnapshotHistoryRecorder.record(scriptRoot, message ?? '');
+      await SnapshotHistoryRecorder.record(scriptRoot, message ?? "");
     } catch (e) {
       logger.warn(`Failed to record snapshot history: ${e instanceof Error ? e.message : e}`);
     }
   }
 
-  prompt.info(snapshot ? 'Snapshot complete!' : 'Push complete!');
+  prompt.info(snapshot ? "Snapshot complete!" : "Push complete!");
 }
 
 /**
@@ -175,37 +178,45 @@ async function cleanupUnusedUpstairsPaths(opts: {
 
     const xml = await response.text();
     const parsed = parser.parse(xml);
-    const responses = parsed?.['D:multistatus']?.['D:response'];
+    const responses = parsed?.["D:multistatus"]?.["D:response"];
     if (!responses?.filter) {
       return;
     }
 
     const localFiles = await flattenDirectory(draftPath, fs);
-    const localRelatives = new Set(
-      localFiles.map(f => path.relative(draftPath, f).split(path.sep).join('/'))
-    );
+    const localRelatives = new Set(localFiles.map((f) => path.relative(draftPath, f).split(path.sep).join("/")));
 
     const pathsToDelete: string[] = [];
 
     for (const entry of responses) {
-      const href = entry['D:href'];
-      if (!href) {continue;}
+      const href = entry["D:href"];
+      if (!href) {
+        continue;
+      }
 
       const entryUrl = new URL(href, targetUrl);
       const basePath = new URL(targetUrl).pathname;
       const relative = entryUrl.pathname.slice(basePath.length);
 
-      if (!relative || relative === '/') {continue;}
+      if (!relative || relative === "/") {
+        continue;
+      }
 
-      const draftPrefix = FolderNames.DRAFT + '/';
-      if (!relative.startsWith(draftPrefix)) {continue;}
+      const draftPrefix = FolderNames.DRAFT + "/";
+      if (!relative.startsWith(draftPrefix)) {
+        continue;
+      }
 
       const draftRelative = relative.slice(draftPrefix.length);
-      if (!draftRelative) {continue;}
+      if (!draftRelative) {
+        continue;
+      }
 
-      if (draftRelative.endsWith('/')) {continue;}
+      if (draftRelative.endsWith("/")) {
+        continue;
+      }
 
-      const localEquivalent = path.join(draftPath, ...draftRelative.split('/'));
+      const localEquivalent = path.join(draftPath, ...draftRelative.split("/"));
       if (gitignoreMatcher.matches(localEquivalent)) {
         logger.info(`File is in .gitignore; skipping deletion: ${href}`);
         continue;
@@ -217,24 +228,24 @@ async function cleanupUnusedUpstairsPaths(opts: {
     }
 
     if (pathsToDelete.length === 0) {
-      logger.info('No unused upstairs paths to delete.');
+      logger.info("No unused upstairs paths to delete.");
       return;
     }
 
-    const YES = 'Yes';
-    const NO = 'No';
+    const YES = "Yes";
+    const NO = "No";
     const answer = await prompt.confirm(
-      `The following ${pathsToDelete.length} upstairs path(s) no longer have local counterparts:\n\n${pathsToDelete.join('\n')}\n\nDelete them?`,
+      `The following ${pathsToDelete.length} upstairs path(s) no longer have local counterparts:\n\n${pathsToDelete.join("\n")}\n\nDelete them?`,
       [YES, NO]
     );
 
     if (answer !== YES) {
-      prompt.info('User chose not to delete unused upstairs paths.');
+      prompt.info("User chose not to delete unused upstairs paths.");
       return;
     }
 
     for (const url of pathsToDelete) {
-      logger.info('Deleting unused upstairs path: ' + url);
+      logger.info("Deleting unused upstairs path: " + url);
       await sessionManager.fetch(url, { method: Http.Methods.DELETE });
     }
   } catch (e) {

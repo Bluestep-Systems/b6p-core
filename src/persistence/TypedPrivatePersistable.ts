@@ -27,8 +27,8 @@ export class PrivateTypedPersistable<T extends Record<string, Serializable>> ext
   constructor({ key, persistence, defaultValue }: { key: PrivateKeys; persistence: IPersistence; defaultValue: T }) {
     // Call super with persistence
     super({ key, persistence, defaultValue });
-    this.persistence.getSecret(this.key).then(jsonString => {
-      this.obj = revive(JSON.parse(jsonString || '{}'));
+    this.persistence.getSecret(this.key).then((jsonString) => {
+      this.obj = revive(JSON.parse(jsonString || "{}"));
       this.initialized = true;
     });
   }

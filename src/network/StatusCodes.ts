@@ -50,14 +50,14 @@ export enum ResponseCodes {
 
   /**
    * "I'm a teapot" - April Fools' joke from 1998, defined in RFC 2324
-   * 
+   *
    * Evolved into a semantically useful status code for "you're barking up the wrong tree" scenarios:
    * - Request is fundamentally misguided or meaningless in the current context
    * - Request type/method is conceptually inappropriate for the resource
-   * 
-   * As of 2024, used by some systems to indicate that a request was rejected for being 
+   *
+   * As of 2024, used by some systems to indicate that a request was rejected for being
    * a nonstandard method, or for other reasons that don't fit into the usual 4xx categories.
-   * The semantic meaning has shifted from pure joke to "this request is as nonsensical 
+   * The semantic meaning has shifted from pure joke to "this request is as nonsensical
    * as asking a teapot to brew coffee" - a perfect metaphor for misguided requests.
    */
   TEAPOT = 418,
@@ -126,6 +126,5 @@ export enum ResponseCodes {
 
   // Pantheon
   TIMEOUT = 598,
-  NETWORK_CONNECT_TIMEOUT_ERROR = 599
+  NETWORK_CONNECT_TIMEOUT_ERROR = 599,
 }
-

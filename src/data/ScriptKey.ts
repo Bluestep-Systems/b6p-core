@@ -1,6 +1,6 @@
-import { Err } from '../Err';
-import { registerSerializable, type SerializableClass } from '../persistence';
-import type { JsonValue } from '../types';
+import { Err } from "../Err";
+import { registerSerializable, type SerializableClass } from "../persistence";
+import type { JsonValue } from "../types";
 
 const COMPOUND_ID_SEPARATOR = "___";
 const SERIALIZABLE_TAG = "ScriptKey";
@@ -10,9 +10,24 @@ const SERIALIZABLE_TAG = "ScriptKey";
  * Add new script types here as they become supported.
  */
 const SCRIPT_TYPE_REGISTRY = {
-  "654015": { type: "formula",  setupPage: "editformuladetails.jsp", mutationName: "updateScriptFormula",     inputType: "UpdateScriptFormulaInput" },
-  "530024": { type: "report",   setupPage: "editdetailreport1.jsp",  mutationName: "updateScriptMergeReport", inputType: "UpdateScriptMergeReportInput" },
-  "363769": { type: "endpoint", setupPage: "editendpoint.jsp",       mutationName: "updateScriptEndpoint",    inputType: "UpdateScriptEndpointInput" },
+  "654015": {
+    type: "formula",
+    setupPage: "editformuladetails.jsp",
+    mutationName: "updateScriptFormula",
+    inputType: "UpdateScriptFormulaInput",
+  },
+  "530024": {
+    type: "report",
+    setupPage: "editdetailreport1.jsp",
+    mutationName: "updateScriptMergeReport",
+    inputType: "UpdateScriptMergeReportInput",
+  },
+  "363769": {
+    type: "endpoint",
+    setupPage: "editendpoint.jsp",
+    mutationName: "updateScriptEndpoint",
+    inputType: "UpdateScriptEndpointInput",
+  },
 } as const;
 
 type ScriptTypeEntry = typeof SCRIPT_TYPE_REGISTRY;
@@ -36,7 +51,9 @@ export class ScriptKey implements SerializableClass {
 
   constructor(classid: string, seqnum: string) {
     if (!classid || !seqnum) {
-      throw new Err.ScriptKeyParsingError(`ScriptKey requires non-empty classid and seqnum, got: classid="${classid}", seqnum="${seqnum}"`);
+      throw new Err.ScriptKeyParsingError(
+        `ScriptKey requires non-empty classid and seqnum, got: classid="${classid}", seqnum="${seqnum}"`
+      );
     }
     this.classid = classid;
     this.seqnum = seqnum;
@@ -112,7 +129,7 @@ export class ScriptKey implements SerializableClass {
    * Serialize to a plain object suitable for JSON storage.
    * Includes the `__storable` tag for automatic hydration by the persistence layer.
    */
-  toJSON(): { __serializable: string; classid: string; seqnum: string;[key: string]: JsonValue; } {
+  toJSON(): { __serializable: string; classid: string; seqnum: string; [key: string]: JsonValue } {
     return { __serializable: SERIALIZABLE_TAG, classid: this.classid, seqnum: this.seqnum };
   }
 

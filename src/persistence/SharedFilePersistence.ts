@@ -1,9 +1,9 @@
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import * as os from 'os';
-import * as crypto from 'crypto';
-import type { IPersistence } from '../providers';
-import { lockdownDir } from './dirLockdown';
+import * as fs from "fs/promises";
+import * as path from "path";
+import * as os from "os";
+import * as crypto from "crypto";
+import type { IPersistence } from "../providers";
+import { lockdownDir } from "./dirLockdown";
 
 /**
  * Cross-platform shared persistence backed by files in `~/.b6p`.
@@ -43,10 +43,10 @@ export class SharedFilePersistence implements IPersistence {
   private pendingBootstrap: Promise<void> | null = null;
 
   constructor(configDirOverride?: string) {
-    this.configDir = configDirOverride ?? path.join(os.homedir(), '.b6p');
-    this.statePath = path.join(this.configDir, 'state.json');
-    this.secretsPath = path.join(this.configDir, 'secrets.enc');
-    this.keyPath = path.join(this.configDir, 'key');
+    this.configDir = configDirOverride ?? path.join(os.homedir(), ".b6p");
+    this.statePath = path.join(this.configDir, "state.json");
+    this.secretsPath = path.join(this.configDir, "secrets.enc");
+    this.keyPath = path.join(this.configDir, "key");
   }
 
   /**
@@ -161,20 +161,20 @@ export class SharedFilePersistence implements IPersistence {
   private async loadSecrets(): Promise<Record<string, string>> {
     let raw: string;
     try {
-      raw = await fs.readFile(this.secretsPath, 'utf-8');
+      raw = await fs.readFile(this.secretsPath, "utf-8");
     } catch {
       return {};
     }
     try {
       const blob = JSON.parse(raw) as { v: number; iv: string; tag: string; data: string };
       const key = await this.getOrCreateKey();
-      const iv = Buffer.from(blob.iv, 'base64');
-      const tag = Buffer.from(blob.tag, 'base64');
-      const ciphertext = Buffer.from(blob.data, 'base64');
-      const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+      const iv = Buffer.from(blob.iv, "base64");
+      const tag = Buffer.from(blob.tag, "base64");
+      const ciphertext = Buffer.from(blob.data, "base64");
+      const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
       decipher.setAuthTag(tag);
       const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-      return JSON.parse(plaintext.toString('utf-8')) as Record<string, string>;
+      return JSON.parse(plaintext.toString("utf-8")) as Record<string, string>;
     } catch {
       // Corrupt or wrong key — start fresh rather than throwing.
       return {};
@@ -185,15 +185,15 @@ export class SharedFilePersistence implements IPersistence {
     await this.ensureDir();
     const key = await this.getOrCreateKey();
     const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-    const plaintext = Buffer.from(JSON.stringify(secrets), 'utf-8');
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const plaintext = Buffer.from(JSON.stringify(secrets), "utf-8");
     const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
     const tag = cipher.getAuthTag();
     const blob = {
       v: 1,
-      iv: iv.toString('base64'),
-      tag: tag.toString('base64'),
-      data: ciphertext.toString('base64'),
+      iv: iv.toString("base64"),
+      tag: tag.toString("base64"),
+      data: ciphertext.toString("base64"),
     };
     await atomicWrite(this.secretsPath, JSON.stringify(blob));
   }
@@ -215,8 +215,8 @@ export class SharedFilePersistence implements IPersistence {
     }
     await this.ensureDir();
     try {
-      const hex = await fs.readFile(this.keyPath, 'utf-8');
-      const buf = Buffer.from(hex.trim(), 'hex');
+      const hex = await fs.readFile(this.keyPath, "utf-8");
+      const buf = Buffer.from(hex.trim(), "hex");
       if (buf.length === 32) {
         this.cachedKey = buf;
         return buf;
@@ -226,8 +226,8 @@ export class SharedFilePersistence implements IPersistence {
       // No key yet.
     }
     const buf = crypto.randomBytes(32);
-    await atomicWrite(this.keyPath, buf.toString('hex'));
-    if (process.platform !== 'win32') {
+    await atomicWrite(this.keyPath, buf.toString("hex"));
+    if (process.platform !== "win32") {
       try {
         await fs.chmod(this.keyPath, 0o600);
       } catch {
@@ -252,7 +252,7 @@ async function fileExists(p: string): Promise<boolean> {
 
 async function readJsonFile<T>(filePath: string): Promise<T | null> {
   try {
-    const raw = await fs.readFile(filePath, 'utf-8');
+    const raw = await fs.readFile(filePath, "utf-8");
     return JSON.parse(raw) as T;
   } catch {
     return null;
@@ -261,7 +261,7 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
 
 async function atomicWrite(filePath: string, contents: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
-  await fs.writeFile(tmp, contents, 'utf-8');
+  const tmp = `${filePath}.tmp.${process.pid}.${crypto.randomBytes(4).toString("hex")}`;
+  await fs.writeFile(tmp, contents, "utf-8");
   await fs.rename(tmp, filePath);
 }

@@ -1,10 +1,10 @@
-import type { SessionData } from '../types';
-import { ApiEndpoints, Http } from '../constants';
-import { Err } from '../Err';
-import { ResponseCodes } from '../network/StatusCodes';
-import type { IAuth, ILogger, IPersistence, IPrompt } from '../providers';
+import type { SessionData } from "../types";
+import { ApiEndpoints, Http } from "../constants";
+import { Err } from "../Err";
+import { ResponseCodes } from "../network/StatusCodes";
+import type { IAuth, ILogger, IPersistence, IPrompt } from "../providers";
 
-const SESSION_PERSISTENCE_KEY = 'sessions';
+const SESSION_PERSISTENCE_KEY = "sessions";
 
 /**
  * Fetch-compatible function signature used for HTTP requests.
@@ -16,7 +16,6 @@ type FetchFn = (url: string | URL, options?: RequestInit) => Promise<Response>;
  * @lastreviewed null
  */
 export class SessionManager {
-
   private readonly MILLIS_IN_A_MINUTE = 1_000 * 60;
   private readonly MAX_SESSION_DURATION = this.MILLIS_IN_A_MINUTE * 30; // 30 minutes
   private readonly MAX_RETRY_ATTEMPTS = 3;
@@ -37,7 +36,7 @@ export class SessionManager {
     private readonly auth: IAuth,
     private readonly isDebugMode: () => boolean,
     private readonly prompt: IPrompt,
-    private readonly fetchFn: FetchFn = globalThis.fetch.bind(globalThis),
+    private readonly fetchFn: FetchFn = globalThis.fetch.bind(globalThis)
   ) {
     this.triggerNextCleanup(5_000);
   }
@@ -45,7 +44,9 @@ export class SessionManager {
   // ── Session persistence ───────────────────────────────────────────
 
   private async load(): Promise<void> {
-    if (this.loaded) { return; }
+    if (this.loaded) {
+      return;
+    }
     const raw = await this.persistence.getSecret(SESSION_PERSISTENCE_KEY);
     if (raw) {
       this.sessions = JSON.parse(raw) as Record<string, SessionData>;
@@ -80,7 +81,11 @@ export class SessionManager {
    * Performs the normal managed fetch, however, wraps it with additional CSRF management,
    * complete with retries.
    */
-  public async csrfFetch(url: string | URL, options?: RequestInit, retries = this.MAX_RETRY_ATTEMPTS): Promise<Response> {
+  public async csrfFetch(
+    url: string | URL,
+    options?: RequestInit,
+    retries = this.MAX_RETRY_ATTEMPTS
+  ): Promise<Response> {
     url = new URL(url);
     const origin = url.origin;
 
@@ -95,7 +100,7 @@ export class SessionManager {
     }
 
     try {
-      const tokenValue = await this.fetch(`${origin}${ApiEndpoints.CSRF_TOKEN}`).then(r => r.text());
+      const tokenValue = await this.fetch(`${origin}${ApiEndpoints.CSRF_TOKEN}`).then((r) => r.text());
       currentSession.lastCsrfToken = tokenValue;
       await this.setSession(origin, currentSession);
 
@@ -103,8 +108,10 @@ export class SessionManager {
       options.headers = options.headers || {};
 
       (options.headers as Record<string, string>)[Http.Headers.B6P_CSRF_TOKEN] =
-        currentSession.lastCsrfToken
-        || (() => { throw new Err.CsrfTokenNotFoundError(); })();
+        currentSession.lastCsrfToken ||
+        (() => {
+          throw new Err.CsrfTokenNotFoundError();
+        })();
       const response = await this.fetch(url, options);
       let newToken = response.headers.get(Http.Headers.B6P_CSRF_TOKEN);
       for (const [key, value] of Object.entries(response.headers)) {
@@ -122,7 +129,7 @@ export class SessionManager {
         throw new Err.RetryAttemptsExhaustedError(e instanceof Error ? e.stack || e.message : String(e));
       }
       if (e instanceof Error) {
-        if (e.name === 'AbortError') {
+        if (e.name === "AbortError") {
           throw new Err.RequestTimeoutError();
         }
         if (e instanceof Err.UnauthorizedError) {
@@ -148,14 +155,17 @@ export class SessionManager {
   public async fetch(url: string | URL, options?: RequestInit): Promise<Response> {
     url = new URL(url);
     const sessionData = await this.getSession(url.origin);
-    if (sessionData?.JSESSIONID && sessionData.lastTouched > (Date.now() - this.MAX_SESSION_DURATION)) {
-      this.isDebugMode() && this.logger.info("using existing session for fetch to:" + url.href + "\n " + JSON.stringify(sessionData));
+    if (sessionData?.JSESSIONID && sessionData.lastTouched > Date.now() - this.MAX_SESSION_DURATION) {
+      this.isDebugMode() &&
+        this.logger.info("using existing session for fetch to:" + url.href + "\n " + JSON.stringify(sessionData));
       options = {
         ...options,
         headers: {
           ...options?.headers,
-          [Http.Headers.COOKIE]: `${Http.Cookies.JSESSIONID}=${sessionData.JSESSIONID}` + (sessionData.INGRESSCOOKIE ? `; ${Http.Cookies.INGRESSCOOKIE}=${sessionData.INGRESSCOOKIE}` : ''),
-        }
+          [Http.Headers.COOKIE]:
+            `${Http.Cookies.JSESSIONID}=${sessionData.JSESSIONID}` +
+            (sessionData.INGRESSCOOKIE ? `; ${Http.Cookies.INGRESSCOOKIE}=${sessionData.INGRESSCOOKIE}` : ""),
+        },
       };
       const response = await this.fetchFn(url, options);
       return await this.processResponse(response);
@@ -185,7 +195,7 @@ export class SessionManager {
    */
   public async hasValidSession({ origin }: { origin: string | URL }): Promise<boolean> {
     const session = await this.getSession(new URL(origin).origin);
-    return !!session && (session.lastTouched > (Date.now() - this.MAX_SESSION_DURATION));
+    return !!session && session.lastTouched > Date.now() - this.MAX_SESSION_DURATION;
   }
 
   /**
@@ -206,7 +216,7 @@ export class SessionManager {
       method: Http.Methods.POST,
       headers: {
         [Http.Headers.AUTHORIZATION]: `${await this.auth.authHeaderValue()}`,
-      }
+      },
     });
     this.logger.info("login status:" + response.status);
     if (response.status >= ResponseCodes.BAD_REQUEST) {
@@ -217,7 +227,7 @@ export class SessionManager {
       try {
         this.onLogin(url);
       } catch (e) {
-        this.logger.warn('onLogin callback failed:', e instanceof Error ? e.message : String(e));
+        this.logger.warn("onLogin callback failed:", e instanceof Error ? e.message : String(e));
       }
     }
   }
@@ -236,15 +246,14 @@ export class SessionManager {
       const existing = await this.getSession(responderUrl.origin);
       const sessionData: SessionData = {
         lastTouched: Date.now(),
-        [Http.Cookies.JSESSIONID]: cookieMap.get(Http.Cookies.JSESSIONID)
-          || existing?.JSESSIONID
-          || (() => { throw new Err.SessionIdMissingError(); })(),
-        [Http.Cookies.INGRESSCOOKIE]: cookieMap.get(Http.Cookies.INGRESSCOOKIE)
-          || existing?.INGRESSCOOKIE
-          || null,
-        lastCsrfToken: response.headers.get(Http.Headers.B6P_CSRF_TOKEN)
-          || existing?.lastCsrfToken
-          || null
+        [Http.Cookies.JSESSIONID]:
+          cookieMap.get(Http.Cookies.JSESSIONID) ||
+          existing?.JSESSIONID ||
+          (() => {
+            throw new Err.SessionIdMissingError();
+          })(),
+        [Http.Cookies.INGRESSCOOKIE]: cookieMap.get(Http.Cookies.INGRESSCOOKIE) || existing?.INGRESSCOOKIE || null,
+        lastCsrfToken: response.headers.get(Http.Headers.B6P_CSRF_TOKEN) || existing?.lastCsrfToken || null,
       };
       await this.setSession(responderUrl.origin, sessionData);
     } else {
@@ -269,7 +278,7 @@ export class SessionManager {
     const cookieMap = new Map<string, string>();
     const setCookies = headers.getSetCookie();
     for (const cookieString of setCookies) {
-      const parts = cookieString.split(";").map(part => part.trim());
+      const parts = cookieString.split(";").map((part) => part.trim());
 
       if (parts.length > 0) {
         const cookiePart = parts[0];
@@ -309,5 +318,5 @@ export class SessionManager {
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

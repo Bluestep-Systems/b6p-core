@@ -1,9 +1,9 @@
-import * as path from 'path';
+import * as path from "path";
 import { Err } from "../Err";
 import { ScriptPathElement } from "./ScriptPathElement";
 import type { ScriptFile } from "./ScriptFile";
 import type { ScriptRoot } from "./ScriptRoot";
-import { B6PUri } from '../B6PUri';
+import { B6PUri } from "../B6PUri";
 
 /**
  * A specialized {@link ScriptPathElement} representing a tsconfig.json file.
@@ -19,7 +19,10 @@ export class TsConfig implements ScriptPathElement {
   private sf: ScriptFile;
   private readonly scriptRoot: ScriptRoot;
 
-  constructor(protected readonly rawUri: B6PUri, scriptRoot: ScriptRoot) {
+  constructor(
+    protected readonly rawUri: B6PUri,
+    scriptRoot: ScriptRoot
+  ) {
     if (!this.path().endsWith(TsConfig.NAME)) {
       throw new Err.InvalidResourceTypeError("tsconfig.json file");
     }
@@ -52,7 +55,7 @@ export class TsConfig implements ScriptPathElement {
       return false;
     }
     const fileContents = await this.scriptRoot.ctx.fs.readFile(this.uri());
-    const fileString = Buffer.from(fileContents).toString('utf-8');
+    const fileString = Buffer.from(fileContents).toString("utf-8");
     try {
       const parsed = JSON.parse(fileString);
       if (parsed.compilerOptions && parsed.include) {
@@ -66,8 +69,12 @@ export class TsConfig implements ScriptPathElement {
 
   public async getBuildFolder() {
     const fileContents = await this.scriptRoot.ctx.fs.readFile(this.uri());
-    const config = JSON.parse(Buffer.from(fileContents).toString('utf-8'));
-    const outDir = config.compilerOptions?.outDir || (() => { throw new Err.MissingConfigurationError("outDir"); })();
+    const config = JSON.parse(Buffer.from(fileContents).toString("utf-8"));
+    const outDir =
+      config.compilerOptions?.outDir ||
+      (() => {
+        throw new Err.MissingConfigurationError("outDir");
+      })();
     return this.scriptRoot.factory.createFolder(this.folder().uri().joinPath(outDir), this.scriptRoot);
   }
 
