@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a **single-package TypeScript library**: `@bluestep-systems/b6p-core`, published to the public
 npm registry. It is the vscode-free core shared by the `b6p` CLI and the VS Code extension, which live
-in their own repositories (`b6p-cli`, `b6p-vscode`) and depend on this package by version.
+in their own repositories (`b6p-cli`, `vscode-extension`) and depend on this package by version.
 
 The library has **zero `vscode.*` imports**. Anything that needs a platform capability (file system,
 prompts, logging, progress, persistence) goes through a provider interface in [src/providers.ts](src/providers.ts)
