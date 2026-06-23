@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bluestep-systems/b6p-core.git"
+    "url": "git+https://github.com/Bluestep-Systems/b6p-core.git"
   },
   "engines": {
     "node": ">=18"

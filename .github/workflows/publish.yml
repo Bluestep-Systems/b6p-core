@@ -26,9 +26,6 @@ concurrency:
   group: publish-${{ github.ref }}
   cancel-in-progress: false  # Never cancel a publish in progress.
 
-env:
-  NODE_VERSION: '20'
-
 jobs:
   publish:
     name: Publish to npm
@@ -36,14 +33,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Setup Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8  # v4.0.2
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: package-lock.json
           registry-url: 'https://registry.npmjs.org'

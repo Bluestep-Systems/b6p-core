@@ -4,8 +4,8 @@ The core library for **B6P** — BlueStep script management (push / pull / audit
 TypeScript "formula" scripts over WebDAV).
 
 This package contains the headless orchestration logic shared by the
-[`b6p` CLI](https://github.com/bluestep-systems/b6p-cli) and the
-[VS Code extension](https://github.com/bluestep-systems/b6p-vscode). It's **platform-agnostic** — it runs
+[`b6p` CLI](https://github.com/Bluestep-Systems/b6p-cli) and the
+[VS Code extension](https://github.com/Bluestep-Systems/b6p-vscode). It's **platform-agnostic** — it runs
 anywhere Node does. You supply the platform adapters (file system, prompts, logging, progress,
 persistence) through provider interfaces.
 
