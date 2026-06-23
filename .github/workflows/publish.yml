@@ -1,0 +1,86 @@
+# ============================================================================
+# b6p-core Publish
+# ============================================================================
+# Purpose: On a version tag (v*.*.*), validate then publish
+#          @bluestep-systems/b6p-core to the public npm registry with
+#          provenance.
+#
+# Requires: an NPM_TOKEN repo secret (npm automation token with publish
+#           rights to the @bluestep-systems scope). Provenance additionally
+#           needs id-token: write, granted in-workflow below.
+# ============================================================================
+
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'  # v0.1.0, v1.2.3, v1.2.3-rc.1, ...
+
+# Least privilege: read the repo + mint an OIDC token for npm provenance.
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false  # Never cancel a publish in progress.
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8  # v4.0.2
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: |
+          for i in 1 2 3; do
+            npm ci --prefer-offline --no-audit && break
+            echo "Attempt $i failed, retrying..."
+            sleep 5
+          done
+        shell: bash
+
+      # Guard against publishing a tag whose version doesn't match package.json.
+      - name: Verify tag matches package.json version
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag v$TAG_VERSION does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+          echo "::notice::Publishing version $PKG_VERSION"
+        shell: bash
+
+      - name: Type check
+        run: npm run check-types
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Compile
+        run: npm run compile
+
+      # prepublishOnly re-runs clean+lint+check-types+compile to build dist/.
+      - name: Publish (provenance, public)
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

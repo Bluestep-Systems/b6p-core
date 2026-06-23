@@ -1,0 +1,62 @@
+# ============================================================================
+# b6p-core CI
+# ============================================================================
+# Purpose: Validate the library on pull requests and pushes to the default
+#          branch (type-check, lint, compile). No secrets required — the
+#          @bluestep-systems scope resolves from public npm via .npmrc.
+# ============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Least privilege: read-only is all validation needs.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  validate:
+    name: Validate (Node ${{ env.NODE_VERSION }})
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8  # v4.0.2
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: |
+          for i in 1 2 3; do
+            npm ci --prefer-offline --no-audit && break
+            echo "Attempt $i failed, retrying..."
+            sleep 5
+          done
+        shell: bash
+
+      - name: Type check
+        run: npm run check-types
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Compile
+        run: npm run compile
