@@ -17,8 +17,14 @@ export class DownstairsPathParser {
   public readonly scriptName: string;
 
   constructor(readonly rawPath: string) {
-    const isAbsolute = path.isAbsolute(rawPath);
-    const segments = rawPath.split(path.sep).filter((s) => s !== "");
+    // Derive the real filesystem root: "/" on POSIX, "C:\\" (or a UNC share root) on Windows, and ""
+    // for relative paths. Strip it before splitting so the drive letter is never treated as a path
+    // segment — otherwise a bogus separator gets prepended before "C:" on Windows (mangling the root).
+    const root = path.parse(rawPath).root;
+    const segments = rawPath
+      .slice(root.length)
+      .split(path.sep)
+      .filter((s) => s !== "");
 
     if (segments.length < 2) {
       throw new Err.InvalidUriStructureError(rawPath);
@@ -62,7 +68,9 @@ export class DownstairsPathParser {
     }
 
     const prependingSegments = segments.slice(0, orgIdIndex + 1);
-    this.prependingPath = (isAbsolute ? path.sep : "") + prependingSegments.join(path.sep);
+    // Re-attach the original root (which already includes its trailing separator) so the drive letter
+    // is preserved and no extra separator is prepended. POSIX: "/" + "a/b" → "/a/b"; relative: "" + "a/b".
+    this.prependingPath = root + prependingSegments.join(path.sep);
     this.scriptName = segments[scriptNameIndex];
 
     if (typeIndex === -1) {
