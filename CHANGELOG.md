@@ -5,6 +5,31 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Bundled-TypeScript library resolution: when b6p-core is bundled into a consumer (the CLI's single
+  `dist/cli.js` or its SEA binary), TypeScript's default host resolved `lib.*.d.ts` via
+  `dirname(__filename)` — the bundle directory, where those files don't exist — so the snapshot-push
+  transpile failed on every project with "File 'lib.esnext.d.ts' not found" cascading into "Cannot find
+  global type 'Array'". `ScriptTranspiler` now supplies a `CompilerHost` that resolves the lib directory
+  independently of `__filename` (via the new `TsLibResolver`).
+- `skipLibCheck` was silently dropped when parsing a project's `tsconfig.json`, so a legitimate
+  `lib: ["dom", "WebWorker"]` config produced spurious lib-vs-lib conflicts. Transpile invariants
+  (`skipLibCheck`, `listEmittedFiles`, `noEmitOnError: false`) are now forced onto the parsed options.
+- The transpile step is now an enforced emit gate: type diagnostics are advisory (logged as warnings and
+  no longer block the push), but a genuine emit failure throws so a push cannot proceed with missing
+  JavaScript.
+
+### Added
+
+- `TsLibResolver` (public export) — locates TypeScript's `lib.*.d.ts` directory from consumer-supplied
+  directories or the project-local `node_modules/typescript/lib`, without relying on `__filename`.
+- `B6PProviders.typescriptLibDirs` — optional directories the consumer ships/extracts its `lib.*.d.ts`
+  to, searched before the project-local typescript install (needed for bundled CLI / SEA runs).
+- Regression tests for lib-directory resolution and the bundled "broken vs fixed" host behavior.
+
 ## [0.1.1] - 2026-06-24
 
 ### Fixed

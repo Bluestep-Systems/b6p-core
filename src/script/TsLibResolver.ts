@@ -20,9 +20,13 @@ import * as path from "path";
  * This resolver finds the lib directory WITHOUT relying on `__filename`, so the
  * caller can override the host's lib resolution and compile correctly whether it
  * runs from an npm install, a bundled CLI, or a SEA binary.
+ * @lastreviewed null
  */
 export class TsLibResolver {
-  /** A file present in every TypeScript lib directory; used as the existence probe. */
+  /**
+   * A file present in every TypeScript lib directory; used as the existence probe.
+   * @lastreviewed null
+   */
   private static readonly SENTINEL = "lib.d.ts";
 
   /**
@@ -41,6 +45,7 @@ export class TsLibResolver {
    * Existence is probed with `ts.sys`, which reads the real filesystem — the
    * same source the `CompilerHost` reads libs from — so a hit here guarantees
    * the host can actually read the files.
+   * @lastreviewed null
    */
   static resolveLibDir(opts: {
     explicitDirs?: readonly string[];
@@ -67,13 +72,20 @@ export class TsLibResolver {
     return undefined;
   }
 
+  /**
+   * True if `dir` contains TypeScript's default library files.
+   * @lastreviewed null
+   */
   private static hasLibFiles(dir: string): boolean {
     // ts.sys is always defined under Node; guard anyway so a non-Node host that
     // lacks it degrades to "not found" rather than throwing.
     return !!ts.sys?.fileExists(path.join(dir, this.SENTINEL));
   }
 
-  /** Walk up from `startDir` looking for `node_modules/typescript/lib`. */
+  /**
+   * Walk up from `startDir` looking for `node_modules/typescript/lib`.
+   * @lastreviewed null
+   */
   private static findInNodeModules(startDir: string): string | undefined {
     let current = path.resolve(startDir);
     let prev = "";

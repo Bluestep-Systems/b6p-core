@@ -70,7 +70,7 @@ export class ScriptTranspiler {
       undefined,
       tsConfigFile.path()
     );
-    this.ctx.logger.info("Using tsconfig.json compiler options from:", tsConfigFile.path);
+    this.ctx.logger.info("Using tsconfig.json compiler options from:", tsConfigFile.path());
     return ScriptTranspiler.applyTranspileInvariants(parsedConfig.options);
   }
 
@@ -88,6 +88,7 @@ export class ScriptTranspiler {
    *   consuming workspaces' CLAUDE.md states local tsconfig/declarations "are
    *   not guaranteed to produce a clean local build", so the type-check here is
    *   advisory — a project must not be able to block emit by setting this true.
+   * @lastreviewed null
    */
   private static applyTranspileInvariants(options: ts.CompilerOptions): ts.CompilerOptions {
     options.listEmittedFiles = true;
@@ -138,9 +139,12 @@ export class ScriptTranspiler {
       // on emit succeeding, NOT on zero diagnostics — the consuming workspaces'
       // CLAUDE.md documents that local declarations "are not guaranteed to
       // produce a clean local build". So type diagnostics are ADVISORY (warn),
-      // and only a genuine emit failure is surfaced as an error.
+      // while a genuine emit failure is FATAL: we throw so callers
+      // (ScriptRoot.compileDraftFolder → executePush) abort instead of pushing
+      // with missing JavaScript. The gate is enforced here because no caller
+      // inspects the returned file list for completeness.
       if (emitResult.emitSkipped) {
-        this.ctx.logger.error(
+        throw new Err.CompilationError(
           `TypeScript emit was skipped for ${tsConfigPath}; no JavaScript was produced.` +
             (allDiagnostics.length > 0 ? "\n" + this.formatDiagnostics(allDiagnostics) : "")
         );
@@ -167,6 +171,7 @@ export class ScriptTranspiler {
    * lib directory via {@link TsLibResolver} and override the two host methods
    * that steer lib lookup. If no lib directory can be found we fall back to the
    * default host behavior rather than pointing it at a bogus path.
+   * @lastreviewed null
    */
   private createProgram(fileNames: string[], options: ts.CompilerOptions, tsConfigPath: string): ts.Program {
     const host = ts.createCompilerHost(options);

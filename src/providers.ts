@@ -154,8 +154,9 @@ export interface B6PProviders {
    *   - npm bundle: a `lib/` copied next to the bundle (e.g. by esbuild).
    *   - SEA binary: a temp dir the binary extracts its embedded libs into.
    * These are searched before the project-local `node_modules/typescript/lib`.
+   * @lastreviewed null
    */
-  typescriptLibDirs?: string[];
+  typescriptLibDirs?: readonly string[];
   /**
    * Optional update service configuration. If not provided, update checking is disabled.
    */
