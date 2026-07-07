@@ -40,6 +40,7 @@ export { ScriptRoot } from "./script/ScriptRoot";
 export { ScriptFile } from "./script/ScriptFile";
 export type { ScriptFolder } from "./script/ScriptFolder";
 export type { ScriptContext } from "./script/ScriptContext";
+export { TsLibResolver } from "./script/TsLibResolver";
 
 // ─── Constants ───────────────────────────────────────────────────────
 export {

@@ -54,6 +54,7 @@ export class B6PCore implements ScriptContext {
   readonly scriptMetadataStore: ScriptMetaDataStore;
   readonly orgCache: OrgCache;
   readonly updateService: UpdateService | null = null;
+  readonly typescriptLibDirs?: readonly string[];
   private factory: ScriptFactory | null = null;
   private readonly _isDebugMode: () => boolean;
   constructor(providers: B6PProviders) {
@@ -62,6 +63,7 @@ export class B6PCore implements ScriptContext {
     this.prompt = providers.prompt;
     this.logger = providers.logger;
     this.progress = providers.progress;
+    this.typescriptLibDirs = providers.typescriptLibDirs;
     this._isDebugMode = providers.isDebugMode ?? (() => false);
 
     this.auth = new BasicAuthProvider(this.persistence, this.prompt, this.logger);

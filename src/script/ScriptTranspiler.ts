@@ -1,4 +1,5 @@
 import ts from "typescript";
+import * as path from "path";
 import { Err } from "../Err";
 import type { ScriptNode } from "./ScriptNode";
 import type { ScriptRoot } from "./ScriptRoot";
@@ -6,6 +7,7 @@ import { FolderNames } from "../constants";
 import { B6PUri } from "../B6PUri";
 import type { ScriptContext } from "./ScriptContext";
 import { ScriptFactory } from "./ScriptFactory";
+import { TsLibResolver } from "./TsLibResolver";
 
 /**
  * Compiler for TypeScript files in script projects.
@@ -68,9 +70,31 @@ export class ScriptTranspiler {
       undefined,
       tsConfigFile.path()
     );
-    this.ctx.logger.info("Using tsconfig.json compiler options from:", tsConfigFile.path);
-    parsedConfig.options.listEmittedFiles = true;
-    return parsedConfig.options;
+    this.ctx.logger.info("Using tsconfig.json compiler options from:", tsConfigFile.path());
+    return ScriptTranspiler.applyTranspileInvariants(parsedConfig.options);
+  }
+
+  /**
+   * Force the invariants this transpile step depends on onto a set of parsed
+   * compiler options, regardless of what the project's tsconfig.json specified.
+   *
+   * - `listEmittedFiles`: we return the emitted paths to the caller.
+   * - `skipLibCheck`: this step is a transpile/emit gate, not a full lib audit.
+   *   Without it, a legitimate project `lib: ["dom", "WebWorker"]` (e.g. a
+   *   MergeReport `static/` client bundle) produces 30+ lib-vs-lib conflicts
+   *   (`ImportExportKind`, duplicate index signatures, `location` mismatch, ...)
+   *   that have nothing to do with the project's own code.
+   * - `noEmitOnError`: emit must succeed even when type diagnostics exist. The
+   *   consuming workspaces' CLAUDE.md states local tsconfig/declarations "are
+   *   not guaranteed to produce a clean local build", so the type-check here is
+   *   advisory — a project must not be able to block emit by setting this true.
+   * @lastreviewed null
+   */
+  private static applyTranspileInvariants(options: ts.CompilerOptions): ts.CompilerOptions {
+    options.listEmittedFiles = true;
+    options.skipLibCheck = true;
+    options.noEmitOnError = false;
+    return options;
   }
 
   public async addFile(sn: ScriptNode): Promise<void> {
@@ -102,31 +126,83 @@ export class ScriptTranspiler {
       const sf = f.createFile(B6PUri.fromFsPath(tsConfigPath), sharedRoot);
       const compilerOptions = await this.getCompilerOptions(sf);
       const sfUris = sfList.map((sf) => sf.uri());
-      const program = ts.createProgram(
+      const program = this.createProgram(
         sfUris.map((uri) => uri.fsPath),
-        compilerOptions
+        compilerOptions,
+        tsConfigPath
       );
       const emitResult = program.emit();
       emittedFiles.push(...(emitResult.emittedFiles || []));
 
       const allDiagnostics = ts.getPreEmitDiagnostics(program).concat(emitResult.diagnostics);
-      if (allDiagnostics.length > 0) {
-        const diagnosticMessages = allDiagnostics
-          .map((diagnostic) => {
-            if (diagnostic.file) {
-              const { line, character } = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start!);
-              const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
-              return `${diagnostic.file.fileName} (${line + 1},${character + 1}): ${message}`;
-            } else {
-              return ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
-            }
-          })
-          .join("\n");
-        this.ctx.logger.error("TypeScript compilation errors:\n" + diagnosticMessages);
+      // Contract: this step is an emit gate, not a type-audit gate. Push depends
+      // on emit succeeding, NOT on zero diagnostics — the consuming workspaces'
+      // CLAUDE.md documents that local declarations "are not guaranteed to
+      // produce a clean local build". So type diagnostics are ADVISORY (warn),
+      // while a genuine emit failure is FATAL: we throw so callers
+      // (ScriptRoot.compileDraftFolder → executePush) abort instead of pushing
+      // with missing JavaScript. The gate is enforced here because no caller
+      // inspects the returned file list for completeness.
+      if (emitResult.emitSkipped) {
+        throw new Err.CompilationError(
+          `TypeScript emit was skipped for ${tsConfigPath}; no JavaScript was produced.` +
+            (allDiagnostics.length > 0 ? "\n" + this.formatDiagnostics(allDiagnostics) : "")
+        );
+      } else if (allDiagnostics.length > 0) {
+        this.ctx.logger.warn(
+          `TypeScript reported ${allDiagnostics.length} diagnostic(s) during transpile ` +
+            `(advisory — emit succeeded):\n` +
+            this.formatDiagnostics(allDiagnostics)
+        );
       } else {
         this.ctx.prompt.info("TypeScript compiled successfully.");
       }
     }
     return emittedFiles;
+  }
+
+  /**
+   * Create a `ts.Program` with a `CompilerHost` whose default-library resolution
+   * does NOT depend on `__filename`.
+   *
+   * b6p-core is bundled into the consumer's single-file CLI / SEA binary, so
+   * TypeScript's default `getDefaultLibLocation()` (= `dirname(__filename)`)
+   * points at the bundle directory, where no `lib.*.d.ts` exist. We resolve the
+   * lib directory via {@link TsLibResolver} and override the two host methods
+   * that steer lib lookup. If no lib directory can be found we fall back to the
+   * default host behavior rather than pointing it at a bogus path.
+   * @lastreviewed null
+   */
+  private createProgram(fileNames: string[], options: ts.CompilerOptions, tsConfigPath: string): ts.Program {
+    const host = ts.createCompilerHost(options);
+    const libDir = TsLibResolver.resolveLibDir({
+      explicitDirs: this.ctx.typescriptLibDirs,
+      projectDirs: [path.dirname(tsConfigPath), process.cwd()],
+    });
+    if (libDir) {
+      this.ctx.logger.info(`Resolved TypeScript lib directory: ${libDir}`);
+      host.getDefaultLibLocation = () => libDir;
+      host.getDefaultLibFileName = (o) => path.join(libDir, ts.getDefaultLibFileName(o));
+    } else {
+      this.ctx.logger.warn(
+        "Could not resolve a TypeScript lib directory; falling back to default host resolution. " +
+          "If this run is bundled (CLI/SEA), lib diagnostics are expected — supply providers.typescriptLibDirs."
+      );
+    }
+    return ts.createProgram(fileNames, options, host);
+  }
+
+  private formatDiagnostics(diagnostics: readonly ts.Diagnostic[]): string {
+    return diagnostics
+      .map((diagnostic) => {
+        if (diagnostic.file) {
+          const { line, character } = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start!);
+          const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+          return `${diagnostic.file.fileName} (${line + 1},${character + 1}): ${message}`;
+        } else {
+          return ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+        }
+      })
+      .join("\n");
   }
 }
