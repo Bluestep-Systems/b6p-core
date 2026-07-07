@@ -20,6 +20,12 @@ export interface ScriptContext {
   readonly auth: BasicAuthProvider;
   readonly scriptMetadataStore: ScriptMetaDataStore;
   readonly orgCache: OrgCache;
+  /**
+   * Consumer-supplied directories containing TypeScript's `lib.*.d.ts`, searched
+   * (in order) before the project-local `node_modules/typescript/lib` when the
+   * transpile step resolves the default library. See {@link B6PProviders.typescriptLibDirs}.
+   */
+  readonly typescriptLibDirs?: readonly string[];
   isDebugMode(): boolean;
   getScriptFactory(): ScriptFactory;
 }

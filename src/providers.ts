@@ -139,6 +139,24 @@ export interface B6PProviders {
    */
   fetchFn?: (url: string | URL, init?: RequestInit) => Promise<Response>;
   /**
+   * Optional directories that contain TypeScript's default library declaration
+   * files (`lib.d.ts`, `lib.es2022.d.ts`, `lib.dom.d.ts`, ...). Used only by the
+   * local transpile step that snapshot pushes run.
+   *
+   * WHY THIS EXISTS: b6p-core is bundled into the consumer (the CLI's single
+   * `dist/cli.js` and its SEA binary). TypeScript's default host resolves the
+   * standard library via `getDefaultLibLocation()` = `dirname(__filename)`. Once
+   * bundled, `__filename` is the bundle path — where no `lib.*.d.ts` live — so
+   * every compile fails with "File 'lib.esnext.d.ts' not found" cascading into
+   * "Cannot find global type 'Array'". Because that resolution is unreliable
+   * when bundled, the consumer should pass the directory it ships or extracts
+   * these files to:
+   *   - npm bundle: a `lib/` copied next to the bundle (e.g. by esbuild).
+   *   - SEA binary: a temp dir the binary extracts its embedded libs into.
+   * These are searched before the project-local `node_modules/typescript/lib`.
+   */
+  typescriptLibDirs?: string[];
+  /**
    * Optional update service configuration. If not provided, update checking is disabled.
    */
   updateServiceConfig?: {
