@@ -5,6 +5,26 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `audit` no longer reports declaration/library files (`declarations/index.d.ts`,
+  `console.graal.d.ts`, `scriptlibrary.d.ts`, …) as changed on every run, even right after a clean
+  pull ([#4](https://github.com/Bluestep-Systems/b6p-core/issues/4)). Those files are served with
+  numeric/complex ("memory document") ETags rather than SHA-512 content hashes, so `getUpstairsHash`
+  returns `null` and the old comparison (`localHash === null`) was always a mismatch. Audit now uses
+  the new `ScriptFile.currentIntegrityStatus`, which reports such files as `"indeterminate"` and skips
+  them (mirroring `download`, which already skips integrity verification for those ETag classes)
+  instead of flagging a difference it cannot substantiate. Push behavior is unchanged.
+
+### Added
+
+- `ScriptFile.currentIntegrityStatus` — tri-state integrity check (`"match"` / `"mismatch"` /
+  `"indeterminate"`) distinguishing a genuine content difference from the absence of a comparable
+  upstairs content hash. `currentIntegrityMatches` now delegates to it.
+- Regression tests for audit integrity status (`test/AuditIntegrity.test.js`).
+
 ## [0.2.0] - 2026-07-07
 
 ### Fixed
