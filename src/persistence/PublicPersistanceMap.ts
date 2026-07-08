@@ -17,6 +17,7 @@ export class PublicPersistanceMap<T extends Serializable> extends PersistablePse
    * await this first, otherwise they may observe an empty map before the
    * asynchronous constructor load has landed. Resolves — never rejects — so a
    * failed load leaves the map empty rather than hanging awaiters.
+   * @lastreviewed null
    */
   private readonly ready: Promise<void>;
 
@@ -48,6 +49,8 @@ export class PublicPersistanceMap<T extends Serializable> extends PersistablePse
   /**
    * Awaits completion of the initial load from persistence. Safe to call
    * repeatedly; returns the same settled promise once loaded.
+   * @returns A promise that resolves when the initial load has completed.
+   * @lastreviewed null
    */
   whenReady(): Promise<void> {
     return this.ready;

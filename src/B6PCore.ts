@@ -504,6 +504,15 @@ export class B6PCore implements ScriptContext {
 
   // ── Setup URL ─────────────────────────────────────────────────────
 
+  /**
+   * Builds the web-UI setup URL for a locally-pulled script, resolving its
+   * stored metadata (org, classid, seqnum) from the {@link ScriptMetaDataStore}
+   * the same way `audit` and `push` do.
+   * @param opts.filePath Absolute path to any file inside the pulled script root.
+   * @returns The setup URL, or `null` if no metadata is stored for the script
+   *   (not yet pulled) or its script type has no known setup page.
+   * @lastreviewed null
+   */
   async getSetupUrl(opts: { filePath: string }): Promise<string | null> {
     try {
       // Resolve stored metadata via the same script-root mechanism that `audit`

@@ -24,6 +24,8 @@ export class ScriptMetaDataStore {
    * Awaits the initial load from persistence. The synchronous read methods
    * ({@link all}, {@link findByScriptName}, …) observe an empty store until this
    * resolves, so async callers must await it before relying on a lookup.
+   * @returns A promise that resolves when the store has finished loading.
+   * @lastreviewed null
    */
   public whenReady(): Promise<void> {
     return this.metadataMap.whenReady();
