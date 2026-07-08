@@ -12,16 +12,30 @@ export class PublicPersistanceMap<T extends Serializable> extends PersistablePse
   protected initialized: boolean = false;
 
   /**
+   * Resolves once the initial load from persistence has completed (successfully
+   * or not). Callers that read the map synchronously (e.g. via {@link get}) must
+   * await this first, otherwise they may observe an empty map before the
+   * asynchronous constructor load has landed. Resolves — never rejects — so a
+   * failed load leaves the map empty rather than hanging awaiters.
+   */
+  private readonly ready: Promise<void>;
+
+  /**
    * Creates an instance of PublicPersistanceMap.
    * @param key The key used for persisting the map.
    * @param persistence The persistence provider.
    */
   constructor(key: PublicKeys, persistence: IPersistence) {
     super(key, persistence);
-    this.persistence.get<Record<string, T>>(this.key).then((data) => {
-      this.obj = revive(data || {});
-      this.initialized = true;
-    });
+    this.ready = this.persistence.get<Record<string, T>>(this.key).then(
+      (data) => {
+        this.obj = revive(data || {});
+        this.initialized = true;
+      },
+      () => {
+        // Leave the map empty on load failure; treated as "no data yet".
+      }
+    );
   }
 
   /**
@@ -29,6 +43,14 @@ export class PublicPersistanceMap<T extends Serializable> extends PersistablePse
    */
   isInitialized(): boolean {
     return this.initialized;
+  }
+
+  /**
+   * Awaits completion of the initial load from persistence. Safe to call
+   * repeatedly; returns the same settled promise once loaded.
+   */
+  whenReady(): Promise<void> {
+    return this.ready;
   }
 
   /**

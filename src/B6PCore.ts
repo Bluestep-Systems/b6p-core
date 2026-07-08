@@ -213,6 +213,7 @@ export class B6PCore implements ScriptContext {
     // "Test_bp6_CLI"). If the resolved name is already linked to a *different*
     // webdavId in local metadata, aborting here prevents overwriting the wrong
     // directory and corrupting both scripts.
+    await this.scriptMetadataStore.whenReady();
     const conflictingEntry = this.scriptMetadataStore.findByScriptName(U, scriptName);
     if (conflictingEntry && conflictingEntry.webdavId !== parser.webDavId) {
       this.prompt.error(

@@ -96,9 +96,11 @@ function makeCore(persistence) {
   });
 }
 
-// The persistence maps load asynchronously in their constructors; let those
-// microtasks settle before exercising the command.
-const flush = () => new Promise((r) => setTimeout(r, 0));
+// NOTE: we deliberately do NOT wait for the persistence maps to finish loading
+// before calling getSetupUrl — that mirrors the CLI, which constructs the core
+// and immediately runs the command. getSetupUrl must await the metadata store's
+// readiness itself; otherwise it reads an empty (still-loading) store and
+// wrongly reports "no stored metadata".
 
 let failures = 0;
 async function test(name, fn) {
@@ -115,7 +117,6 @@ async function test(name, fn) {
 (async () => {
   await test("resolves the setup URL from store metadata written by pull", async () => {
     const core = makeCore(makePersistence({ [SCRIPT_METADATA_KEY]: seededMetadata() }));
-    await flush();
     const url = await core.getSetupUrl({ filePath: FILE_PATH });
     assert.strictEqual(
       url,
@@ -127,7 +128,6 @@ async function test(name, fn) {
 
   await test("errors clearly when the script has no stored metadata", async () => {
     const core = makeCore(makePersistence({})); // nothing pulled
-    await flush();
     const url = await core.getSetupUrl({ filePath: FILE_PATH });
     assert.strictEqual(url, null);
     assert.ok(
