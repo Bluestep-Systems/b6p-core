@@ -9,6 +9,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `audit` no longer reports declaration/library files (`declarations/index.d.ts`,
+  `console.graal.d.ts`, `scriptlibrary.d.ts`, …) as changed on every run, even right after a clean
+  pull ([#4](https://github.com/Bluestep-Systems/b6p-core/issues/4)). Those files are served with
+  numeric/complex ("memory document") ETags rather than SHA-512 content hashes, so `getUpstairsHash`
+  returns `null` and the old comparison (`localHash === null`) was always a mismatch. Audit now uses
+  the new `ScriptFile.currentIntegrityStatus`, which reports such files as `"indeterminate"` and skips
+  them (mirroring `download`, which already skips integrity verification for those ETag classes)
+  instead of flagging a difference it cannot substantiate. Push behavior is unchanged.
 - `getSetupUrl` (the `b6p setup` command) always failed with "No stored metadata found … Pull the script
   first", even immediately after a successful pull and even when `audit`/`push` worked on the same file.
   Two stacked defects: (1) it read metadata from a raw `scriptMeta.<name>` persistence key that nothing
@@ -20,6 +28,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `ScriptFile.currentIntegrityStatus` — tri-state integrity check (`"match"` / `"mismatch"` /
+  `"indeterminate"`) distinguishing a genuine content difference from the absence of a comparable
+  upstairs content hash. `currentIntegrityMatches` now delegates to it.
+- Regression tests for audit integrity status (`test/AuditIntegrity.test.js`).
 - `PublicPersistanceMap.whenReady()` / `ScriptMetaDataStore.whenReady()` — await completion of the
   asynchronous initial load from persistence before reading the map synchronously. Awaited by
   `ScriptRoot.getMetaData` / `modifyMetaData` and the pull conflict-check, hardening `audit`/`push`

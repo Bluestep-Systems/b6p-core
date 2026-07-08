@@ -77,16 +77,32 @@ export class ScriptFile extends ScriptNode {
     return record ? record.lastVerifiedHash : null;
   }
 
-  public async currentIntegrityMatches(ops?: { upstairsOverride?: URL }): Promise<boolean> {
+  /**
+   * Compares the local content hash against the upstairs hash, distinguishing a genuine
+   * mismatch from the case where the server exposes no comparable content hash.
+   *
+   * The server serves some files (declaration/library files handled by the memory-document
+   * servlets) with numeric or complex ETags rather than a SHA-512 content hash. For those,
+   * {@link getUpstairsHash} returns `null`: we cannot assert whether the file matches, so the
+   * status is `"indeterminate"` rather than `"mismatch"`. This mirrors {@link download}, which
+   * likewise skips integrity verification for those same ETag classes.
+   *
+   * @returns `"match"` when hashes are equal, `"mismatch"` when both hashes are known but
+   *   differ, and `"indeterminate"` when no upstairs content hash is available to compare.
+   * @lastreviewed null
+   */
+  public async currentIntegrityStatus(ops?: {
+    upstairsOverride?: URL;
+  }): Promise<"match" | "mismatch" | "indeterminate"> {
     const localHash = await this.getHash();
     const upstairsHash = await this.getUpstairsHash(ops);
-    const matches = localHash === upstairsHash;
+    const status = upstairsHash === null ? "indeterminate" : localHash === upstairsHash ? "match" : "mismatch";
     this.ctx.logger.debug(
       "filename:",
       this.name(),
       "\n",
-      "matches:",
-      matches,
+      "status:",
+      status,
       "\n",
       "local:",
       localHash,
@@ -94,7 +110,11 @@ export class ScriptFile extends ScriptNode {
       "upstairs:",
       upstairsHash
     );
-    return matches;
+    return status;
+  }
+
+  public async currentIntegrityMatches(ops?: { upstairsOverride?: URL }): Promise<boolean> {
+    return (await this.currentIntegrityStatus(ops)) === "match";
   }
 
   public async oldIntegrityMatches(ops?: { upstairsOverride?: URL }): Promise<boolean> {

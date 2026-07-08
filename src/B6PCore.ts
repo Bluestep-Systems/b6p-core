@@ -316,15 +316,21 @@ export class B6PCore implements ScriptContext {
         changedFiles.push(entry.downstairsPath + " (new)");
         continue;
       }
-      // Use ScriptFile.currentIntegrityMatches() so that we get the same robust
-      // ETag handling (standard / weak / numeric / complex) used by download().
+      // Use ScriptFile.currentIntegrityStatus() so that we get the same robust ETag handling
+      // (standard / weak / numeric / complex) used by download(). Files served with numeric or
+      // complex ETags (declaration/library files) expose no content hash, so their status is
+      // "indeterminate" — we cannot assert a difference and must not report them as changed,
+      // exactly as download() skips their integrity verification. Only a genuine "mismatch",
+      // where both hashes are known and differ, counts as a changed file.
       const scriptRoot = factory.createScriptRoot(fileUri);
       scriptRoot.withParser(parser);
       const file = factory.createFile(fileUri, scriptRoot);
       const upstairsOverride = new URL(entry.upstairsPath);
-      const matches = await file.currentIntegrityMatches({ upstairsOverride });
-      if (!matches) {
+      const status = await file.currentIntegrityStatus({ upstairsOverride });
+      if (status === "mismatch") {
         changedFiles.push(entry.downstairsPath);
+      } else if (status === "indeterminate") {
+        this.logger.debug(`Skipping ${entry.downstairsPath}: server exposes no content hash to compare against`);
       }
     }
 
