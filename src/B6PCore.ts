@@ -505,35 +505,29 @@ export class B6PCore implements ScriptContext {
 
   async getSetupUrl(opts: { filePath: string }): Promise<string | null> {
     try {
-      const parser = new DownstairsPathParser(opts.filePath);
-      const metadataKey = `scriptMeta.${parser.scriptName}`;
-      const meta = await this.persistence.get<{ webdavUrl: string; classid: string; seqnum: string }>(metadataKey);
+      // Resolve stored metadata via the same script-root mechanism that `audit`
+      // and `push` use, rather than a raw `scriptMeta.<name>` persistence key
+      // that `pull` never writes. The metadata store is keyed by U + scriptName;
+      // the ScriptRoot derives both from the file path.
+      const root = this.getScriptFactory().createFile(B6PUri.fromFsPath(opts.filePath)).getScriptRoot();
+      const meta = await root.getMetaData();
 
-      if (!meta?.webdavUrl || !meta.classid || !meta.seqnum) {
-        this.prompt.error(`No stored metadata found for script "${parser.scriptName}". Pull the script first.`);
+      if (!meta) {
+        const scriptName = new DownstairsPathParser(opts.filePath).scriptName;
+        this.prompt.error(`No stored metadata found for script "${scriptName}". Pull the script first.`);
         return null;
       }
 
-      const origin = new URL(meta.webdavUrl).origin;
-
-      // Build setup URL using ScriptKey pattern from the main codebase
-      // Format: {origin}/shared/admin/applications/relate/{setupPage}?_event=edit&_id={classid__seqnum}
-      const SCRIPT_TYPE_REGISTRY: Record<string, { setupPage: string }> = {
-        "654015": { setupPage: "editformuladetails.jsp" },
-        "530024": { setupPage: "editdetailreport1.jsp" },
-        "363769": { setupPage: "editendpoint.jsp" },
-      };
-
-      const registry = SCRIPT_TYPE_REGISTRY[meta.classid];
-      if (!registry) {
-        this.prompt.error(`Unknown script type (classid: ${meta.classid}). Cannot generate setup URL.`);
+      // The ScriptKey (classid + seqnum) knows its own setup page and can build
+      // the setup URL against the org's origin.
+      const scriptKey = await root.getScriptKey();
+      if (!scriptKey.setupPage) {
+        this.prompt.error(`Unknown script type (classid: ${scriptKey.classid}). Cannot generate setup URL.`);
         return null;
       }
 
-      const compoundId = `${meta.classid}___${meta.seqnum}`;
-      const setupUrl = `${origin}/shared/admin/applications/relate/${registry.setupPage}?_event=edit&_id=${compoundId}`;
-
-      return setupUrl;
+      const origin = await root.anyOrigin();
+      return scriptKey.buildSetupUrl(origin);
     } catch (error) {
       this.logger.error(`Error generating setup URL: ${error instanceof Error ? error.message : error}`);
       return null;
