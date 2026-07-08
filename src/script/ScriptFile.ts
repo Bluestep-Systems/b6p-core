@@ -89,6 +89,7 @@ export class ScriptFile extends ScriptNode {
    *
    * @returns `"match"` when hashes are equal, `"mismatch"` when both hashes are known but
    *   differ, and `"indeterminate"` when no upstairs content hash is available to compare.
+   * @lastreviewed null
    */
   public async currentIntegrityStatus(ops?: {
     upstairsOverride?: URL;
