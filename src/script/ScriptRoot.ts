@@ -69,6 +69,7 @@ export class ScriptRoot {
   }
 
   public async modifyMetaData(callBack?: (meta: ScriptMetaData) => void): Promise<ScriptMetaData> {
+    await this.ctx.scriptMetadataStore.whenReady();
     const pathU = this.getUFromPath();
     const pathScriptName = this.getScriptNameFromPath();
 
@@ -118,6 +119,7 @@ export class ScriptRoot {
   }
 
   public async getMetaData(): Promise<ScriptMetaData | null> {
+    await this.ctx.scriptMetadataStore.whenReady();
     const pathU = this.getUFromPath();
     const pathScriptName = this.getScriptNameFromPath();
     return this.ctx.scriptMetadataStore.findByScriptName(pathU, pathScriptName) || null;
