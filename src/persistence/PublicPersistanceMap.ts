@@ -35,6 +35,9 @@ export class PublicPersistanceMap<T extends Serializable> extends PersistablePse
       },
       () => {
         // Leave the map empty on load failure; treated as "no data yet".
+        // Still mark as initialized: the load has settled, so isInitialized()
+        // must report true to stay consistent with the resolved `ready` promise.
+        this.initialized = true;
       }
     );
   }
