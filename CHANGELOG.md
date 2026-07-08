@@ -5,6 +5,28 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `getSetupUrl` (the `b6p setup` command) always failed with "No stored metadata found … Pull the script
+  first", even immediately after a successful pull and even when `audit`/`push` worked on the same file.
+  Two stacked defects: (1) it read metadata from a raw `scriptMeta.<name>` persistence key that nothing
+  writes, instead of the `ScriptMetaDataStore` (keyed by `U` + `scriptName`) that `pull` populates and
+  `audit`/`push` consume; and (2) the persistence-backed maps load from `state.json` asynchronously, so a
+  synchronous read before that load lands sees an empty store — `getSetupUrl` was the first command to
+  read metadata without a prior `await` to mask it. `getSetupUrl` now resolves via the shared store and
+  `ScriptKey.buildSetupUrl`, and the store load is awaited before lookups.
+
+### Added
+
+- `PublicPersistanceMap.whenReady()` / `ScriptMetaDataStore.whenReady()` — await completion of the
+  asynchronous initial load from persistence before reading the map synchronously. Awaited by
+  `ScriptRoot.getMetaData` / `modifyMetaData` and the pull conflict-check, hardening `audit`/`push`
+  (previously correct only by timing) alongside the `setup` fix.
+- Regression test for `getSetupUrl` covering URL resolution from stored metadata and the no-metadata
+  error path, exercising the readiness await.
+
 ## [0.2.0] - 2026-07-07
 
 ### Fixed
