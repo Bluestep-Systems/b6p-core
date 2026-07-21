@@ -95,6 +95,20 @@ export async function executePush(opts: {
     await scriptRoot.compileDraftFolder();
   }
 
+  // Push does NOT transpile client bundles (e.g. a MergeReport `static/script.ts`
+  // → `static/.build/script.js`); the platform serves that emitted JS verbatim
+  // rather than recompiling it. Warn loudly if a bundle's source is newer than
+  // its compiled output so a push can't silently ship stale client JS
+  // (b6p-cli#9). Runs for both plain and snapshot pushes; reflects on-disk state
+  // after any snapshot compile.
+  for (const { bundle, buildFolder } of await scriptRoot.findStaleClientBundles()) {
+    prompt.warn(
+      `Stale client bundle: source(s) under ${bundle} are newer than the compiled output in ${buildFolder}. ` +
+        `b6p push does not transpile client TypeScript — recompile the bundle before pushing, ` +
+        `or you will ship stale client JS.`
+    );
+  }
+
   const allFiles = await flattenDirectory(draftPath, fs);
   logger.info(`Found ${allFiles.length} files in draft folder`);
 
