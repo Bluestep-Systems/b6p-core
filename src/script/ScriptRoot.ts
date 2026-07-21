@@ -327,6 +327,13 @@ export class ScriptRoot {
     const uris = await this.getDraftFolder().flattenRaw();
     const files: { fsPath: string; mtime: number }[] = [];
     for (const uri of uris) {
+      // flattenRaw() also yields directory markers (produced via joinPath("/"),
+      // so their fsPath ends with a separator). Skip them up front to avoid a
+      // needless stat() per directory on large draft trees. The type check below
+      // is kept as defense-in-depth.
+      if (/[\\/]$/.test(uri.fsPath)) {
+        continue;
+      }
       try {
         const stat = await this.ctx.fs.stat(uri);
         if (stat.type === "file") {
