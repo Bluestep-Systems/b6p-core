@@ -5,7 +5,7 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.1] - 2026-07-21
 
 Fixes two `push` bugs around freshly-pulled MergeReport components that ship a `static/` bundle
 ([b6p-cli#9](https://github.com/Bluestep-Systems/b6p-cli/issues/9)).
