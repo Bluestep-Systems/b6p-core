@@ -5,6 +5,37 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Fixes two `push` bugs around freshly-pulled MergeReport components that ship a `static/` bundle
+([b6p-cli#9](https://github.com/Bluestep-Systems/b6p-cli/issues/9)).
+
+### Fixed
+
+- `push` no longer aborts on a `static/` sub-project whose `tsconfig.json` has an empty (`""`) or
+  missing `outDir`. `TsConfig.getBuildFolder()` treated an empty string as "not specified" and threw
+  `MissingConfigurationError`, aborting the whole pre-push build with a bare `outDir not specified`. It
+  now falls back to the transpiler's own default build folder (`.build`) via the new
+  `TsConfig.resolveOutDir()`. `.build` (not `.`) is deliberate: it keeps a source `.ts` out of "its
+  respective build folder", so the file stays eligible for transpile and the collision-prompt logic is
+  unaffected. Normalizing on pull was rejected — it would rewrite platform-served content and make
+  `audit` report the file as changed on every run. A fresh MergeReport static bundle can arrive with an
+  empty `outDir` from the platform's creation scaffold, which previously blocked every push.
+
+### Added
+
+- Loud stale-client-bundle warning on `push`. `b6p push` does not transpile client TypeScript, and the
+  platform serves a MergeReport `static/` bundle's compiled `static/.build/script.js` verbatim rather
+  than recompiling `static/script.ts` server-side (verified against a live org). Editing only the source
+  therefore silently shipped stale client JS. `ScriptRoot.findStaleClientBundles()` (with the pure,
+  unit-tested `ScriptRoot.selectStaleBundles()`) now flags any nested tsconfig sub-project whose newest
+  source `.ts`/`.tsx` is newer than the newest compiled `.js` in its build folder, and `executePush`
+  emits a loud warning for each — on both plain and snapshot pushes. The draft-root tsconfig (which
+  governs platform-compiled `scripts/*.ts`) is excluded, so it never false-fires.
+- `deleteBuildFolder()` routes its "build folder doesn't exist yet" note through the logger instead of
+  `console.log`, keeping `--json` stdout clean.
+- Regression tests: `test/TsConfigBuildFolder.test.js` and `test/StaleClientBundles.test.js`.
+
 ## [0.3.0] - 2026-07-08
 
 ### Fixed

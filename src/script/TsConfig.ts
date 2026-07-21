@@ -1,5 +1,6 @@
 import * as path from "path";
 import { Err } from "../Err";
+import { FolderNames } from "../constants";
 import { ScriptPathElement } from "./ScriptPathElement";
 import type { ScriptFile } from "./ScriptFile";
 import type { ScriptRoot } from "./ScriptRoot";
@@ -70,12 +71,35 @@ export class TsConfig implements ScriptPathElement {
   public async getBuildFolder() {
     const fileContents = await this.scriptRoot.ctx.fs.readFile(this.uri());
     const config = JSON.parse(Buffer.from(fileContents).toString("utf-8"));
-    const outDir =
-      config.compilerOptions?.outDir ||
-      (() => {
-        throw new Err.MissingConfigurationError("outDir");
-      })();
+    const outDir = TsConfig.resolveOutDir(config.compilerOptions?.outDir);
+    if (outDir !== config.compilerOptions?.outDir) {
+      // A fresh pull of a MergeReport `static/` sub-project can leave `outDir`
+      // as an empty string (or omit it). Rather than aborting the whole push
+      // with `MissingConfigurationError` (b6p-cli#9), fall back to the same
+      // default the transpiler uses (`.build`) so the build step tolerates it.
+      this.scriptRoot.ctx.logger.info(
+        `tsconfig at ${this.path()} has no usable outDir; defaulting build folder to "${outDir}".`
+      );
+    }
     return this.scriptRoot.factory.createFolder(this.folder().uri().joinPath(outDir), this.scriptRoot);
+  }
+
+  /**
+   * Normalize a tsconfig `outDir` to a usable build-folder name.
+   *
+   * An empty string, whitespace, or a missing/non-string value all mean "not
+   * specified"; we fall back to {@link FolderNames.DOT_BUILD} (`.build`) — the
+   * same default {@link ScriptTranspiler.DEFAULT_TS_CONFIG} emits to — instead
+   * of throwing. `.build` (rather than `.`) is deliberate: it keeps a source
+   * `.ts` OUT of "its respective build folder", so the file stays eligible for
+   * transpile and the push collision-prompt logic behaves normally.
+   * @lastreviewed null
+   */
+  static resolveOutDir(rawOutDir: unknown): string {
+    if (typeof rawOutDir === "string" && rawOutDir.trim().length > 0) {
+      return rawOutDir;
+    }
+    return FolderNames.DOT_BUILD;
   }
 
   public async relativePathToBuildFolder(): Promise<string> {

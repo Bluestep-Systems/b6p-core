@@ -273,10 +273,122 @@ export class ScriptRoot {
     const buildFolder = await this.getDraftBuildFolder();
     const buildUri = buildFolder.uri();
     if (!(await this.ctx.fs.exists(buildUri))) {
-      console.log("Build folder doesn't exist (this is fine)");
+      // Not an error: a fresh clone has no build folder yet. Route through the
+      // logger (not console.log) so it honors --verbose and keeps stdout clean
+      // for --json.
+      this.ctx.logger.info("Build folder doesn't exist yet (this is fine); nothing to delete.");
       return;
     }
     await this.ctx.fs.delete(buildUri, { recursive: true });
+  }
+
+  /**
+   * Find client-bundle sub-projects whose compiled output is stale — a source
+   * `.ts`/`.tsx` is newer than the newest compiled `.js` in that sub-project's
+   * build folder (or the build folder has no JS at all while sources exist).
+   *
+   * `b6p push` does NOT transpile client TypeScript. A MergeReport `static/`
+   * bundle compiles `static/script.ts` into `static/.build/script.js` (its
+   * `outDir`), and the platform serves that emitted JS verbatim — it does NOT
+   * recompile it server-side (verified against a live org). Editing only the
+   * `.ts` therefore silently ships stale client JS (b6p-cli#9). We surface it
+   * as a loud warning at push time.
+   *
+   * Only NESTED tsconfig sub-projects are client bundles: the draft-root
+   * `tsconfig.json` governs `scripts/*.ts`, which the platform DOES compile
+   * server-side, so a stale root build folder is harmless and must not warn.
+   * Any tsconfig below the draft root (e.g. `static/tsconfig.json`) is a client
+   * bundle whose emitted JS is the deployed artifact. This needs no hardcoded
+   * `static/` path.
+   * @lastreviewed null
+   */
+  public async findStaleClientBundles(): Promise<{ bundle: string; buildFolder: string }[]> {
+    const draftRootTsConfigPath = path.normalize(this.getDraftFolder().uri().joinPath(TsConfig.NAME).fsPath);
+    const bundles: { sourceRoot: string; buildFolder: string }[] = [];
+    for (const tsConfig of await this.findTsConfigFiles()) {
+      if (path.normalize(tsConfig.path()) === draftRootTsConfigPath) {
+        // Draft-root project → platform-compiled scripts; not a client bundle.
+        continue;
+      }
+      try {
+        const buildFolder = await tsConfig.getBuildFolder();
+        bundles.push({ sourceRoot: tsConfig.folder().uri().fsPath, buildFolder: buildFolder.uri().fsPath });
+      } catch (e) {
+        // A malformed sub-project tsconfig can't be assessed; skip it — staleness
+        // detection is best-effort and must never block a push.
+        this.ctx.logger.info(
+          `Skipping stale-bundle check for ${tsConfig.path()}: ${e instanceof Error ? e.message : e}`
+        );
+      }
+    }
+    if (bundles.length === 0) {
+      return [];
+    }
+    const uris = await this.getDraftFolder().flattenRaw();
+    const files: { fsPath: string; mtime: number }[] = [];
+    for (const uri of uris) {
+      try {
+        const stat = await this.ctx.fs.stat(uri);
+        if (stat.type === "file") {
+          files.push({ fsPath: uri.fsPath, mtime: stat.mtime });
+        }
+      } catch {
+        // Ignore entries we can't stat; staleness detection is best-effort.
+      }
+    }
+    return ScriptRoot.selectStaleBundles({ files, bundles });
+  }
+
+  /**
+   * Pure core of {@link findStaleClientBundles}: given draft files with mtimes
+   * and a set of client-bundle sub-projects (each a source root + its build
+   * folder), return the bundles whose newest source `.ts`/`.tsx` is newer than
+   * the newest compiled `.js` in the build folder — or whose build folder has
+   * no compiled JS at all while sources exist. `.d.ts` files are never sources.
+   * Extracted (and static) so it is unit-testable without a filesystem.
+   * @lastreviewed null
+   */
+  static selectStaleBundles(input: {
+    files: { fsPath: string; mtime: number }[];
+    bundles: { sourceRoot: string; buildFolder: string }[];
+  }): { bundle: string; buildFolder: string }[] {
+    const { files, bundles } = input;
+    const isUnder = (p: string, dir: string) => {
+      const np = path.normalize(p);
+      const nd = path.normalize(dir);
+      return np === nd || np.startsWith(nd + path.sep);
+    };
+    const isTsSource = (p: string) => {
+      const lower = p.toLowerCase();
+      if (lower.endsWith(".d.ts")) {
+        return false;
+      }
+      return lower.endsWith(FileExtensions.TYPESCRIPT) || lower.endsWith(FileExtensions.TYPESCRIPT_JSX);
+    };
+    const stale: { bundle: string; buildFolder: string }[] = [];
+    for (const { sourceRoot, buildFolder } of bundles) {
+      let newestSource = -Infinity;
+      let newestBuild = -Infinity;
+      for (const f of files) {
+        if (isUnder(f.fsPath, buildFolder)) {
+          if (f.fsPath.toLowerCase().endsWith(FileExtensions.JAVASCRIPT)) {
+            newestBuild = Math.max(newestBuild, f.mtime);
+          }
+          continue;
+        }
+        if (isUnder(f.fsPath, sourceRoot) && isTsSource(f.fsPath)) {
+          newestSource = Math.max(newestSource, f.mtime);
+        }
+      }
+      if (newestSource === -Infinity) {
+        // No source files under this bundle → nothing to be stale against.
+        continue;
+      }
+      if (newestSource > newestBuild) {
+        stale.push({ bundle: sourceRoot, buildFolder });
+      }
+    }
+    return stale;
   }
 
   public async compileDraftFolder(): Promise<void> {
