@@ -276,7 +276,13 @@ const RENAME_MAX_ATTEMPTS = RENAME_RETRY_DELAYS_MS.length + 1;
 async function atomicWrite(filePath: string, contents: string, lockDiagnoser?: ILockDiagnoser): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp.${process.pid}.${crypto.randomBytes(4).toString("hex")}`;
-  await fs.writeFile(tmp, contents, "utf-8");
+  try {
+    await fs.writeFile(tmp, contents, "utf-8");
+  } catch (err) {
+    // A failed temp write may still leave a partial file behind.
+    await safeUnlink(tmp);
+    throw err;
+  }
 
   let lastError: unknown;
   for (let attempt = 0; attempt < RENAME_MAX_ATTEMPTS; attempt++) {
@@ -325,6 +331,11 @@ async function safeUnlink(p: string): Promise<void> {
   }
 }
 
+// How long we wait for a best-effort lock diagnosis before giving up on it.
+// A hung diagnoser (e.g. Windows Restart Manager wedging) must not turn an
+// already-failed write into an indefinite hang.
+const DIAGNOSE_TIMEOUT_MS = 2_000;
+
 async function buildRenameError(
   filePath: string,
   originalError: unknown,
@@ -335,28 +346,42 @@ async function buildRenameError(
   const code = errnoCode(originalError) ?? "unknown error";
   const prefix = `Could not write ${fileName} after ${RENAME_MAX_ATTEMPTS} attempts (${code})`;
 
-  let holders: LockHolder[] = [];
-  if (lockDiagnoser) {
-    try {
-      holders = await lockDiagnoser.diagnose(filePath);
-    } catch {
-      // Diagnoser is best-effort — never let it mask the original error.
-      holders = [];
-    }
-  }
+  // `null` means no diagnoser, or the diagnosis failed/timed out — in which
+  // case we must NOT claim the "minifilter" fingerprint. A non-null array
+  // means the diagnosis actually completed (empty array = no user-mode holder).
+  const holders = lockDiagnoser ? await diagnoseSafely(lockDiagnoser, filePath) : null;
 
-  if (holders.length > 0) {
+  if (holders && holders.length > 0) {
     const list = holders.map((h) => `${h.name} (${h.pid})`).join(", ");
     return new Error(`${prefix} — locked by ${list}.`, { cause: originalError });
   }
 
-  // No user-mode holder. If a diagnoser ran and still found nothing, that null
-  // result is the fingerprint of a kernel filesystem minifilter.
-  const hint = lockDiagnoser
-    ? `No user-mode process holds the file — this signature points to a filesystem minifilter ` +
-      `(real-time AV / ransomware protection such as Sophos CryptoGuard) intercepting the rename. ` +
-      `Consider a scanning exclusion for ${dir}.`
-    : `The destination may be held open by another process (real-time AV, file sync, an editor, or a ` +
-      `second b6p process). Consider a scanning exclusion for ${dir}.`;
+  const hint =
+    holders !== null
+      ? // Diagnosis completed but found no user-mode holder — that null result
+        // is itself the fingerprint of a kernel filesystem minifilter.
+        `No user-mode process holds the file — this signature points to a filesystem minifilter ` +
+        `(real-time AV / ransomware protection such as Sophos CryptoGuard) intercepting the rename. ` +
+        `Consider a scanning exclusion for ${dir}.`
+      : // No diagnoser, or the diagnosis failed/timed out — stay non-committal.
+        `The destination may be held open by another process (real-time AV, file sync, an editor, or a ` +
+        `second b6p process). Consider a scanning exclusion for ${dir}.`;
   return new Error(`${prefix}. ${hint}`, { cause: originalError });
+}
+
+/**
+ * Runs the best-effort diagnoser, guarded by a timeout. Returns the holders on
+ * success, or `null` if the diagnoser threw or did not answer in time — so the
+ * caller can distinguish "diagnosed, none found" from "could not diagnose".
+ */
+async function diagnoseSafely(lockDiagnoser: ILockDiagnoser, filePath: string): Promise<LockHolder[] | null> {
+  try {
+    return await Promise.race([
+      lockDiagnoser.diagnose(filePath),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), DIAGNOSE_TIMEOUT_MS)),
+    ]);
+  } catch {
+    // Diagnoser is best-effort — never let it mask the original error.
+    return null;
+  }
 }

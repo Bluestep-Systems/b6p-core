@@ -263,13 +263,25 @@ export class B6PCore implements ScriptContext {
     // retry logic in SharedFilePersistence). The finally ensures whatever was
     // pulled before an error is still persisted.
     await this.scriptMetadataStore.beginBatch();
+    let pullSucceeded = false;
     try {
       await this.progress.withProgress(pullTasks, {
         title: "Pulling Script...",
         cleanupMessage: "Cleaning up the downstairs folder...",
       });
+      pullSucceeded = true;
     } finally {
-      await this.scriptMetadataStore.flush();
+      try {
+        await this.scriptMetadataStore.flush();
+      } catch (flushError) {
+        // If the pull itself failed, that error is the useful one — keep it and
+        // don't let a failed metadata flush mask it. Only surface the flush
+        // error when the pull otherwise succeeded.
+        if (pullSucceeded) {
+          throw flushError;
+        }
+        this.logger.error(`Failed to flush script metadata after a failed pull: ${String(flushError)}`);
+      }
     }
 
     this.prompt.info("Pull complete!");
