@@ -25,8 +25,8 @@ import { lockdownDir } from "./dirLockdown";
  * its contents by org+script internally, so a single global file is enough.
  *
  * Concurrency model: last-writer-wins. Reads always re-load from disk so a
- * change made by one process is visible to the other. Writes go to a temp
- * file and atomically rename into place to avoid partial-write corruption.
+ * change made by one process is visible to the other. Writes are debounced
+ * and retried with direct file writes.
  *
  * Threat model: encryption protects against accidental disclosure (backups,
  * git commits, file shares). It does not protect against an attacker with
@@ -41,6 +41,7 @@ export class SharedFilePersistence implements IPersistence {
   private cachedKey: Buffer | null = null;
   private dirReady = false;
   private pendingBootstrap: Promise<void> | null = null;
+  private readonly debouncedWrites = new Map<string, DebouncedWrite>();
 
   constructor(configDirOverride?: string) {
     this.configDir = configDirOverride ?? path.join(os.homedir(), ".b6p");
@@ -153,7 +154,7 @@ export class SharedFilePersistence implements IPersistence {
 
   private async saveState(state: Record<string, unknown>): Promise<void> {
     await this.ensureDir();
-    await atomicWrite(this.statePath, JSON.stringify(state, null, 2));
+    await this.scheduleWrite(this.statePath, JSON.stringify(state, null, 2));
   }
 
   // ── Internal: secrets ─────────────────────────────────────────────
@@ -195,7 +196,57 @@ export class SharedFilePersistence implements IPersistence {
       tag: tag.toString("base64"),
       data: ciphertext.toString("base64"),
     };
-    await atomicWrite(this.secretsPath, JSON.stringify(blob));
+    await this.scheduleWrite(this.secretsPath, JSON.stringify(blob));
+  }
+
+  private async scheduleWrite(filePath: string, contents: string): Promise<void> {
+    const existing = this.debouncedWrites.get(filePath);
+    const entry: DebouncedWrite =
+      existing ??
+      ({
+        latestContents: contents,
+        timer: null,
+        pendingResolvers: [],
+        inFlight: Promise.resolve(),
+      } satisfies DebouncedWrite);
+
+    entry.latestContents = contents;
+
+    const result = new Promise<void>((resolve, reject) => {
+      entry.pendingResolvers.push({ resolve, reject });
+    });
+
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+    }
+
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      const payload = entry.latestContents;
+      const resolvers = entry.pendingResolvers;
+      entry.pendingResolvers = [];
+
+      entry.inFlight = entry.inFlight
+        .then(async () => {
+          await atomicWrite(filePath, payload);
+          for (const resolver of resolvers) {
+            resolver.resolve();
+          }
+        })
+        .catch((error: unknown) => {
+          for (const resolver of resolvers) {
+            resolver.reject(error);
+          }
+        })
+        .finally(() => {
+          if (!entry.timer && entry.pendingResolvers.length === 0) {
+            this.debouncedWrites.delete(filePath);
+          }
+        });
+    }, WRITE_DEBOUNCE_MS);
+
+    this.debouncedWrites.set(filePath, entry);
+    return result;
   }
 
   // ── Internal: dir + key bootstrap ─────────────────────────────────
@@ -239,6 +290,16 @@ export class SharedFilePersistence implements IPersistence {
   }
 }
 
+type DebouncedWrite = {
+  latestContents: string;
+  timer: ReturnType<typeof setTimeout> | null;
+  pendingResolvers: Array<{
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  }>;
+  inFlight: Promise<void>;
+};
+
 // ── File helpers ────────────────────────────────────────────────────
 
 async function fileExists(p: string): Promise<boolean> {
@@ -261,7 +322,31 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
 
 async function atomicWrite(filePath: string, contents: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp.${process.pid}.${crypto.randomBytes(4).toString("hex")}`;
-  await fs.writeFile(tmp, contents, "utf-8");
-  await fs.rename(tmp, filePath);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= WRITE_RETRY_MAX_ATTEMPTS; attempt++) {
+    try {
+      await fs.writeFile(filePath, contents, "utf-8");
+      return;
+    } catch (error: unknown) {
+      lastError = error;
+      if (attempt === WRITE_RETRY_MAX_ATTEMPTS) {
+        break;
+      }
+      await delay(WRITE_RETRY_DELAY_MS);
+    }
+  }
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+  throw new Error(`Failed to write ${filePath}`);
 }
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+const WRITE_DEBOUNCE_MS = 5_000;
+const WRITE_RETRY_MAX_ATTEMPTS = 3;
+const WRITE_RETRY_DELAY_MS = 100;

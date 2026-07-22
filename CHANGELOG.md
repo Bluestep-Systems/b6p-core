@@ -5,6 +5,15 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `SharedFilePersistence` now debounces writes to `state.json` and `secrets.enc` for 5 seconds per target
+  file so rapid successive updates coalesce to a single disk write of the latest payload.
+- Persistence writes now use direct `fs.writeFile(..., "utf-8")` with bounded retries instead of temp-file
+  + rename atomic writes, reducing antivirus interference at the cost of atomic-write guarantees.
+
 ## [0.3.1] - 2026-07-21
 
 Fixes two `push` bugs around freshly-pulled MergeReport components that ship a `static/` bundle
