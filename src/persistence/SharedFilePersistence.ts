@@ -26,7 +26,8 @@ import { lockdownDir } from "./dirLockdown";
  *
  * Concurrency model: last-writer-wins. Reads always re-load from disk so a
  * change made by one process is visible to the other. Writes are debounced
- * and retried with direct file writes.
+ * and retried with direct file writes (not temp-file+rename atomic writes),
+ * so a process crash during write can leave a partial file.
  *
  * Threat model: encryption protects against accidental disclosure (backups,
  * git commits, file shares). It does not protect against an attacker with
@@ -201,16 +202,13 @@ export class SharedFilePersistence implements IPersistence {
 
   private async scheduleWrite(filePath: string, contents: string): Promise<void> {
     const existing = this.debouncedWrites.get(filePath);
-    const entry: DebouncedWrite =
-      existing ??
-      ({
-        latestContents: contents,
-        timer: null,
-        pendingResolvers: [],
-        inFlight: Promise.resolve(),
-      } satisfies DebouncedWrite);
+    const entry: DebouncedWrite = existing ?? createDebouncedWrite(contents);
+    if (!existing) {
+      this.debouncedWrites.set(filePath, entry);
+    }
 
     entry.latestContents = contents;
+    entry.version += 1;
 
     const result = new Promise<void>((resolve, reject) => {
       entry.pendingResolvers.push({ resolve, reject });
@@ -221,14 +219,15 @@ export class SharedFilePersistence implements IPersistence {
     }
 
     entry.timer = setTimeout(() => {
-      entry.timer = null;
       const payload = entry.latestContents;
-      const resolvers = entry.pendingResolvers;
+      const resolvers = [...entry.pendingResolvers];
+      const version = entry.version;
       entry.pendingResolvers = [];
+      entry.timer = null;
 
       entry.inFlight = entry.inFlight
         .then(async () => {
-          await atomicWrite(filePath, payload);
+          await writeWithRetry(filePath, payload);
           for (const resolver of resolvers) {
             resolver.resolve();
           }
@@ -239,13 +238,12 @@ export class SharedFilePersistence implements IPersistence {
           }
         })
         .finally(() => {
-          if (!entry.timer && entry.pendingResolvers.length === 0) {
+          if (entry.version === version && !entry.timer && entry.pendingResolvers.length === 0) {
             this.debouncedWrites.delete(filePath);
           }
         });
     }, WRITE_DEBOUNCE_MS);
 
-    this.debouncedWrites.set(filePath, entry);
     return result;
   }
 
@@ -277,7 +275,7 @@ export class SharedFilePersistence implements IPersistence {
       // No key yet.
     }
     const buf = crypto.randomBytes(32);
-    await atomicWrite(this.keyPath, buf.toString("hex"));
+    await writeWithRetry(this.keyPath, buf.toString("hex"));
     if (process.platform !== "win32") {
       try {
         await fs.chmod(this.keyPath, 0o600);
@@ -291,13 +289,19 @@ export class SharedFilePersistence implements IPersistence {
 }
 
 type DebouncedWrite = {
+  // Last payload requested for this path; written when the debounce timer fires.
   latestContents: string;
+  // Active debounce timer for this path (if a write is currently scheduled).
   timer: ReturnType<typeof setTimeout> | null;
+  // Callers awaiting completion of the currently scheduled write.
   pendingResolvers: Array<{
     resolve: () => void;
     reject: (error: unknown) => void;
   }>;
+  // Serializes write attempts for this path.
   inFlight: Promise<void>;
+  // Monotonically increasing generation used to guard cleanup against stale completions.
+  version: number;
 };
 
 // ── File helpers ────────────────────────────────────────────────────
@@ -320,7 +324,17 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
   }
 }
 
-async function atomicWrite(filePath: string, contents: string): Promise<void> {
+function createDebouncedWrite(contents: string): DebouncedWrite {
+  return {
+    latestContents: contents,
+    timer: null,
+    pendingResolvers: [],
+    inFlight: Promise.resolve(),
+    version: 0,
+  };
+}
+
+async function writeWithRetry(filePath: string, contents: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   let lastError: unknown;
   for (let attempt = 1; attempt <= WRITE_RETRY_MAX_ATTEMPTS; attempt++) {
@@ -329,16 +343,18 @@ async function atomicWrite(filePath: string, contents: string): Promise<void> {
       return;
     } catch (error: unknown) {
       lastError = error;
-      if (attempt === WRITE_RETRY_MAX_ATTEMPTS) {
-        break;
+      if (attempt < WRITE_RETRY_MAX_ATTEMPTS) {
+        await delay(WRITE_RETRY_DELAY_MS);
       }
-      await delay(WRITE_RETRY_DELAY_MS);
     }
   }
   if (lastError instanceof Error) {
     throw lastError;
   }
-  throw new Error(`Failed to write ${filePath}`);
+  throw new Error(
+    `Failed to write ${filePath} after ${WRITE_RETRY_MAX_ATTEMPTS} attempt(s) with ${WRITE_RETRY_DELAY_MS}ms between retries`,
+    { cause: lastError }
+  );
 }
 
 function delay(ms: number): Promise<void> {
@@ -347,6 +363,9 @@ function delay(ms: number): Promise<void> {
   });
 }
 
+// Coalesce bursts of writes for the same target file.
 const WRITE_DEBOUNCE_MS = 5_000;
+// Retry direct write failures a bounded number of times.
 const WRITE_RETRY_MAX_ATTEMPTS = 3;
+// Small fixed delay between bounded retry attempts.
 const WRITE_RETRY_DELAY_MS = 100;
