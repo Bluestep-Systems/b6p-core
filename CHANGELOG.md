@@ -5,6 +5,34 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `SharedFilePersistence.atomicWrite` now retries `fs.rename` on transient Windows lock errors
+  (`EPERM`/`EBUSY`/`EACCES`) with exponential backoff (up to 7 attempts, ~2.55s) instead of failing on
+  the first error. This is the race that killed `pull` near the end (~21/23) when real-time AV /
+  ransomware protection, file sync, an editor, or a second `b6p` process momentarily held `state.json`
+  open. The temp file is cleaned up on every failure exit, so failed writes no longer leave `.tmp`
+  residue. Non-lock errno values are still thrown immediately.
+  ([#8](https://github.com/Bluestep-Systems/b6p-core/issues/8))
+
+### Added
+
+- New injectable `ILockDiagnoser` provider (with `LockHolder`) on `B6PProviders` and the
+  `SharedFilePersistence` constructor. When rename retries are exhausted, core calls the diagnoser
+  (best-effort, never throws) to annotate the error with the processes holding the file — or, when no
+  user-mode process holds it, a hint that a filesystem minifilter (e.g. Sophos CryptoGuard) is likely
+  intercepting the rename. The OS-specific implementation lives in the consumer (CLI / extension).
+
+### Changed
+
+- `pull` now coalesces the per-script metadata writes into a single atomic write at the end of the run
+  instead of rewriting `state.json` once per script. This reduces the rapid write burst that trips
+  antivirus/ransomware heuristics in the first place, while keeping atomic temp-file + rename semantics
+  (no partial-write risk) and without any blocking write debounce. Backed by a new `update` flag on
+  `PersistablePseudoMap.set` and `beginBatch()` / `flush()` on `ScriptMetaDataStore`.
+
 ## [0.3.1] - 2026-07-21
 
 Fixes two `push` bugs around freshly-pulled MergeReport components that ship a `static/` bundle

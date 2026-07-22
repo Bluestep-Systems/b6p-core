@@ -257,10 +257,20 @@ export class B6PCore implements ScriptContext {
       description: "scripts",
     }));
 
-    await this.progress.withProgress(pullTasks, {
-      title: "Pulling Script...",
-      cleanupMessage: "Cleaning up the downstairs folder...",
-    });
+    // Coalesce the per-script metadata writes into a single atomic write at the
+    // end of the pull. Each task's upsert would otherwise rewrite state.json in
+    // a rapid burst, which trips AV / ransomware heuristics on Windows (see the
+    // retry logic in SharedFilePersistence). The finally ensures whatever was
+    // pulled before an error is still persisted.
+    await this.scriptMetadataStore.beginBatch();
+    try {
+      await this.progress.withProgress(pullTasks, {
+        title: "Pulling Script...",
+        cleanupMessage: "Cleaning up the downstairs folder...",
+      });
+    } finally {
+      await this.scriptMetadataStore.flush();
+    }
 
     this.prompt.info("Pull complete!");
   }

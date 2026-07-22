@@ -113,6 +113,29 @@ export interface IProgress {
   ): Promise<T[]>;
 }
 
+// ── Lock diagnostics ────────────────────────────────────────────────
+
+/** A process holding an open handle on a file. */
+export interface LockHolder {
+  name: string;
+  pid: number;
+}
+
+export interface ILockDiagnoser {
+  /**
+   * Best-effort: the processes holding an open handle on `fsPath`. Returns
+   * `[]` if unknown or unsupported on this platform. MUST NEVER throw — the
+   * core layer calls this only to annotate an already-failing write, and a
+   * diagnoser error must never mask the underlying file-system error.
+   *
+   * NOTE: a "no holder" result (`[]`) does not prove the file is unlocked. A
+   * kernel filesystem minifilter (e.g. real-time AV / ransomware protection)
+   * holds no user-mode handle and is therefore invisible to a handle-based
+   * implementation — so an empty result is itself a minifilter fingerprint.
+   */
+  diagnose(fsPath: string): Promise<LockHolder[]>;
+}
+
 // ── Aggregate ───────────────────────────────────────────────────────
 
 /**
@@ -125,6 +148,20 @@ export interface B6PProviders {
   prompt: IPrompt;
   logger: ILogger;
   progress: IProgress;
+  /**
+   * Optional best-effort lock diagnoser. When a shared-state write fails after
+   * its bounded rename retries, the persistence layer calls this to name the
+   * processes holding the file open and include them in the thrown error. The
+   * OS-specific implementation (e.g. Windows Restart Manager) lives in the
+   * consumer, keeping core platform-agnostic. Defaults to none (no annotation).
+   *
+   * NOTE: `SharedFilePersistence` is constructed by the consumer and passed in
+   * as `persistence`, so core cannot inject this for you — pass the same
+   * `ILockDiagnoser` instance to the `SharedFilePersistence` constructor. This
+   * field exists for API symmetry and for consumers that let core wire
+   * persistence.
+   */
+  lockDiagnoser?: ILockDiagnoser;
   /** Optional debug-mode flag callback. Defaults to `() => false` if not provided. */
   isDebugMode?: () => boolean;
   /**

@@ -16,8 +16,41 @@ const STORE_KEY = "all";
 export class ScriptMetaDataStore {
   private readonly metadataMap: PublicPersistanceMap<ScriptMetaData[]>;
 
+  /** When true, upserts/removes mutate memory only and defer the disk write to {@link flush}. */
+  private batching = false;
+  /** Whether a deferred write is pending during a batch. */
+  private pendingFlush = false;
+
   constructor(persistence: IPersistence) {
     this.metadataMap = new PublicPersistanceMap(PublicKeys.SCRIPT_METADATA, persistence);
+  }
+
+  /**
+   * Begins a write-coalescing batch: subsequent {@link upsert} / {@link remove}
+   * calls mutate the in-memory store but defer the disk write until
+   * {@link flush} is called. Used to collapse the burst of per-script writes
+   * during a pull into a single atomic write. Awaits the initial load first so
+   * the coalesced write includes pre-existing entries instead of overwriting
+   * them.
+   */
+  public async beginBatch(): Promise<void> {
+    await this.metadataMap.whenReady();
+    this.batching = true;
+    this.pendingFlush = false;
+  }
+
+  /**
+   * Ends a batch started by {@link beginBatch}, writing any deferred changes in
+   * a single store. Safe to call when no batch is active or nothing changed —
+   * it writes only when there is a pending change.
+   */
+  public async flush(): Promise<void> {
+    const shouldWrite = this.batching && this.pendingFlush;
+    this.batching = false;
+    this.pendingFlush = false;
+    if (shouldWrite) {
+      await this.metadataMap.store();
+    }
   }
 
   /**
@@ -66,7 +99,10 @@ export class ScriptMetaDataStore {
     } else {
       entries.push(metadata);
     }
-    await this.metadataMap.set(STORE_KEY, entries);
+    await this.metadataMap.set(STORE_KEY, entries, !this.batching);
+    if (this.batching) {
+      this.pendingFlush = true;
+    }
   }
 
   /**
@@ -101,6 +137,9 @@ export class ScriptMetaDataStore {
   /** Removes a metadata entry by U + webdavId. */
   public async remove(U: string, webdavId: string): Promise<void> {
     const entries = this.all().filter((m) => !(m.U === U && m.webdavId === webdavId));
-    await this.metadataMap.set(STORE_KEY, entries);
+    await this.metadataMap.set(STORE_KEY, entries, !this.batching);
+    if (this.batching) {
+      this.pendingFlush = true;
+    }
   }
 }
