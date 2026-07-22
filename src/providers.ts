@@ -132,6 +132,7 @@ export interface ILockDiagnoser {
    * kernel filesystem minifilter (e.g. real-time AV / ransomware protection)
    * holds no user-mode handle and is therefore invisible to a handle-based
    * implementation — so an empty result is itself a minifilter fingerprint.
+   * @lastreviewed null
    */
   diagnose(fsPath: string): Promise<LockHolder[]>;
 }
@@ -160,6 +161,7 @@ export interface B6PProviders {
    * `ILockDiagnoser` instance to the `SharedFilePersistence` constructor. This
    * field exists for API symmetry and for consumers that let core wire
    * persistence.
+   * @lastreviewed null
    */
   lockDiagnoser?: ILockDiagnoser;
   /** Optional debug-mode flag callback. Defaults to `() => false` if not provided. */

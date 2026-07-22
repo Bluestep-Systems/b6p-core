@@ -50,7 +50,7 @@ export abstract class PersistablePseudoMap<T extends Serializable>
    * after a batch of sets. This is used to coalesce bursty writes (e.g. the
    * per-script metadata writes during a pull) into a single atomic write, and
    * mirrors the `update` flag on `TypedPersistable.set`.
-   * @lastreviewed 2025-10-07
+   * @lastreviewed null
    */
   override async set(key: string, value: T, update: boolean = true) {
     super.set(key, value);

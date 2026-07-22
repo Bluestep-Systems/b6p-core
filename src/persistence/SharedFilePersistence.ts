@@ -353,12 +353,12 @@ async function buildRenameError(
 
   if (holders && holders.length > 0) {
     const list = holders.map((h) => `${h.name} (${h.pid})`).join(", ");
-    return new Error(`${prefix} — locked by ${list}.`, { cause: originalError });
+    return annotateError(originalError, `${prefix} — locked by ${list}.`);
   }
 
   const hint =
     holders !== null
-      ? // Diagnosis completed but found no user-mode holder — that null result
+      ? // Diagnosis completed but found no user-mode holder — that empty result
         // is itself the fingerprint of a kernel filesystem minifilter.
         `No user-mode process holds the file — this signature points to a filesystem minifilter ` +
         `(real-time AV / ransomware protection such as Sophos CryptoGuard) intercepting the rename. ` +
@@ -366,13 +366,29 @@ async function buildRenameError(
       : // No diagnoser, or the diagnosis failed/timed out — stay non-committal.
         `The destination may be held open by another process (real-time AV, file sync, an editor, or a ` +
         `second b6p process). Consider a scanning exclusion for ${dir}.`;
-  return new Error(`${prefix}. ${hint}`, { cause: originalError });
+  return annotateError(originalError, `${prefix}. ${hint}`);
+}
+
+/**
+ * Produces the error to throw for an exhausted rename. When the underlying
+ * failure is a real `Error`, we reuse it and only replace its message, so the
+ * errno metadata (`.code`, `.path`, `.syscall`) and original stack survive for
+ * callers that branch on them. Non-`Error` throwables are wrapped with `cause`.
+ * @lastreviewed null
+ */
+function annotateError(originalError: unknown, message: string): Error {
+  if (originalError instanceof Error) {
+    originalError.message = message;
+    return originalError;
+  }
+  return new Error(message, { cause: originalError });
 }
 
 /**
  * Runs the best-effort diagnoser, guarded by a timeout. Returns the holders on
  * success, or `null` if the diagnoser threw or did not answer in time — so the
  * caller can distinguish "diagnosed, none found" from "could not diagnose".
+ * @lastreviewed null
  */
 async function diagnoseSafely(lockDiagnoser: ILockDiagnoser, filePath: string): Promise<LockHolder[] | null> {
   try {

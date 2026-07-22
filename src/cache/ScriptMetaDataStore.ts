@@ -21,6 +21,7 @@ export class ScriptMetaDataStore {
    * mutate memory only and defer the disk write. A depth counter (rather than a
    * boolean) keeps two overlapping batches from stranding each other's pending
    * writes — the coalesced write happens only when the outermost batch ends.
+   * @lastreviewed null
    */
   private batchDepth = 0;
   /** Count of deferred writes not yet persisted within the current batch. */
@@ -30,6 +31,7 @@ export class ScriptMetaDataStore {
    * Upper bound on deferred writes before we flush mid-batch. Bounds how much
    * metadata a hard interrupt (SIGINT / crash, which bypasses {@link flush}) can
    * lose, while still collapsing the bulk of a pull's per-script write burst.
+   * @lastreviewed null
    */
   private static readonly BATCH_FLUSH_THRESHOLD = 10;
 
@@ -48,6 +50,7 @@ export class ScriptMetaDataStore {
    * into a single atomic write. Awaits the initial load first so the coalesced
    * write includes pre-existing entries instead of overwriting them. Nestable:
    * each `beginBatch` must be paired with a `flush`.
+   * @lastreviewed null
    */
   public async beginBatch(): Promise<void> {
     await this.metadataMap.whenReady();
@@ -60,6 +63,7 @@ export class ScriptMetaDataStore {
    * changed — it writes only when there is a pending change. Flags are always
    * reset (even if the store throws) so a failed flush returns the store to
    * normal write-through mode rather than silently staying in batch mode.
+   * @lastreviewed null
    */
   public async flush(): Promise<void> {
     if (this.batchDepth > 0) {
@@ -78,6 +82,7 @@ export class ScriptMetaDataStore {
   /**
    * Persists the in-memory store mid-batch once enough writes have accumulated,
    * so a hard interrupt can't discard an unbounded amount of pulled metadata.
+   * @lastreviewed null
    */
   private async maybeAutoFlush(): Promise<void> {
     if (this.pendingWrites < ScriptMetaDataStore.BATCH_FLUSH_THRESHOLD) {

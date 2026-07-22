@@ -13,8 +13,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`EPERM`/`EBUSY`/`EACCES`) with exponential backoff (up to 7 attempts, ~2.55s) instead of failing on
   the first error. This is the race that killed `pull` near the end (~21/23) when real-time AV /
   ransomware protection, file sync, an editor, or a second `b6p` process momentarily held `state.json`
-  open. The temp file is cleaned up on every failure exit, so failed writes no longer leave `.tmp`
-  residue. Non-lock errno values are still thrown immediately.
+  open. The temp file is best-effort cleaned up on failure exits, so failed writes no longer leave `.tmp`
+  residue behind. Non-lock errno values are still thrown immediately.
   ([#8](https://github.com/Bluestep-Systems/b6p-core/issues/8))
 
 ### Added
