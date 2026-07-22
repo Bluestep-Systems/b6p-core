@@ -19,7 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- New injectable `ILockDiagnoser` provider (with `LockHolder`) on `B6PProviders` and the
+- New injectable `ILockDiagnoser` provider (with `LockHolder`), injected via the
   `SharedFilePersistence` constructor. When rename retries are exhausted, core calls the diagnoser
   (best-effort, never throws) to annotate the error with the processes holding the file — or, when no
   user-mode process holds it, a hint that a filesystem minifilter (e.g. Sophos CryptoGuard) is likely

@@ -149,21 +149,6 @@ export interface B6PProviders {
   prompt: IPrompt;
   logger: ILogger;
   progress: IProgress;
-  /**
-   * Optional best-effort lock diagnoser. When a shared-state write fails after
-   * its bounded rename retries, the persistence layer calls this to name the
-   * processes holding the file open and include them in the thrown error. The
-   * OS-specific implementation (e.g. Windows Restart Manager) lives in the
-   * consumer, keeping core platform-agnostic. Defaults to none (no annotation).
-   *
-   * NOTE: `SharedFilePersistence` is constructed by the consumer and passed in
-   * as `persistence`, so core cannot inject this for you — pass the same
-   * `ILockDiagnoser` instance to the `SharedFilePersistence` constructor. This
-   * field exists for API symmetry and for consumers that let core wire
-   * persistence.
-   * @lastreviewed null
-   */
-  lockDiagnoser?: ILockDiagnoser;
   /** Optional debug-mode flag callback. Defaults to `() => false` if not provided. */
   isDebugMode?: () => boolean;
   /**
