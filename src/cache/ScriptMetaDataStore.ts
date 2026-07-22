@@ -24,7 +24,10 @@ export class ScriptMetaDataStore {
    * @lastreviewed null
    */
   private batchDepth = 0;
-  /** Count of deferred writes not yet persisted within the current batch. */
+  /**
+   * Count of deferred writes not yet persisted within the current batch.
+   * @lastreviewed null
+   */
   private pendingWrites = 0;
 
   /**
@@ -60,9 +63,11 @@ export class ScriptMetaDataStore {
   /**
    * Ends a batch started by {@link beginBatch}. The deferred changes are written
    * in a single store when the outermost batch ends. Safe to call when nothing
-   * changed — it writes only when there is a pending change. Flags are always
-   * reset (even if the store throws) so a failed flush returns the store to
-   * normal write-through mode rather than silently staying in batch mode.
+   * changed — it writes only when there is a pending change. The batch depth is
+   * decremented up front so a failed store never leaves the store stuck in batch
+   * mode; but `pendingWrites` is cleared only *after* a successful store. If the
+   * store throws, the changes stay marked pending so a later write still
+   * persists them (rather than being silently dropped).
    * @lastreviewed null
    */
   public async flush(): Promise<void> {
@@ -72,27 +77,23 @@ export class ScriptMetaDataStore {
     if (this.batchDepth > 0 || this.pendingWrites === 0) {
       return;
     }
-    try {
-      await this.metadataMap.store();
-    } finally {
-      this.pendingWrites = 0;
-    }
+    await this.metadataMap.store();
+    this.pendingWrites = 0;
   }
 
   /**
    * Persists the in-memory store mid-batch once enough writes have accumulated,
    * so a hard interrupt can't discard an unbounded amount of pulled metadata.
+   * `pendingWrites` is cleared only on a successful store; if it throws, the
+   * changes remain pending so a later flush retries them.
    * @lastreviewed null
    */
   private async maybeAutoFlush(): Promise<void> {
     if (this.pendingWrites < ScriptMetaDataStore.BATCH_FLUSH_THRESHOLD) {
       return;
     }
-    try {
-      await this.metadataMap.store();
-    } finally {
-      this.pendingWrites = 0;
-    }
+    await this.metadataMap.store();
+    this.pendingWrites = 0;
   }
 
   /**

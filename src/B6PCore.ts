@@ -260,8 +260,9 @@ export class B6PCore implements ScriptContext {
     // Coalesce the per-script metadata writes into a single atomic write at the
     // end of the pull. Each task's upsert would otherwise rewrite state.json in
     // a rapid burst, which trips AV / ransomware heuristics on Windows (see the
-    // retry logic in SharedFilePersistence). The finally ensures whatever was
-    // pulled before an error is still persisted.
+    // retry logic in SharedFilePersistence). On a failed pull the finally still
+    // makes a best-effort flush of what was pulled so far; if that flush also
+    // fails it is logged (not thrown) so the pull's own error is what surfaces.
     await this.scriptMetadataStore.beginBatch();
     let pullSucceeded = false;
     try {

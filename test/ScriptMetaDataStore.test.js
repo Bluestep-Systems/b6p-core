@@ -21,13 +21,22 @@ function makePersistence(initial) {
   const store = new Map(Object.entries(initial || {}));
   const secrets = new Map();
   let writes = 0;
+  let failNext = false;
   return {
     writes: () => writes,
     stored: () => store.get(SCRIPT_METADATA_KEY),
+    /** Make the next `set` throw once, to simulate a failed disk write. */
+    failNextWrite() {
+      failNext = true;
+    },
     async get(key) {
       return store.has(key) ? store.get(key) : undefined;
     },
     async set(key, value) {
+      if (failNext) {
+        failNext = false;
+        throw new Error("simulated write failure");
+      }
       writes += 1;
       // Deep-clone so later in-memory mutations can't retroactively change what
       // we assert was persisted at write time.
@@ -130,6 +139,22 @@ async function test(name, fn) {
       .all.map((m) => m.webdavId)
       .sort();
     assert.deepStrictEqual(stored, ["1", "99"], "the pre-existing entry must survive the coalesced write");
+  });
+
+  await test("a failed flush keeps changes pending so a later flush persists them", async () => {
+    const p = makePersistence();
+    const store = new ScriptMetaDataStore(p);
+    await store.beginBatch();
+    await store.upsert(meta(1));
+    await store.upsert(meta(2));
+    p.failNextWrite();
+    await assert.rejects(() => store.flush(), /simulated write failure/);
+    assert.strictEqual(p.writes(), 0, "the failed store must not have persisted anything");
+    // The changes are still marked pending, so a subsequent flush writes them
+    // rather than no-oping (the drop-on-failure regression this guards against).
+    await store.flush();
+    assert.strictEqual(p.writes(), 1, "a later flush persists the still-pending changes");
+    assert.strictEqual(p.stored().all.length, 2, "no batched update is dropped");
   });
 
   if (failures > 0) {

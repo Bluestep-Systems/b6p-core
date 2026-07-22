@@ -115,7 +115,10 @@ export interface IProgress {
 
 // ── Lock diagnostics ────────────────────────────────────────────────
 
-/** A process holding an open handle on a file. */
+/**
+ * A process holding an open handle on a file.
+ * @lastreviewed null
+ */
 export interface LockHolder {
   name: string;
   pid: number;
