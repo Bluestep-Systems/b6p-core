@@ -2,7 +2,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import * as os from "os";
 import * as crypto from "crypto";
-import type { IPersistence } from "../providers";
+import type { IPersistence, ILockDiagnoser, LockHolder } from "../providers";
 import { lockdownDir } from "./dirLockdown";
 
 /**
@@ -41,12 +41,14 @@ export class SharedFilePersistence implements IPersistence {
   private cachedKey: Buffer | null = null;
   private dirReady = false;
   private pendingBootstrap: Promise<void> | null = null;
+  private readonly lockDiagnoser?: ILockDiagnoser;
 
-  constructor(configDirOverride?: string) {
+  constructor(configDirOverride?: string, lockDiagnoser?: ILockDiagnoser) {
     this.configDir = configDirOverride ?? path.join(os.homedir(), ".b6p");
     this.statePath = path.join(this.configDir, "state.json");
     this.secretsPath = path.join(this.configDir, "secrets.enc");
     this.keyPath = path.join(this.configDir, "key");
+    this.lockDiagnoser = lockDiagnoser;
   }
 
   /**
@@ -153,7 +155,7 @@ export class SharedFilePersistence implements IPersistence {
 
   private async saveState(state: Record<string, unknown>): Promise<void> {
     await this.ensureDir();
-    await atomicWrite(this.statePath, JSON.stringify(state, null, 2));
+    await atomicWrite(this.statePath, JSON.stringify(state, null, 2), this.lockDiagnoser);
   }
 
   // ── Internal: secrets ─────────────────────────────────────────────
@@ -195,7 +197,7 @@ export class SharedFilePersistence implements IPersistence {
       tag: tag.toString("base64"),
       data: ciphertext.toString("base64"),
     };
-    await atomicWrite(this.secretsPath, JSON.stringify(blob));
+    await atomicWrite(this.secretsPath, JSON.stringify(blob), this.lockDiagnoser);
   }
 
   // ── Internal: dir + key bootstrap ─────────────────────────────────
@@ -226,7 +228,7 @@ export class SharedFilePersistence implements IPersistence {
       // No key yet.
     }
     const buf = crypto.randomBytes(32);
-    await atomicWrite(this.keyPath, buf.toString("hex"));
+    await atomicWrite(this.keyPath, buf.toString("hex"), this.lockDiagnoser);
     if (process.platform !== "win32") {
       try {
         await fs.chmod(this.keyPath, 0o600);
@@ -259,9 +261,143 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
   }
 }
 
-async function atomicWrite(filePath: string, contents: string): Promise<void> {
+// Windows rejects a rename over a target momentarily held open by another
+// process (real-time AV / ransomware protection, file sync, an editor, or a
+// second b6p process) with EPERM/EBUSY/EACCES. The hold is transient, so we
+// retry with backoff before giving up. Spacing the renames out also dampens
+// the rapid write-then-rename burst that trips ransomware heuristics in the
+// first place. A kernel filesystem minifilter (e.g. Sophos CryptoGuard) holds
+// no user-mode handle, so an ILockDiagnoser can only confirm "no user-mode
+// locker" — which is itself a minifilter fingerprint (see buildRenameError).
+const RENAME_RETRY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+const RENAME_RETRY_DELAYS_MS = [50, 100, 200, 400, 800, 1000] as const;
+const RENAME_MAX_ATTEMPTS = RENAME_RETRY_DELAYS_MS.length + 1;
+
+async function atomicWrite(filePath: string, contents: string, lockDiagnoser?: ILockDiagnoser): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp.${process.pid}.${crypto.randomBytes(4).toString("hex")}`;
-  await fs.writeFile(tmp, contents, "utf-8");
-  await fs.rename(tmp, filePath);
+  try {
+    await fs.writeFile(tmp, contents, "utf-8");
+  } catch (err) {
+    // A failed temp write may still leave a partial file behind.
+    await safeUnlink(tmp);
+    throw err;
+  }
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt < RENAME_MAX_ATTEMPTS; attempt++) {
+    try {
+      await fs.rename(tmp, filePath);
+      return;
+    } catch (err) {
+      const code = errnoCode(err);
+      if (!code || !RENAME_RETRY_CODES.has(code)) {
+        // Not a transient-lock error — clean up and surface immediately.
+        await safeUnlink(tmp);
+        throw err;
+      }
+      lastError = err;
+      const delay = RENAME_RETRY_DELAYS_MS[attempt];
+      if (delay !== undefined) {
+        await sleep(delay);
+      }
+    }
+  }
+
+  // All retries exhausted: remove the orphaned temp file so we don't leave
+  // residue, then throw an annotated error. The diagnoser is best-effort and
+  // must never mask `lastError`.
+  await safeUnlink(tmp);
+  throw await buildRenameError(filePath, lastError, lockDiagnoser);
+}
+
+function errnoCode(err: unknown): string | undefined {
+  if (err && typeof err === "object" && "code" in err) {
+    const { code } = err as { code?: unknown };
+    return typeof code === "string" ? code : undefined;
+  }
+  return undefined;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function safeUnlink(p: string): Promise<void> {
+  try {
+    await fs.unlink(p);
+  } catch {
+    // Best-effort cleanup — a leftover temp file is harmless.
+  }
+}
+
+// How long we wait for a best-effort lock diagnosis before giving up on it.
+// A hung diagnoser (e.g. Windows Restart Manager wedging) must not turn an
+// already-failed write into an indefinite hang.
+const DIAGNOSE_TIMEOUT_MS = 2_000;
+
+async function buildRenameError(
+  filePath: string,
+  originalError: unknown,
+  lockDiagnoser?: ILockDiagnoser
+): Promise<Error> {
+  const fileName = path.basename(filePath);
+  const dir = path.dirname(filePath);
+  const code = errnoCode(originalError) ?? "unknown error";
+  const prefix = `Could not write ${fileName} after ${RENAME_MAX_ATTEMPTS} attempts (${code})`;
+
+  // `null` means no diagnoser, or the diagnosis failed/timed out — in which
+  // case we must NOT claim the "minifilter" fingerprint. A non-null array
+  // means the diagnosis actually completed (empty array = no user-mode holder).
+  const holders = lockDiagnoser ? await diagnoseSafely(lockDiagnoser, filePath) : null;
+
+  if (holders && holders.length > 0) {
+    const list = holders.map((h) => `${h.name} (${h.pid})`).join(", ");
+    return annotateError(originalError, `${prefix} — locked by ${list}.`);
+  }
+
+  const hint =
+    holders !== null
+      ? // Diagnosis completed but found no user-mode holder — that empty result
+        // is itself the fingerprint of a kernel filesystem minifilter.
+        `No user-mode process holds the file — this signature points to a filesystem minifilter ` +
+        `(real-time AV / ransomware protection such as Sophos CryptoGuard) intercepting the rename. ` +
+        `Consider a scanning exclusion for ${dir}.`
+      : // No diagnoser, or the diagnosis failed/timed out — stay non-committal.
+        `The destination may be held open by another process (real-time AV, file sync, an editor, or a ` +
+        `second b6p process). Consider a scanning exclusion for ${dir}.`;
+  return annotateError(originalError, `${prefix}. ${hint}`);
+}
+
+/**
+ * Produces the error to throw for an exhausted rename. When the underlying
+ * failure is a real `Error`, we reuse it and only replace its message, so the
+ * errno metadata (`.code`, `.path`, `.syscall`) and original stack survive for
+ * callers that branch on them. Non-`Error` throwables are wrapped with `cause`.
+ * @lastreviewed null
+ */
+function annotateError(originalError: unknown, message: string): Error {
+  if (originalError instanceof Error) {
+    originalError.message = message;
+    return originalError;
+  }
+  return new Error(message, { cause: originalError });
+}
+
+/**
+ * Runs the best-effort diagnoser, guarded by a timeout. Returns the holders on
+ * success, or `null` if the diagnoser threw or did not answer in time — so the
+ * caller can distinguish "diagnosed, none found" from "could not diagnose".
+ * @lastreviewed null
+ */
+async function diagnoseSafely(lockDiagnoser: ILockDiagnoser, filePath: string): Promise<LockHolder[] | null> {
+  try {
+    return await Promise.race([
+      lockDiagnoser.diagnose(filePath),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), DIAGNOSE_TIMEOUT_MS)),
+    ]);
+  } catch {
+    // Diagnoser is best-effort — never let it mask the original error.
+    return null;
+  }
 }

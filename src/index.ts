@@ -10,10 +10,12 @@ export type {
   B6PProviders,
   FileStat,
   IFileSystem,
+  ILockDiagnoser,
   ILogger,
   IPersistence,
   IProgress,
   IPrompt,
+  LockHolder,
   ProgressTask,
 } from "./providers";
 

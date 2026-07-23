@@ -113,6 +113,33 @@ export interface IProgress {
   ): Promise<T[]>;
 }
 
+// ── Lock diagnostics ────────────────────────────────────────────────
+
+/**
+ * A process holding an open handle on a file.
+ * @lastreviewed null
+ */
+export interface LockHolder {
+  name: string;
+  pid: number;
+}
+
+export interface ILockDiagnoser {
+  /**
+   * Best-effort: the processes holding an open handle on `fsPath`. Returns
+   * `[]` if unknown or unsupported on this platform. MUST NEVER throw — the
+   * core layer calls this only to annotate an already-failing write, and a
+   * diagnoser error must never mask the underlying file-system error.
+   *
+   * NOTE: a "no holder" result (`[]`) does not prove the file is unlocked. A
+   * kernel filesystem minifilter (e.g. real-time AV / ransomware protection)
+   * holds no user-mode handle and is therefore invisible to a handle-based
+   * implementation — so an empty result is itself a minifilter fingerprint.
+   * @lastreviewed null
+   */
+  diagnose(fsPath: string): Promise<LockHolder[]>;
+}
+
 // ── Aggregate ───────────────────────────────────────────────────────
 
 /**

@@ -16,8 +16,84 @@ const STORE_KEY = "all";
 export class ScriptMetaDataStore {
   private readonly metadataMap: PublicPersistanceMap<ScriptMetaData[]>;
 
+  /**
+   * Nesting depth of active {@link beginBatch} calls. While > 0, upserts/removes
+   * mutate memory only and defer the disk write. A depth counter (rather than a
+   * boolean) keeps two overlapping batches from stranding each other's pending
+   * writes — the coalesced write happens only when the outermost batch ends.
+   * @lastreviewed null
+   */
+  private batchDepth = 0;
+  /**
+   * Count of deferred writes not yet persisted within the current batch.
+   * @lastreviewed null
+   */
+  private pendingWrites = 0;
+
+  /**
+   * Upper bound on deferred writes before we flush mid-batch. Bounds how much
+   * metadata a hard interrupt (SIGINT / crash, which bypasses {@link flush}) can
+   * lose, while still collapsing the bulk of a pull's per-script write burst.
+   * @lastreviewed null
+   */
+  private static readonly BATCH_FLUSH_THRESHOLD = 10;
+
   constructor(persistence: IPersistence) {
     this.metadataMap = new PublicPersistanceMap(PublicKeys.SCRIPT_METADATA, persistence);
+  }
+
+  private get batching(): boolean {
+    return this.batchDepth > 0;
+  }
+
+  /**
+   * Begins a write-coalescing batch: subsequent {@link upsert} / {@link remove}
+   * calls mutate the in-memory store but defer the disk write until the matching
+   * {@link flush}. Used to collapse the burst of per-script writes during a pull
+   * into a single atomic write. Awaits the initial load first so the coalesced
+   * write includes pre-existing entries instead of overwriting them. Nestable:
+   * each `beginBatch` must be paired with a `flush`.
+   * @lastreviewed null
+   */
+  public async beginBatch(): Promise<void> {
+    await this.metadataMap.whenReady();
+    this.batchDepth += 1;
+  }
+
+  /**
+   * Ends a batch started by {@link beginBatch}. The deferred changes are written
+   * in a single store when the outermost batch ends. Safe to call when nothing
+   * changed — it writes only when there is a pending change. The batch depth is
+   * decremented up front so a failed store never leaves the store stuck in batch
+   * mode; but `pendingWrites` is cleared only *after* a successful store. If the
+   * store throws, the changes stay marked pending so a later write still
+   * persists them (rather than being silently dropped).
+   * @lastreviewed null
+   */
+  public async flush(): Promise<void> {
+    if (this.batchDepth > 0) {
+      this.batchDepth -= 1;
+    }
+    if (this.batchDepth > 0 || this.pendingWrites === 0) {
+      return;
+    }
+    await this.metadataMap.store();
+    this.pendingWrites = 0;
+  }
+
+  /**
+   * Persists the in-memory store mid-batch once enough writes have accumulated,
+   * so a hard interrupt can't discard an unbounded amount of pulled metadata.
+   * `pendingWrites` is cleared only on a successful store; if it throws, the
+   * changes remain pending so a later flush retries them.
+   * @lastreviewed null
+   */
+  private async maybeAutoFlush(): Promise<void> {
+    if (this.pendingWrites < ScriptMetaDataStore.BATCH_FLUSH_THRESHOLD) {
+      return;
+    }
+    await this.metadataMap.store();
+    this.pendingWrites = 0;
   }
 
   /**
@@ -66,7 +142,11 @@ export class ScriptMetaDataStore {
     } else {
       entries.push(metadata);
     }
-    await this.metadataMap.set(STORE_KEY, entries);
+    await this.metadataMap.set(STORE_KEY, entries, !this.batching);
+    if (this.batching) {
+      this.pendingWrites += 1;
+      await this.maybeAutoFlush();
+    }
   }
 
   /**
@@ -101,6 +181,10 @@ export class ScriptMetaDataStore {
   /** Removes a metadata entry by U + webdavId. */
   public async remove(U: string, webdavId: string): Promise<void> {
     const entries = this.all().filter((m) => !(m.U === U && m.webdavId === webdavId));
-    await this.metadataMap.set(STORE_KEY, entries);
+    await this.metadataMap.set(STORE_KEY, entries, !this.batching);
+    if (this.batching) {
+      this.pendingWrites += 1;
+      await this.maybeAutoFlush();
+    }
   }
 }
