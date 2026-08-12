@@ -3,11 +3,6 @@
  */
 export enum PrivateKeys {
   /**
-   * key for the data we persist for the basic auth map
-   */
-  BASIC_AUTH = "b6p:basic_auth",
-
-  /**
    * key for the data we persist for the existing sessions
    */
   SESSIONS = "b6p:sessions",

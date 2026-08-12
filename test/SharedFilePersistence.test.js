@@ -5,7 +5,7 @@
 // file sync, an editor, or a second b6p process). This spec pins: transient
 // lock errors are retried and succeed; non-lock errno values are rethrown
 // immediately; exhausted retries clean up the temp file, preserve the original
-// errno, and annotate the message via the best-effort ILockDiagnoser (naming
+// errno, and annotate the message via the best-effort LockDiagnoser (naming
 // holders, or a minifilter hint when the diagnosis completes empty, or a
 // generic hint when there is no diagnoser / it fails).
 //

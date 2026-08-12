@@ -116,12 +116,29 @@ export type SessionData = {
 };
 
 /**
- * Basic auth information.
+ * General authentication parameters. This is a base interface for specific auth types.
+ *
+ * `scheme` is what makes the base carry weight. TypeScript is structural, so an
+ * empty base would be the top object type — every non-nullish type satisfies it,
+ * and `T extends AuthParams` would constrain nothing. The discriminant gives the
+ * constraint something to bind to, makes the concrete params a discriminated
+ * union, and lets a provider verify what it read back out of secret storage
+ * rather than blind-casting the parsed JSON.
+ * @lastreviewed null
  */
-export type BasicAuthParams = {
-  username: string;
-  password: string;
-};
+export interface AuthParams {
+  /** Discriminant naming the auth scheme these params belong to. */
+  readonly scheme: string;
+}
+
+/**
+ * Bearer auth information.
+ * @lastreviewed null
+ */
+export interface BearerAuthParams extends AuthParams {
+  readonly scheme: "bearer";
+  token: string;
+}
 
 /**
  * GQL response for script queries, either "good" or "bad".

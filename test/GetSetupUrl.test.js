@@ -1,6 +1,6 @@
-// Behavioral spec for `B6PCore.getSetupUrl`.
+// Behavioral spec for `B6PCore.script.getSetupUrl`.
 //
-// `getSetupUrl` resolves a script's setup URL from stored metadata. It must read
+// `script.getSetupUrl` resolves a script's setup URL from stored metadata. It must read
 // through the same ScriptMetaDataStore that `pull` populates and `audit`/`push`
 // consume (keyed by U + scriptName), then build the URL via
 // ScriptKey.buildSetupUrl against the org origin. When no metadata is stored it
@@ -39,7 +39,7 @@ function seededMetadata() {
   };
 }
 
-/** Minimal in-memory IPersistence. */
+/** Minimal in-memory Persistence. */
 function makePersistence(initial) {
   const store = new Map(Object.entries(initial || {}));
   const secrets = new Map();
@@ -117,7 +117,7 @@ async function test(name, fn) {
 (async () => {
   await test("resolves the setup URL from store metadata written by pull", async () => {
     const core = makeCore(makePersistence({ [SCRIPT_METADATA_KEY]: seededMetadata() }));
-    const url = await core.getSetupUrl({ filePath: FILE_PATH });
+    const url = await core.script.getSetupUrl({ filePath: FILE_PATH });
     assert.strictEqual(
       url,
       `${ORIGIN}shared/admin/applications/relate/editdetailreport1.jsp?_event=edit&_id=${CLASSID}___${SEQNUM}`
@@ -128,7 +128,7 @@ async function test(name, fn) {
 
   await test("errors clearly when the script has no stored metadata", async () => {
     const core = makeCore(makePersistence({})); // nothing pulled
-    const url = await core.getSetupUrl({ filePath: FILE_PATH });
+    const url = await core.script.getSetupUrl({ filePath: FILE_PATH });
     assert.strictEqual(url, null);
     assert.ok(
       errors.some((m) => /No stored metadata/.test(m) && m.includes(SCRIPT_NAME)),

@@ -1,6 +1,6 @@
 import type { ScriptMetaData } from "../types";
 import { PublicKeys, PublicPersistanceMap } from "../persistence";
-import type { IPersistence } from "../providers";
+import type { Persistence } from "../providers";
 
 const STORE_KEY = "all";
 
@@ -38,7 +38,7 @@ export class ScriptMetaDataStore {
    */
   private static readonly BATCH_FLUSH_THRESHOLD = 10;
 
-  constructor(persistence: IPersistence) {
+  constructor(persistence: Persistence) {
     this.metadataMap = new PublicPersistanceMap(PublicKeys.SCRIPT_METADATA, persistence);
   }
 

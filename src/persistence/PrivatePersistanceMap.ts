@@ -1,4 +1,4 @@
-import type { IPersistence } from "../providers";
+import type { Persistence } from "../providers";
 import { PersistablePseudoMap } from "./PersistablePseudoMap";
 import { Persistable } from "./Persistable";
 import { PrivateKeys } from "./PersistenceKeys";
@@ -7,9 +7,10 @@ import { revive } from "./Serializable";
 import { Err } from "../Err";
 
 /**
- * A persistable map that uses the IPersistence interface for secret storage.
+ * A persistable map that uses the Persistence interface for secret storage.
  * Data loaded is not immediately available upon construction, so any crucial data
  * you'll need to wait until `isInitialized()` returns true.
+ * @lastreviewed null
  */
 export class PrivateGenericMap<T extends Serializable> extends PersistablePseudoMap<T> implements Persistable {
   protected initialized: boolean = false;
@@ -19,7 +20,7 @@ export class PrivateGenericMap<T extends Serializable> extends PersistablePseudo
    * @param key The key used for persisting the map.
    * @param persistence The persistence provider.
    */
-  constructor(key: PrivateKeys, persistence: IPersistence) {
+  constructor(key: PrivateKeys, persistence: Persistence) {
     super(key, persistence);
     this.persistence.getSecret(this.key).then((jsonString) => {
       this.obj = revive(JSON.parse(jsonString || "{}"));

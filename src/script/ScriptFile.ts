@@ -1,4 +1,5 @@
 import * as path from "path";
+import { webcrypto } from "node:crypto";
 import { CryptoAlgorithms, FileExtensions, FolderNames, Http, MimeTypes } from "../constants";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
 import { Err } from "../Err";
@@ -27,10 +28,22 @@ export class ScriptFile extends ScriptNode {
 
   private _reasonToNotPush: string | undefined | null;
 
+  /**
+   * SHA-512 of the file's bytes, hex-encoded — the local half of the ETag
+   * integrity comparison.
+   *
+   * Uses `webcrypto` imported from `node:crypto` rather than the ambient `crypto`
+   * global. The global is only unflagged from Node 19, so on Node 18 this threw
+   * `crypto is not defined` and took out the integrity check behind both `push`
+   * and `audit` — while `package.json` declared `engines: >=18`. The engines floor
+   * has since moved to 20, but the explicit import stays: it makes this independent
+   * of which runtime happens to expose which global.
+   * @lastreviewed null
+   */
   public async getHash(): Promise<string | null> {
     await this.requireExists();
     const bufferSource = await this.ctx.fs.readFile(B6PUri.fromFsPath(this.uri().fsPath));
-    const localHashBuffer = await crypto.subtle.digest(CryptoAlgorithms.SHA_512, bufferSource);
+    const localHashBuffer = await webcrypto.subtle.digest(CryptoAlgorithms.SHA_512, bufferSource);
     const hexArray = Array.from(new Uint8Array(localHashBuffer));
     if (hexArray.length !== 64) {
       throw new Err.HashCalculationError();
@@ -211,7 +224,7 @@ export class ScriptFile extends ScriptNode {
     });
   }
 
-  public async delete() {
+  public override async delete() {
     await super.delete();
     await this.deleteFromMetadata();
   }

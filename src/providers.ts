@@ -1,5 +1,6 @@
 import type { B6PUri } from "./B6PUri";
-import type { IOrgCacheSettings } from "./cache/OrgCache";
+import type { OrgCacheSettings } from "./cache/OrgCache";
+import type { AuthParams } from "./types";
 
 // ── File System ─────────────────────────────────────────────────────
 
@@ -9,7 +10,7 @@ export interface FileStat {
   size: number;
 }
 
-export interface IFileSystem {
+export interface FileSystem {
   readFile(uri: B6PUri): Promise<Uint8Array>;
   writeFile(uri: B6PUri, content: Uint8Array): Promise<void>;
   stat(uri: B6PUri): Promise<FileStat>;
@@ -36,7 +37,7 @@ export interface IFileSystem {
 
 // ── Persistence ─────────────────────────────────────────────────────
 
-export interface IPersistence {
+export interface Persistence {
   /** Read a value from public (workspace-scoped) state. */
   get<T>(key: string): Promise<T | undefined>;
   /** Write a value to public (workspace-scoped) state. */
@@ -59,7 +60,7 @@ export interface IPersistence {
 
 // ── User Interaction ────────────────────────────────────────────────
 
-export interface IPrompt {
+export interface Prompt {
   /** Show an input box and return the entered string, or undefined if cancelled. */
   inputBox(options: { prompt: string; password?: boolean; value?: string }): Promise<string | undefined>;
 
@@ -81,14 +82,37 @@ export interface IPrompt {
 
 // ── Authentication ─────────────────────────────────────────────────
 
-export interface IAuth {
+/**
+ * An authentication scheme: owns a credential's whole lifecycle and renders the
+ * `Authorization` header from it. `T` is the scheme's credential shape, so a
+ * consumer can substitute a different scheme without core knowing what it holds.
+ *
+ * `T` occurs only in return position, which makes the interface covariant in it:
+ * an `AuthProvider<BearerAuthParams>` is assignable to `AuthProvider<AuthParams>`,
+ * so core can hold the general type while a concrete scheme supplies the specific
+ * one.
+ * @lastreviewed null
+ */
+export interface AuthProvider<T extends AuthParams> {
   /** Returns the value for the HTTP Authorization header. */
   authHeaderValue(): Promise<string>;
+  /**
+   * Get the stored credentials, or prompt for and store them if absent.
+   */
+  getOrCreate(): Promise<T>;
+  /** Prompt for fresh credentials and store them, replacing anything present. */
+  createNew(): Promise<T>;
+  /** Prompt to amend the stored credentials, keeping current values on empty input. */
+  update(): Promise<T>;
+  /** Discard the stored credentials. */
+  clear(): Promise<void>;
+  /** Whether credentials are currently stored. Never prompts. */
+  hasCredentials(): Promise<boolean>;
 }
 
 // ── Logging ─────────────────────────────────────────────────────────
 
-export interface ILogger {
+export interface Logger {
   info(...args: unknown[]): void;
   warn(...args: unknown[]): void;
   error(...args: unknown[]): void;
@@ -102,7 +126,7 @@ export interface ProgressTask<T> {
   description?: string;
 }
 
-export interface IProgress {
+export interface Progress {
   /**
    * Execute a list of tasks sequentially with progress indication.
    * Returns the collected results.
@@ -124,7 +148,7 @@ export interface LockHolder {
   pid: number;
 }
 
-export interface ILockDiagnoser {
+export interface LockDiagnoser {
   /**
    * Best-effort: the processes holding an open handle on `fsPath`. Returns
    * `[]` if unknown or unsupported on this platform. MUST NEVER throw — the
@@ -147,18 +171,28 @@ export interface ILockDiagnoser {
  * Each consumer (VS Code extension, CLI, tests) provides its own implementations.
  */
 export interface B6PProviders {
-  fs: IFileSystem;
-  persistence: IPersistence;
-  prompt: IPrompt;
-  logger: ILogger;
-  progress: IProgress;
+  fs: FileSystem;
+  persistence: Persistence;
+  prompt: Prompt;
+  logger: Logger;
+  progress: Progress;
   /** Optional debug-mode flag callback. Defaults to `() => false` if not provided. */
   isDebugMode?: () => boolean;
+  /**
+   * Optional authentication scheme. Defaults to `BearerAuthProvider` (this file
+   * deliberately imports nothing from `auth/`, so that is a plain reference, not a
+   * `{@link}`), built over the `persistence`, `prompt` and `logger` supplied above.
+   *
+   * Supply this to authenticate some other way — the core only ever asks for an
+   * `Authorization` header value and drives the credential lifecycle through
+   * {@link AuthProvider}, so the scheme itself is entirely the consumer's choice.
+   */
+  auth?: AuthProvider<AuthParams>;
   /**
    * Optional org-cache settings (provides override URLs for U values).
    * Defaults to a no-op implementation that returns `null` for all lookups.
    */
-  orgCacheSettings?: IOrgCacheSettings;
+  orgCacheSettings?: OrgCacheSettings;
   /**
    * Optional low-level fetch function to use for the SessionManager. Defaults to
    * `globalThis.fetch`. Consumers (e.g. the VS Code extension) can pass a wrapped

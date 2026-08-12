@@ -70,13 +70,18 @@ jobs:
       - name: Type check
         run: npm run check-types
 
-      - name: Lint
-        run: npm run lint
+      - name: Format check
+        run: npm run format-check
 
       - name: Compile
         run: npm run compile
 
-      # prepublishOnly re-runs clean+lint+check-types+compile to build dist/.
+      # The publish path is the one place tests matter most — a bad release is
+      # public and immutable. Runs the full suite against the compiled dist/.
+      - name: Test
+        run: npm test
+
+      # prepublishOnly re-runs clean+format-check+check-types+compile to build dist/.
       - name: Publish (provenance, public)
         run: npm publish --provenance --access public
         env:

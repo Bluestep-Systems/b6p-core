@@ -8,62 +8,42 @@ import { ScriptRoot } from "./ScriptRoot";
 import { TsConfig } from "./TsConfig";
 
 /**
- * Module-scoped default context. Set via {@link ScriptFactory.setDefaultContext}.
- * Used by the static convenience methods on {@link ScriptFactory} for backwards
- * compatibility with callers that don't have direct access to a {@link ScriptContext}.
- */
-let _defaultCtx: ScriptContext | null = null;
-
-function defaultFactory(): ScriptFactory {
-  if (!_defaultCtx) {
-    throw new Error("ScriptFactory: no default context set. Call ScriptFactory.setDefaultContext(ctx) first.");
-  }
-  return new ScriptFactory(_defaultCtx);
-}
-/**
  * Factory for creating ScriptNode instances bound to a {@link ScriptContext}.
  *
  * This `VERY SPECIFICALLY` exists to instantiate any ScriptNode objects.
  * You must `NEVER` call those constructors directly. This is because TypeScript
  * absolutely hates it when you do, and you risk being incapable of launching the
  * extension due to circular dependancies.
+ *
+ * Every instance is bound to a context at construction. There is deliberately no
+ * ambient default: a module-scoped mutable context plus `static` create* shims
+ * used to exist here, which made the factory's behaviour depend on whether some
+ * unrelated code had called a registration method first, and made two contexts in
+ * one process (a test double alongside a live core) impossible to keep apart.
+ * Obtain a bound factory from {@link ScriptService.getFactory}, from
+ * {@link ScriptRoot.factory}, or by constructing one over a {@link ScriptContext}
+ * directly.
+ * @lastreviewed null
  */
 export class ScriptFactory {
   constructor(public readonly ctx: ScriptContext) {}
 
   /**
-   * Sets the module-scoped default context used by the `static` convenience
-   * methods. Consumers that already have direct access to a context should
-   * prefer instantiating `new ScriptFactory(ctx)` directly.
-   */
-  static setDefaultContext(ctx: ScriptContext): void {
-    _defaultCtx = ctx;
-  }
-
-  /** Static shim — uses the default context. See {@link setDefaultContext}. */
-  static createNode(uriSupplier: (() => B6PUri) | B6PUri, scriptRoot?: ScriptRoot): ScriptNode {
-    return defaultFactory().createNode(uriSupplier, scriptRoot);
-  }
-  /** Static shim — uses the default context. */
-  static createFolder(uriSupplier: (() => B6PUri) | B6PUri, scriptRoot?: ScriptRoot): ScriptFolder {
-    return defaultFactory().createFolder(uriSupplier, scriptRoot);
-  }
-  /** Static shim — uses the default context. */
-  static createFile(uriSupplier: (() => B6PUri) | B6PUri, scriptRoot?: ScriptRoot): ScriptFile {
-    return defaultFactory().createFile(uriSupplier, scriptRoot);
-  }
-  /** Static shim — uses the default context. */
-  static createScriptRoot(uriSupplier: (() => B6PUri) | B6PUri): ScriptRoot {
-    return defaultFactory().createScriptRoot(uriSupplier);
-  }
-  /** Static shim — uses the default context. */
-  static createTsConfig(uriSupplier: (() => B6PUri) | B6PUri, scriptRoot?: ScriptRoot): TsConfig {
-    return defaultFactory().createTsConfig(uriSupplier, scriptRoot);
-  }
-
-  /**
    * Creates a {@link ScriptNode} (either {@link ScriptFile} or {@link ScriptFolder})
    * based on the URI path.
+   *
+   * A **trailing separator is the only folder signal.** Everything else is a file,
+   * including an extensionless path like `.../draft/README` — this method cannot
+   * touch the filesystem, so a path is classified by its shape alone.
+   *
+   * This previously branched on `path.basename(fsPath).includes(".")` and returned
+   * `new ScriptFile(uri, sr)` from **both** arms, so the extension test decided
+   * nothing. The branch is gone rather than completed: making an extensionless path
+   * a {@link ScriptFolder} would be a behaviour change, and the callers that reach
+   * this (`ScriptRoot.compileDraftFolder` over emitted `.js` paths, and
+   * {@link ScriptService.getFactory} consumers) pass paths that already carry an
+   * extension or a trailing separator.
+   * @lastreviewed null
    */
   createNode(uriSupplier: (() => B6PUri) | B6PUri, scriptRoot?: ScriptRoot): ScriptNode {
     const uri = uriSupplier instanceof Function ? uriSupplier() : uriSupplier;
@@ -72,10 +52,6 @@ export class ScriptFactory {
 
     if (fsPath.endsWith(path.sep) || fsPath.endsWith("/")) {
       return new ScriptFolder(uri, sr);
-    }
-    const basename = path.basename(fsPath);
-    if (basename.includes(".")) {
-      return new ScriptFile(uri, sr);
     }
     return new ScriptFile(uri, sr);
   }

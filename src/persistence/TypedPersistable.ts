@@ -1,4 +1,4 @@
-import type { IPersistence } from "../providers";
+import type { Persistence } from "../providers";
 import { TypedMap } from "./TypedMap";
 import { Persistable } from "./Persistable";
 import { PrivateKeys, PublicKeys } from "./PersistenceKeys";
@@ -7,12 +7,12 @@ import { revive } from "./Serializable";
 
 /**
  * A persistable version of {@link TypedMap} that automatically handles loading and storing
- * using the IPersistence interface.
- * @lastreviewed 2025-10-01
+ * using the Persistence interface.
+ * @lastreviewed null
  */
 export class TypedPersistable<T extends Record<string, Serializable>> extends TypedMap<T> implements Persistable {
   public readonly key: PublicKeys | PrivateKeys;
-  protected persistence: IPersistence;
+  protected persistence: Persistence;
   protected initialized: boolean = false;
 
   constructor({
@@ -21,7 +21,7 @@ export class TypedPersistable<T extends Record<string, Serializable>> extends Ty
     defaultValue,
   }: {
     key: PublicKeys | PrivateKeys;
-    persistence: IPersistence;
+    persistence: Persistence;
     defaultValue: T;
   }) {
     super();

@@ -1,4 +1,4 @@
-import type { IPersistence } from "../providers";
+import type { Persistence } from "../providers";
 import { PrivateKeys } from "./PersistenceKeys";
 import type { Serializable } from "./Serializable";
 import { revive } from "./Serializable";
@@ -6,7 +6,7 @@ import { TypedPersistable } from "./TypedPersistable";
 import { Err } from "../Err";
 
 /**
- * A typed private persistable pseudomap that uses IPersistence secret storage.
+ * A typed private persistable pseudomap that uses Persistence secret storage.
  *
  * Extends TypedPersistable to provide secure storage for sensitive data
  * such as credentials, tokens, and other private information that should
@@ -24,7 +24,7 @@ export class PrivateTypedPersistable<T extends Record<string, Serializable>> ext
    * @param defaultValue The default value if no stored data exists
    * @lastreviewed 2025-10-01
    */
-  constructor({ key, persistence, defaultValue }: { key: PrivateKeys; persistence: IPersistence; defaultValue: T }) {
+  constructor({ key, persistence, defaultValue }: { key: PrivateKeys; persistence: Persistence; defaultValue: T }) {
     // Call super with persistence
     super({ key, persistence, defaultValue });
     this.persistence.getSecret(this.key).then((jsonString) => {

@@ -1,23 +1,26 @@
-import type { IFileSystem, ILogger, IPrompt } from "../providers";
-import type { SessionManager } from "../session/SessionManager";
-import type { BasicAuthProvider } from "../auth/BasicAuthProvider";
+import type { PlatformContext } from "../PlatformContext";
 import type { ScriptMetaDataStore } from "../cache/ScriptMetaDataStore";
 import type { OrgCache } from "../cache/OrgCache";
-import type { ScriptFactory } from "./ScriptFactory";
 
 /**
- * The set of services that the script-tree classes ({@link ScriptRoot}, {@link ScriptFile},
- * {@link ScriptFolder}, etc.) need in order to function.
+ * What the script subsystem needs on top of {@link PlatformContext}: the script-tree
+ * classes ({@link ScriptRoot}, {@link ScriptFile}, {@link ScriptFolder}, …),
+ * {@link ScriptService}, and {@link ScriptTranspiler}.
  *
- * `B6PCore` is the canonical implementation; the App-side singleton can also satisfy this
- * shape via an adapter.
+ * This is a **dependency bundle, not a facade**: nothing implements it by being a
+ * larger object that happens to contain these members. {@link B6PCore} *builds* one
+ * and hands it to {@link ScriptService}. Keeping it a thing that is *held* rather
+ * than a shape that is *inherited* is what stops it from re-accumulating members no
+ * script-tree class reads — which is how `auth` and `getScriptFactory()` once ended
+ * up here.
+ *
+ * Only script-specific members belong below. Anything a *second* subsystem would
+ * also want goes in {@link PlatformContext} instead, so it keeps one construction
+ * site rather than being restated per subsystem. Every member here has at least one
+ * reader under `src/script/`; do not add one speculatively.
+ * @lastreviewed null
  */
-export interface ScriptContext {
-  readonly fs: IFileSystem;
-  readonly sessionManager: SessionManager;
-  readonly logger: ILogger;
-  readonly prompt: IPrompt;
-  readonly auth: BasicAuthProvider;
+export interface ScriptContext extends PlatformContext {
   readonly scriptMetadataStore: ScriptMetaDataStore;
   readonly orgCache: OrgCache;
   /**
@@ -27,6 +30,4 @@ export interface ScriptContext {
    * @lastreviewed null
    */
   readonly typescriptLibDirs?: readonly string[];
-  isDebugMode(): boolean;
-  getScriptFactory(): ScriptFactory;
 }

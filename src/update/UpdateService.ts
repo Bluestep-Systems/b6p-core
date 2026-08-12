@@ -1,6 +1,6 @@
 import { FileExtensions, GitHubUrls, Http } from "../constants";
 import { PrivateKeys } from "../persistence";
-import type { IPersistence, ILogger } from "../providers";
+import type { Persistence, Logger } from "../providers";
 import type { UpdateInfo, GithubRelease, ClientInfo, UpdateServiceConfig } from "./types";
 
 /**
@@ -13,8 +13,8 @@ export class UpdateService {
   private readonly UPDATE_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
 
   constructor(
-    private readonly persistence: IPersistence,
-    private readonly logger: ILogger,
+    private readonly persistence: Persistence,
+    private readonly logger: Logger,
     private readonly config: UpdateServiceConfig,
     fetchFn?: (url: string | URL, init?: RequestInit) => Promise<Response>
   ) {
