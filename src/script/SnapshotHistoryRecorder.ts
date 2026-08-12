@@ -103,6 +103,7 @@ export class SnapshotHistoryRecorder {
    * //HUMAN-REVIEW-NEEDED restoring a real author requires an identity source:
    * either a `/whoami`-style lookup against the token, or the login response
    * carrying the principal into `SessionData`.
+   * @lastreviewed null
    */
   private static readonly UNKNOWN_AUTHOR = "unknown";
 

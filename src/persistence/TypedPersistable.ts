@@ -8,7 +8,7 @@ import { revive } from "./Serializable";
 /**
  * A persistable version of {@link TypedMap} that automatically handles loading and storing
  * using the Persistence interface.
- * @lastreviewed 2025-10-01
+ * @lastreviewed null
  */
 export class TypedPersistable<T extends Record<string, Serializable>> extends TypedMap<T> implements Persistable {
   public readonly key: PublicKeys | PrivateKeys;

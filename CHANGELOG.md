@@ -9,6 +9,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`OrgCache` dropped its `store()` promises on the floor.** Both `cleanupOldEntries` and
+  `cleanDuplicates` issued the write without awaiting it, so a rejected write surfaced as an
+  unhandled rejection — from construction, and from the 1-day timer, which sat in no promise chain
+  at all. The `catch` on the readiness promise did **not** cover this: it only ever saw a
+  *synchronous* throw. Both methods are now `async` and await the write, `whenReady()` consequently
+  waits for the first cleanup write to land rather than resolving while it is in flight, and the
+  timer path has its own handler so a failed scheduled sweep cannot end the process.
+
+  The spec that was supposed to cover this used a synchronous throw and so passed against the
+  leaking code; it now drives both failure shapes and asserts no `unhandledRejection` fires.
+
+- **`B6PUri.stripDirectoryMarker` mishandled roots, backslashes and query strings.** As first
+  written it trimmed trailing characters matching `path.sep` or `/`, which meant three things: it
+  recognised `\` only when *running on Windows*, making every comparison built on it
+  host-dependent — untenable in a repo whose specs drive Windows paths from POSIX hosts; it trimmed
+  roots into different locations (`C:\` → `C:`, the drive-relative path; `file:///C:/` →
+  `file:///C:`); and it could not see a marker that sat before a query or fragment, so
+  `https://h/a/?x=1` and `https://h/a?x=1` — one directory, since `asDirectory()` preserves the
+  query — keyed apart.
+
+  It now treats `/` and `\` alike on every host, preserves roots, and for a hierarchical URL strips
+  the marker from the *pathname* so query and fragment survive.
+
 - **The integrity check threw `crypto is not defined` on Node 18.** `ScriptFile.getHash()` called the
   ambient `crypto.subtle`, which Node only exposes unflagged from 19 — so on Node 18 every
   ETag comparison behind `push` and `audit` threw, while `package.json` declared `engines: >=18`.

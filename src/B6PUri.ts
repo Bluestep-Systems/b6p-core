@@ -148,27 +148,81 @@ export class B6PUri {
   }
 
   /**
-   * `p` with any trailing folder marker removed, so a marked and an unmarked
-   * spelling of one directory compare equal.
+   * Matches a hierarchical URL scheme (`file://`, `https://`, WebDAV …).
    *
-   * The single definition behind every marker-insensitive comparison in the
-   * codebase: `ScriptFolder.contains`/`equals`, `ScriptRoot.selectStaleBundles`'s
-   * containment test, and `MockFileSystem`'s entry keys. It lives here, next to
+   * The `//` is required, and that is what keeps a Windows path out: `new URL("C:/a")`
+   * parses happily as scheme `c:` with an opaque path, so testing for a bare `scheme:`
+   * would misread every drive-letter path as a URL.
+   * @lastreviewed null
+   */
+  private static readonly HIERARCHICAL_URL = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
+
+  /**
+   * `s` with trailing separators removed, stopping short of anything that is a root.
+   *
+   * Both `/` and `\` are treated as separators regardless of the host platform — this
+   * must not consult `path.sep`. The comparison helpers built on it are exercised
+   * against Windows-shaped input from POSIX hosts (see `DownstairsPathParser.test.js`,
+   * which drives the Windows branch via `path.win32`), so a strip that only recognises
+   * the host's own separator answers differently depending on where it runs.
+   *
+   * Roots keep exactly one separator: `/` stays `/`, and `C:\` stays `C:\` rather than
+   * collapsing to the drive-relative `C:`, which denotes something else entirely.
+   * @lastreviewed null
+   */
+  private static stripTrailingSeparators(s: string): string {
+    let end = s.length;
+    while (end > 0 && (s[end - 1] === "/" || s[end - 1] === "\\")) {
+      end--;
+    }
+    if (end === 0) {
+      // All separators — this is a root; keep one.
+      return s.slice(0, 1);
+    }
+    if (s[end - 1] === ":") {
+      // A drive root (`C:\`, `C:/`). Keep the separator that made it one.
+      return s.slice(0, end + 1);
+    }
+    return s.slice(0, end);
+  }
+
+  /**
+   * `p` with any trailing folder marker removed, so a marked and an unmarked spelling
+   * of one directory compare equal.
+   *
+   * The single definition behind every marker-insensitive comparison in the codebase:
+   * `ScriptFolder.contains`/`equals`, `ScriptRoot.selectStaleBundles`'s containment
+   * test, and `MockFileSystem`'s entry keys. It lives here, beside
    * {@link B6PUri.isDirectoryMarked} and {@link B6PUri.asDirectory}, because a
-   * comparison rule that disagrees with the API that produces the marker is how the
+   * comparison rule that disagrees with the API producing the marker is how the
    * stale-bundle regression happened.
    *
-   * A filesystem root (`/`, `C:\`) is left alone — it is all separator. Accepts a
-   * raw string rather than a `B6PUri` so it serves both `fsPath` comparisons and
-   * `toString()` keys.
+   * Accepts either a filesystem path or a URL string, and handles each on its own
+   * terms:
+   *
+   * - **URL** — the marker is stripped from the *pathname*, so query and fragment
+   *   survive. {@link B6PUri.asDirectory} deliberately preserves them, so
+   *   `https://h/a?x=1` and its marked form `https://h/a/?x=1` are one directory and
+   *   must key alike; a plain trailing-character trim would leave the marked spelling
+   *   untouched (its last character is `1`) and silently split them.
+   * - **Path** — trailing `/` and `\` are trimmed directly.
+   *
+   * In both cases a root is preserved rather than trimmed away: `/`, `C:\`,
+   * `https://h/`, and `file:///C:/` (the Windows drive root, distinct from the
+   * drive-relative `file:///C:`) all come back unchanged.
    * @lastreviewed null
    */
   static stripDirectoryMarker(p: string): string {
-    let end = p.length;
-    while (end > 1 && (p[end - 1] === path.sep || p[end - 1] === "/")) {
-      end--;
+    if (B6PUri.HIERARCHICAL_URL.test(p)) {
+      try {
+        const url = new URL(p);
+        url.pathname = B6PUri.stripTrailingSeparators(url.pathname);
+        return url.href;
+      } catch {
+        // Not parseable after all; fall through and treat it as a path.
+      }
     }
-    return p.slice(0, end);
+    return B6PUri.stripTrailingSeparators(p);
   }
 
   /** The final path component (file or folder name). */

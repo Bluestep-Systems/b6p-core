@@ -91,6 +91,7 @@ export interface Prompt {
  * an `AuthProvider<BearerAuthParams>` is assignable to `AuthProvider<AuthParams>`,
  * so core can hold the general type while a concrete scheme supplies the specific
  * one.
+ * @lastreviewed null
  */
 export interface AuthProvider<T extends AuthParams> {
   /** Returns the value for the HTTP Authorization header. */

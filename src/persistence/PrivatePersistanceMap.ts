@@ -10,6 +10,7 @@ import { Err } from "../Err";
  * A persistable map that uses the Persistence interface for secret storage.
  * Data loaded is not immediately available upon construction, so any crucial data
  * you'll need to wait until `isInitialized()` returns true.
+ * @lastreviewed null
  */
 export class PrivateGenericMap<T extends Serializable> extends PersistablePseudoMap<T> implements Persistable {
   protected initialized: boolean = false;

@@ -104,13 +104,21 @@ export class OrgCache implements OrgCacheDisposable {
   }
 
   /**
-   * Cleans up entries that have not been accessed in the last 3 days, then
-   * re-arms itself for a day later.
+   * Cleans up entries that have not been accessed in the last 3 days, persists the
+   * result if anything expired, then re-arms itself for a day later.
    *
-   * Only ever called after {@link ready} has settled — see the constructor.
+   * **Async on purpose.** The `store()` used to be issued and dropped on the floor.
+   * A rejected write was then an unhandled rejection — the `catch` on {@link ready}
+   * did not cover it, because that only ever saw a *synchronous* throw, and the
+   * timer-driven pass sat in no promise chain at all. Awaiting it also means
+   * {@link whenReady} genuinely waits for the first write rather than resolving
+   * while it is still in flight.
+   *
+   * The re-arm is in a `finally` so a transient write failure ends this pass, not
+   * every future one.
    * @lastreviewed null
    */
-  private cleanupOldEntries() {
+  private async cleanupOldEntries(): Promise<void> {
     // The first sweep is deferred onto `ready`, so `dispose()` can land before this
     // ever runs — at which point `_cleanupTimer` was still null and dispose() found
     // nothing to clear. Without this guard the deferred sweep would then arm a timer
@@ -118,36 +126,62 @@ export class OrgCache implements OrgCacheDisposable {
     if (this._disposed) {
       return;
     }
-    const now = Date.now();
-    const cutoff = now - Numerical.millisecondsInXDays(3);
-    let changed = false;
-    for (const [u, elementArray] of this.orgCacheMap) {
-      const filteredArray = elementArray.filter((element) => element.lastAccess >= cutoff);
-      if (filteredArray.length === 0) {
-        this.orgCacheMap.delete(u);
-        changed = true;
-      } else if (filteredArray.length < elementArray.length) {
-        // `update: false` — this set() would otherwise store() on the spot, and the
-        // single write below would then be a second, redundant one.
-        this.orgCacheMap.set(u, filteredArray, false);
-        changed = true;
+    try {
+      const now = Date.now();
+      const cutoff = now - Numerical.millisecondsInXDays(3);
+      let changed = false;
+      for (const [u, elementArray] of this.orgCacheMap) {
+        const filteredArray = elementArray.filter((element) => element.lastAccess >= cutoff);
+        if (filteredArray.length === 0) {
+          this.orgCacheMap.delete(u);
+          changed = true;
+        } else if (filteredArray.length < elementArray.length) {
+          // `update: false` — this set() would otherwise store() on the spot, and the
+          // single write below would then be a second, redundant one.
+          this.orgCacheMap.set(u, filteredArray, false);
+          changed = true;
+        }
+      }
+      // Only write when something actually expired. The old unconditional store()
+      // rewrote the whole cache file on every construction, which on Windows is a
+      // rapid-fire write that AV / ransomware heuristics penalise (see the retry
+      // logic in SharedFilePersistence).
+      if (changed) {
+        await this.orgCacheMap.store();
+        this.onChanged?.();
+      }
+    } finally {
+      if (!this._disposed) {
+        this._cleanupTimer = setTimeout(() => void this.runScheduledCleanup(), Numerical.millisecondsInXDays(1));
+        // Don't keep the process alive just for cleanup (critical for the CLI).
+        this._cleanupTimer.unref?.();
       }
     }
-    // Only write when something actually expired. The old unconditional store()
-    // rewrote the whole cache file on every construction, which on Windows is a
-    // rapid-fire write that AV / ransomware heuristics penalise (see the retry
-    // logic in SharedFilePersistence).
-    if (changed) {
-      this.orgCacheMap.store();
-      this.onChanged?.();
-    }
-    this._cleanupTimer = setTimeout(() => this.cleanupOldEntries(), Numerical.millisecondsInXDays(1));
-    // Don't keep the process alive just for cleanup (critical for the CLI).
-    this._cleanupTimer.unref?.();
   }
 
-  /** Validates the cache to ensure no duplicate hosts exist. */
-  private cleanDuplicates(throwIfDuplicateExists = false) {
+  /**
+   * Timer entry point for {@link cleanupOldEntries}. Nothing awaits the timer
+   * callback, so this is where a failed scheduled sweep is absorbed — otherwise it
+   * would surface as an unhandled rejection a day into a long-running host.
+   * @lastreviewed null
+   */
+  private async runScheduledCleanup(): Promise<void> {
+    try {
+      await this.cleanupOldEntries();
+    } catch (e) {
+      this.logger.warn(`OrgCache scheduled cleanup failed; the cache is unchanged: ${String(e)}`);
+    }
+  }
+
+  /**
+   * Validates the cache to ensure no duplicate hosts exist.
+   *
+   * Async for the same reason {@link cleanupOldEntries} is: its `store()` was issued
+   * and dropped, so a rejected write became an unhandled rejection. All three callers
+   * are already async and now await it.
+   * @lastreviewed null
+   */
+  private async cleanDuplicates(throwIfDuplicateExists = false): Promise<void> {
     const uniqueHosts = new Set<string>();
     for (const [u, elementArray] of this.orgCacheMap) {
       for (const element of elementArray) {
@@ -164,7 +198,7 @@ export class OrgCache implements OrgCacheDisposable {
               this.logger.info(`OrgCache contained duplicate host ${element.host}. Cleared U ${foundU}`);
               this.orgCacheMap.delete(foundU);
             }
-            this.orgCacheMap.store();
+            await this.orgCacheMap.store();
             console.warn(`OrgCache contained duplicate host ${element.host}. Cleared all Us`);
           }
         }
@@ -176,7 +210,7 @@ export class OrgCache implements OrgCacheDisposable {
   /** Hard-validates all entries in the cache by calling the orgs to verify the U-host association. */
   public async hardValidateAll(): Promise<void> {
     await this.ready;
-    this.cleanDuplicates(true);
+    await this.cleanDuplicates(true);
     for (const u of this.orgCacheMap.keys()) {
       await this.hardValidateU(u);
     }
@@ -218,7 +252,7 @@ export class OrgCache implements OrgCacheDisposable {
       throw new Err.OrgCacheError("Invalid U format: " + u);
     }
     await this.ready;
-    this.cleanDuplicates();
+    await this.cleanDuplicates();
     // check cache first
     if (this.orgCacheMap.has(u)) {
       const cacheElement = this.orgCacheMap.get(u);
@@ -248,7 +282,7 @@ export class OrgCache implements OrgCacheDisposable {
   /** Associates a host with a U value in the cache. */
   public async addHost(u: string, url: URL): Promise<void> {
     await this.ready;
-    this.cleanDuplicates(false);
+    await this.cleanDuplicates(false);
     const host = url.hostname;
     if (this.orgCacheMap.has(u)) {
       const elementArray = this.orgCacheMap.get(u);

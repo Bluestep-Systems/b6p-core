@@ -14,6 +14,7 @@ type GetScriptRet = FilePointers[] | null;
  * Parses and interacts with BlueStep WebDAV script URLs.
  *
  * Takes a {@link SessionManager}, `Logger`, and `Prompt` via constructor injection.
+ * @lastreviewed null
  */
 export class ScriptUrlParser {
   static readonly URL_TYPES = ["files", "public"] as const;

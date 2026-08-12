@@ -197,11 +197,43 @@ test("dirname() is unmarked on non-file URIs too", () => {
   assert.strictEqual(B6PUri.fromString("https://h/dav/dir/file.txt").dirname.toString(), "https://h/dav/dir");
 });
 
-test("stripDirectoryMarker collapses both spellings of a directory, and leaves a root alone", () => {
+test("stripDirectoryMarker collapses both spellings of a directory", () => {
   const dir = href(p("a", "b"));
   assert.strictEqual(B6PUri.stripDirectoryMarker(dir + "/"), B6PUri.stripDirectoryMarker(dir));
-  assert.strictEqual(B6PUri.stripDirectoryMarker("/"), "/", "a filesystem root is all separator");
   assert.strictEqual(B6PUri.stripDirectoryMarker(p("a", "b") + path.sep), p("a", "b"));
+});
+
+test("stripDirectoryMarker treats / and \\ alike on EVERY host", () => {
+  // Must not consult path.sep. These helpers are exercised against Windows-shaped
+  // input from POSIX hosts (see DownstairsPathParser.test.js driving path.win32), so
+  // recognising only the host's own separator makes the comparison host-dependent.
+  assert.strictEqual(B6PUri.stripDirectoryMarker("C:\\a\\b\\"), "C:\\a\\b");
+  assert.strictEqual(B6PUri.stripDirectoryMarker("/a/b/"), "/a/b");
+  assert.strictEqual(B6PUri.stripDirectoryMarker("\\\\srv\\share\\"), "\\\\srv\\share");
+});
+
+test("stripDirectoryMarker preserves roots rather than trimming them away", () => {
+  // A root trimmed of its separator denotes something else: C: is drive-RELATIVE,
+  // not the drive root, and file:///C: likewise.
+  assert.strictEqual(B6PUri.stripDirectoryMarker("/"), "/");
+  assert.strictEqual(B6PUri.stripDirectoryMarker("C:\\"), "C:\\");
+  assert.strictEqual(B6PUri.stripDirectoryMarker("C:/"), "C:/");
+  assert.strictEqual(B6PUri.stripDirectoryMarker("file:///C:/"), "file:///C:/");
+  assert.strictEqual(B6PUri.stripDirectoryMarker("https://h/"), "https://h/");
+});
+
+test("stripDirectoryMarker strips a URL's pathname, keeping query and fragment", () => {
+  // asDirectory() deliberately preserves query/fragment, so the marked spelling of a
+  // URL with a query does NOT end in a separator. A plain trailing-character trim
+  // would leave it untouched and silently key it apart from its unmarked twin.
+  const u = B6PUri.fromString("https://h/a?x=1#f");
+  assert.strictEqual(u.asDirectory().toString(), "https://h/a/?x=1#f", "sanity: the marker goes on the path");
+  assert.strictEqual(
+    B6PUri.stripDirectoryMarker(u.asDirectory().toString()),
+    B6PUri.stripDirectoryMarker(u.toString()),
+    "both spellings of one directory must key alike even with a query"
+  );
+  assert.strictEqual(B6PUri.stripDirectoryMarker("https://h/a/?x=1"), "https://h/a?x=1");
 });
 
 // ── The couplings that make the marker load-bearing ────────────────────

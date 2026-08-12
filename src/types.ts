@@ -124,6 +124,7 @@ export type SessionData = {
  * constraint something to bind to, makes the concrete params a discriminated
  * union, and lets a provider verify what it read back out of secret storage
  * rather than blind-casting the parsed JSON.
+ * @lastreviewed null
  */
 export interface AuthParams {
   /** Discriminant naming the auth scheme these params belong to. */
@@ -132,6 +133,7 @@ export interface AuthParams {
 
 /**
  * Bearer auth information.
+ * @lastreviewed null
  */
 export interface BearerAuthParams extends AuthParams {
   readonly scheme: "bearer";

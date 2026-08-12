@@ -160,12 +160,29 @@ async function run() {
   }
 
   // ── 8. A Persistence that throws must not produce an unhandled rejection ──
-  {
-    const throwing = {
-      get: async () => ({ U888888: [{ host: "x.bluestep.net", lastAccess: 0 }] }),
-      set: () => {
+  //
+  // Both failure shapes matter, and only one of them used to be covered. A
+  // SYNCHRONOUS throw was caught by the `catch` on the readiness chain; an ASYNC
+  // rejection from `store()` was not, because the store promise was issued and
+  // dropped. The original version of this case used a synchronous throw and
+  // therefore passed against code that still leaked the async one.
+  for (const [shape, set] of [
+    [
+      "synchronous",
+      () => {
         throw new Error("synchronous persistence failure");
       },
+    ],
+    ["asynchronous", async () => Promise.reject(new Error("async persistence failure"))],
+  ]) {
+    const unhandled = [];
+    const onUnhandled = (e) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+
+    const fourDaysAgo = Date.now() - 4 * 24 * 60 * 60 * 1_000;
+    const throwing = {
+      get: async () => ({ U888888: [{ host: "x.bluestep.net", lastAccess: fourDaysAgo }] }),
+      set,
       delete: async () => {},
       getSecret: async () => undefined,
       setSecret: async () => {},
@@ -175,12 +192,38 @@ async function run() {
     };
     const cache = newCache(throwing);
     await cache.whenReady(); // must resolve, not reject
-    assert.strictEqual(await cache.findU("https://x.bluestep.net", true).then(
-      () => true,
-      (e) => !/synchronous persistence failure/.test(String(e))
-    ), true, "a failed initial sweep must not poison every later call");
+    // Let any floating promise settle so an unhandled rejection would have fired.
+    await new Promise((r) => setTimeout(r, 20));
+    process.removeListener("unhandledRejection", onUnhandled);
+
+    assert.deepStrictEqual(
+      unhandled.map((e) => e.message),
+      [],
+      `a ${shape} persistence failure must not escape as an unhandled rejection`
+    );
+    // And the cache stays usable rather than rejecting forever.
+    await cache.findU("https://x.bluestep.net", true).catch(() => {});
     cache.dispose();
-    console.log("ok   - a throwing Persistence does not reject the readiness promise");
+    console.log(`ok   - a ${shape} Persistence failure is contained, not unhandled`);
+  }
+
+  // ── 9. whenReady() waits for the first cleanup WRITE, not just the load ───
+  {
+    const p = makePersistence({ U999999: staleEntry("expired.bluestep.net") });
+    let settled = false;
+    const slow = {
+      ...p.persistence,
+      set: async (k, v) => {
+        await new Promise((r) => setTimeout(r, 30));
+        settled = true;
+        return p.persistence.set(k, v);
+      },
+    };
+    const cache = newCache(slow);
+    await cache.whenReady();
+    assert.strictEqual(settled, true, "whenReady() must not resolve while the first write is in flight");
+    cache.dispose();
+    console.log("ok   - whenReady() waits for the first cleanup write to land");
   }
 
   console.log("\nAll OrgCache readiness tests passed.");
