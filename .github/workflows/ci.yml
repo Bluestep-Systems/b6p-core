@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false  # See results across all Node versions, not just the first failure.
       matrix:
-        node: ['18', '20', '22']  # engines floor (>=18) through current maintenance LTS.
+        node: ['20', '22']  # engines floor (>=20) through current maintenance LTS.
 
     steps:
       - name: Checkout repository

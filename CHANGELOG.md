@@ -9,6 +9,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The integrity check threw `crypto is not defined` on Node 18.** `ScriptFile.getHash()` called the
+  ambient `crypto.subtle`, which Node only exposes unflagged from 19 — so on Node 18 every
+  ETag comparison behind `push` and `audit` threw, while `package.json` declared `engines: >=18`.
+  Pre-existing; it surfaced only because this release makes CI run the full suite instead of one
+  spec file, and it failed on the first PR that did.
+
+  Two changes: `getHash()` now imports `webcrypto` from `node:crypto` explicitly, so it no longer
+  depends on which runtime exposes which global; and the **engines floor moves to `>=20`**, with
+  Node 18 dropped from the CI matrix. Node 18 reached end-of-life in April 2025, so the old floor
+  was claiming support that was neither tested nor working.
+
 - **`b6p push` silently stopped warning about stale compiled client bundles.** Caught in review
   before merge; never released. An intermediate revision of this branch made `B6PUri.dirname` return
   a folder-marked URI. `TsConfig.folder()` is built from `rawUri.dirname`, so
