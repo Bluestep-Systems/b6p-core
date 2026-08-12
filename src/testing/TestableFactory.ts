@@ -1,15 +1,19 @@
 /**
  * Common interface for static factories that support test mode switching.
- * This interface allows both FileSystem and HttpClient to be used interchangeably
- * in test setup code and provides a consistent API for switching between
- * production and test implementations.
+ *
+ * The sole implementor today is `HttpClient`, which asserts its conformance at
+ * compile time via the `TestableFactoryStatic` type-check in
+ * [HttpClient.ts](../network/HttpClient.ts). (An earlier draft of this doc named a
+ * `FileSystem` factory alongside it; no such type exists — the file system reaches
+ * core through the injected {@link FileSystem} provider, not a swappable static.)
  *
  * Note: TypeScript doesn't support static method interfaces directly, so this
  * interface defines the contract for instance methods. Classes implementing this
  * should use static methods and not be instantiated.
  *
- * @template TProvider The type of the provider interface (e.g., FileSystemProvider, HttpClientProvider)
- * @template TMock The type of the mock implementation (e.g., MockFileSystem, MockHttpClient)
+ * @template TProvider The type of the provider interface (e.g. `HttpClientProvider`)
+ * @template TMock The type of the mock implementation (e.g. `MockHttpClient`)
+ * @lastreviewed null
  */
 export interface TestableFactory<TProvider, TMock extends TProvider> {
   /**
@@ -53,7 +57,7 @@ export interface TestableFactory<TProvider, TMock extends TProvider> {
  *
  * @example
  * ```typescript
- * const factory: TestableFactoryStatic<FileSystemProvider, MockFileSystem> = FileSystem;
+ * const factory: TestableFactoryStatic<HttpClientProvider, MockHttpClient> = HttpClient;
  * factory.enableTestMode();
  * ```
  */

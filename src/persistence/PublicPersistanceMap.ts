@@ -1,11 +1,11 @@
-import type { IPersistence } from "../providers";
+import type { Persistence } from "../providers";
 import { PersistablePseudoMap } from "./PersistablePseudoMap";
 import { PublicKeys } from "./PersistenceKeys";
 import type { Serializable } from "./Serializable";
 import { revive } from "./Serializable";
 
 /**
- * A persistable map that uses the IPersistence interface to persist data.
+ * A persistable map that uses the Persistence interface to persist data.
  * Data is loaded asynchronously, so check `isInitialized()` before use.
  */
 export class PublicPersistanceMap<T extends Serializable> extends PersistablePseudoMap<T> {
@@ -26,7 +26,7 @@ export class PublicPersistanceMap<T extends Serializable> extends PersistablePse
    * @param key The key used for persisting the map.
    * @param persistence The persistence provider.
    */
-  constructor(key: PublicKeys, persistence: IPersistence) {
+  constructor(key: PublicKeys, persistence: Persistence) {
     super(key, persistence);
     this.ready = this.persistence.get<Record<string, T>>(this.key).then(
       (data) => {

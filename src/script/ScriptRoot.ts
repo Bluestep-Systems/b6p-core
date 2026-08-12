@@ -35,7 +35,7 @@ export class ScriptRoot {
   ) {
     this.parser = new DownstairsPathParser(uri.fsPath);
     const shavedName = this.parser.getShavedName();
-    this.rootUri = B6PUri.fromFsPath(path.join(shavedName, "/"));
+    this.rootUri = B6PUri.fromFsPath(shavedName).asDirectory();
     this._orgWorker = null;
     this.scriptParser = null;
   }
@@ -247,7 +247,7 @@ export class ScriptRoot {
   }
 
   public getAsFolder(): ScriptFolder {
-    return this.factory.createFolder(this.getRootUri().joinPath("/"), this);
+    return this.factory.createFolder(this.getRootUri().asDirectory(), this);
   }
 
   public async getBaseWebDavUrlString() {
@@ -327,8 +327,8 @@ export class ScriptRoot {
     const uris = await this.getDraftFolder().flattenRaw();
     const files: { fsPath: string; mtime: number }[] = [];
     for (const uri of uris) {
-      // flattenRaw() also yields directory markers (produced via joinPath("/"),
-      // so their fsPath ends with a separator). Skip them up front to avoid a
+      // flattenRaw() also yields directory markers (produced via asDirectory(), so
+      // their fsPath ends with a separator). Skip them up front to avoid a
       // needless stat() per directory on large draft trees. The type check below
       // is kept as defense-in-depth.
       if (/[\\/]$/.test(uri.fsPath)) {
@@ -360,9 +360,13 @@ export class ScriptRoot {
     bundles: { sourceRoot: string; buildFolder: string }[];
   }): { bundle: string; buildFolder: string }[] {
     const { files, bundles } = input;
+    // Both sides go through the shared marker strip. `path.normalize` PRESERVES a
+    // trailing separator, so comparing normalized-only paths silently fails whenever
+    // either side carries the folder marker — which is exactly how the stale-bundle
+    // warning went dead once `B6PUri.dirname` briefly started marking its result.
     const isUnder = (p: string, dir: string) => {
-      const np = path.normalize(p);
-      const nd = path.normalize(dir);
+      const np = B6PUri.stripDirectoryMarker(path.normalize(p));
+      const nd = B6PUri.stripDirectoryMarker(path.normalize(dir));
       return np === nd || np.startsWith(nd + path.sep);
     };
     const isTsSource = (p: string) => {

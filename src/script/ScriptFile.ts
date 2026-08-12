@@ -211,7 +211,7 @@ export class ScriptFile extends ScriptNode {
     });
   }
 
-  public async delete() {
+  public override async delete() {
     await super.delete();
     await this.deleteFromMetadata();
   }

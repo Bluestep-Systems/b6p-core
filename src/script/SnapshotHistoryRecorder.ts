@@ -43,7 +43,7 @@ export class SnapshotHistoryRecorder {
       return;
     }
 
-    const author = await this.getAuthor(scriptRoot);
+    const author = this.UNKNOWN_AUTHOR;
     const saveState = await this.buildSaveState(scriptRoot);
     const historyKey = JSON.stringify({
       author,
@@ -92,14 +92,19 @@ export class SnapshotHistoryRecorder {
     ctx.logger.info("Snapshot history recorded successfully.");
   }
 
-  private static async getAuthor(scriptRoot: ScriptRoot): Promise<string> {
-    try {
-      const auth = await scriptRoot.ctx.auth.getOrCreate();
-      return auth.username;
-    } catch {
-      return "unknown";
-    }
-  }
+  /**
+   * The author recorded alongside a snapshot.
+   *
+   * Under basic auth this was the stored username. Bearer tokens are opaque and
+   * carry no client-readable identity, and `author` is embedded in the
+   * client-composed `historyKey` blob rather than a schema field the server can
+   * backfill — so there is currently no identity to record.
+   *
+   * //HUMAN-REVIEW-NEEDED restoring a real author requires an identity source:
+   * either a `/whoami`-style lookup against the token, or the login response
+   * carrying the principal into `SessionData`.
+   */
+  private static readonly UNKNOWN_AUTHOR = "unknown";
 
   private static async buildSaveState(scriptRoot: ScriptRoot): Promise<SaveState> {
     const ctx = scriptRoot.ctx;

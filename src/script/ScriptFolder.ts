@@ -18,16 +18,22 @@ export class ScriptFolder extends ScriptNode {
     return new ScriptFolder(downstairsUri, this.scriptRoot);
   }
 
-  public async upload(_arg?: { upstairsUrlOverrideString?: string; isSnapshot?: boolean }): Promise<Response | void> {
+  public override async upload(_arg?: {
+    upstairsUrlOverrideString?: string;
+    isSnapshot?: boolean;
+  }): Promise<Response | void> {
     this.ctx.logger.info(`ScriptFolder.upload() called on ${this.path()}; no action taken.`);
     return;
   }
 
-  async getReasonToNotPush(_arg?: { upstairsOverride?: URL; isSnapshot?: boolean }): Promise<string | null> {
+  public override async getReasonToNotPush(_arg?: {
+    upstairsOverride?: URL;
+    isSnapshot?: boolean;
+  }): Promise<string | null> {
     return `Node (${this.path()}) is a folder`;
   }
 
-  public async download(): Promise<Response> {
+  public override async download(): Promise<Response> {
     return new Response(null, { status: ResponseCodes.TEAPOT, statusText: "No Content" });
   }
 
@@ -36,7 +42,7 @@ export class ScriptFolder extends ScriptNode {
     return uris.map((uri) => this.factory.createTsConfig(uri, this.scriptRoot));
   }
 
-  public equals(other: ScriptFolder): boolean {
+  public override equals(other: ScriptFolder): boolean {
     if (!(other instanceof ScriptFolder)) {
       return false;
     }
@@ -45,11 +51,11 @@ export class ScriptFolder extends ScriptNode {
     return thisPath === otherPath;
   }
 
-  public path(): string {
+  public override path(): string {
     return this.uri().fsPath;
   }
 
-  public uri(): B6PUri {
+  public override uri(): B6PUri {
     return super.uri();
   }
 
@@ -57,10 +63,35 @@ export class ScriptFolder extends ScriptNode {
     return this.factory.createFolder(this.uri().joinPath(folderName), this.scriptRoot);
   }
 
+  /**
+   * Normalizes a path for containment comparison: `path.normalize` first (so `.`/`..`
+   * and duplicate separators collapse), then the shared marker strip, so a marked and
+   * an unmarked spelling of one directory compare equal.
+   *
+   * The strip itself is {@link B6PUri.stripDirectoryMarker} rather than a local loop —
+   * every marker-insensitive comparison in the codebase must agree, and they did not
+   * when this logic was duplicated.
+   * @lastreviewed null
+   */
+  private static forComparison(rawPath: string): string {
+    return B6PUri.stripDirectoryMarker(path.normalize(rawPath));
+  }
+
+  /**
+   * Whether `other` is this folder or lives beneath it.
+   *
+   * Both sides are compared with the trailing folder marker removed. Without that,
+   * a marked folder path built `thisPath + path.sep` into a doubled separator
+   * (`/a/b/` + `/` = `/a/b//`), which no child path starts with — so containment
+   * returned `false` for genuine children. That was live: `ScriptRoot.getAsFolder()`
+   * yields a marked URI, and it is the receiver in both `createFamilial` guards.
+   * @lastreviewed null
+   */
   public contains(other: ScriptPathElement | B6PUri): boolean {
-    const thisPath = path.normalize(this.path());
-    const otherPath = path.normalize(other instanceof B6PUri ? other.fsPath : other.path());
-    return otherPath === thisPath || otherPath.startsWith(thisPath + path.sep);
+    const thisPath = ScriptFolder.forComparison(this.path());
+    const otherPath = ScriptFolder.forComparison(other instanceof B6PUri ? other.fsPath : other.path());
+    const prefix = thisPath.endsWith(path.sep) ? thisPath : thisPath + path.sep;
+    return otherPath === thisPath || otherPath.startsWith(prefix);
   }
 
   /**
@@ -84,7 +115,7 @@ export class ScriptFolder extends ScriptNode {
     const dirUri = dir.uri();
     const items = await this.ctx.fs.readDirectory(dirUri);
 
-    result.push(dirUri.joinPath("/")); // include the directory itself
+    result.push(dirUri.asDirectory()); // include the directory itself, marked as a folder
     for (const [name, type] of items) {
       const fullPath = dirUri.joinPath(name);
       if (type === "directory") {

@@ -1,20 +1,20 @@
 import * as path from "path";
 import { XMLParser } from "fast-xml-parser";
-import { FolderNames, Http, SpecialFiles } from "./constants";
-import { B6PUri } from "./B6PUri";
-import { GlobMatcher } from "./data/GlobMatcher";
-import { ScriptUrlParser } from "./data/ScriptUrlParser";
-import { ScriptFactory } from "./script/ScriptFactory";
-import { SnapshotHistoryRecorder } from "./script/SnapshotHistoryRecorder";
-import type { ScriptContext } from "./script/ScriptContext";
-import type { IFileSystem, IProgress, ProgressTask } from "./providers";
-import { Err } from "./Err";
-import type { ScriptFile } from "./script/ScriptFile";
+import { FolderNames, Http, SpecialFiles } from "../constants";
+import { B6PUri } from "../B6PUri";
+import { GlobMatcher } from "../data/GlobMatcher";
+import { ScriptUrlParser } from "../data/ScriptUrlParser";
+import { ScriptFactory } from "./ScriptFactory";
+import { SnapshotHistoryRecorder } from "./SnapshotHistoryRecorder";
+import type { ScriptContext } from "./ScriptContext";
+import type { FileSystem, ProgressTask } from "../providers";
+import { Err } from "../Err";
+import type { ScriptFile } from "./ScriptFile";
 
 /**
  * Recursively collect all files under a directory.
  */
-async function flattenDirectory(dirPath: string, fs: IFileSystem): Promise<string[]> {
+async function flattenDirectory(dirPath: string, fs: FileSystem): Promise<string[]> {
   const results: string[] = [];
   const entries = await fs.readDirectory(B6PUri.fromFsPath(dirPath));
   for (const [name, type] of entries) {
@@ -34,7 +34,7 @@ async function flattenDirectory(dirPath: string, fs: IFileSystem): Promise<strin
  * pass; per-file gitignore filtering during upload is handled inside
  * ScriptFile.upload() / getReasonToNotPush().
  */
-async function readGitIgnorePatterns(rootPath: string, fs: IFileSystem): Promise<string[]> {
+async function readGitIgnorePatterns(rootPath: string, fs: FileSystem): Promise<string[]> {
   const gitignorePath = path.join(rootPath, SpecialFiles.GITIGNORE);
   const uri = B6PUri.fromFsPath(gitignorePath);
   try {
@@ -61,14 +61,13 @@ async function readGitIgnorePatterns(rootPath: string, fs: IFileSystem): Promise
  */
 export async function executePush(opts: {
   ctx: ScriptContext;
-  progress: IProgress;
   targetUrl: string;
   rootPath: string;
   snapshot: boolean;
   message?: string;
 }): Promise<void> {
-  const { ctx, progress, targetUrl, rootPath, snapshot, message } = opts;
-  const { fs, prompt, logger, sessionManager } = ctx;
+  const { ctx, targetUrl, rootPath, snapshot, message } = opts;
+  const { fs, prompt, logger, sessionManager, progress } = ctx;
   const draftPath = path.join(rootPath, FolderNames.DRAFT);
 
   const draftUri = B6PUri.fromFsPath(draftPath);
@@ -84,7 +83,7 @@ export async function executePush(opts: {
 
   // One ScriptRoot for the whole push; all files in this draft tree are
   // siblings under the same root.
-  const rootUri = B6PUri.fromFsPath(path.join(rootPath, "/"));
+  const rootUri = B6PUri.fromFsPath(rootPath).asDirectory();
   const scriptRoot = factory.createScriptRoot(rootUri);
   scriptRoot.withParser(parser);
 

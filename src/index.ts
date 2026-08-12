@@ -1,22 +1,24 @@
 // ─── Top-level entry points ──────────────────────────────────────────
 export { B6PCore } from "./B6PCore";
-export type { AuditResult, ReportResult } from "./B6PCore";
+export type { ReportResult } from "./B6PCore";
 export { B6PUri } from "./B6PUri";
 export { Err } from "./Err";
-export { executePush } from "./push";
+export { executePush } from "./script/push";
+export type { PlatformContext } from "./PlatformContext";
 
 // ─── Provider interfaces ─────────────────────────────────────────────
 export type {
+  AuthProvider,
   B6PProviders,
   FileStat,
-  IFileSystem,
-  ILockDiagnoser,
-  ILogger,
-  IPersistence,
-  IProgress,
-  IPrompt,
+  FileSystem,
+  LockDiagnoser,
   LockHolder,
+  Logger,
+  Persistence,
+  Progress,
   ProgressTask,
+  Prompt,
 } from "./providers";
 
 // ─── Pure data classes ───────────────────────────────────────────────
@@ -28,7 +30,7 @@ export { ScriptKey } from "./data/ScriptKey";
 export { ScriptUrlParser } from "./data/ScriptUrlParser";
 
 // ─── Auth + sessions ─────────────────────────────────────────────────
-export { BasicAuthProvider } from "./auth/BasicAuthProvider";
+export { BearerAuthProvider } from "./auth/BearerAuthProvider";
 export { SessionManager } from "./session/SessionManager";
 
 // ─── Network ─────────────────────────────────────────────────────────
@@ -42,6 +44,8 @@ export { ScriptRoot } from "./script/ScriptRoot";
 export { ScriptFile } from "./script/ScriptFile";
 export type { ScriptFolder } from "./script/ScriptFolder";
 export type { ScriptContext } from "./script/ScriptContext";
+export { ScriptService } from "./script/ScriptService";
+export type { AuditResult, DeployConfig } from "./script/ScriptService";
 export { TsLibResolver } from "./script/TsLibResolver";
 
 // ─── Constants ───────────────────────────────────────────────────────
@@ -102,7 +106,8 @@ export type {
   PrimitiveNestedObject,
   XMLResponse,
   SessionData,
-  BasicAuthParams,
+  AuthParams,
+  BearerAuthParams,
   MetaDataDotJsonContent,
   Settings,
   TsConfig,

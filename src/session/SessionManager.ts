@@ -1,8 +1,8 @@
-import type { SessionData } from "../types";
+import type { AuthParams, SessionData } from "../types";
 import { ApiEndpoints, Http } from "../constants";
 import { Err } from "../Err";
 import { ResponseCodes } from "../network/StatusCodes";
-import type { IAuth, ILogger, IPersistence, IPrompt } from "../providers";
+import type { AuthProvider, Logger, Persistence, Prompt } from "../providers";
 
 const SESSION_PERSISTENCE_KEY = "sessions";
 
@@ -31,11 +31,11 @@ export class SessionManager {
   public onLogin: ((url: URL) => void) | null = null;
 
   constructor(
-    private readonly persistence: IPersistence,
-    private readonly logger: ILogger,
-    private readonly auth: IAuth,
+    private readonly persistence: Persistence,
+    private readonly logger: Logger,
+    private readonly auth: AuthProvider<AuthParams>,
     private readonly isDebugMode: () => boolean,
-    private readonly prompt: IPrompt,
+    private readonly prompt: Prompt,
     private readonly fetchFn: FetchFn = globalThis.fetch.bind(globalThis)
   ) {
     this.triggerNextCleanup(5_000);

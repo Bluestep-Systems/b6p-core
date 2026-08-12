@@ -2,7 +2,7 @@ import * as path from "path";
 import type { MetaDataDotJsonContent } from "../types";
 import { Err } from "../Err";
 import { B6PUri } from "../B6PUri";
-import type { IFileSystem, IPrompt } from "../providers";
+import type { FileSystem, Prompt } from "../providers";
 
 /**
  * Core-layer utility for dealing with IDs in the format `363769__FID_dummyTestEndpoint`.
@@ -29,7 +29,7 @@ export class IdUtility {
     return `${this.altIdKey}=${this.altIdValue}`;
   }
 
-  private async isContainedInThisMetadataJsonFile(filePath: string, fs: IFileSystem): Promise<boolean> {
+  private async isContainedInThisMetadataJsonFile(filePath: string, fs: FileSystem): Promise<boolean> {
     const uri = B6PUri.fromFsPath(filePath);
     const raw = await fs.readFile(uri);
     const textContent = Buffer.from(raw).toString("utf-8");
@@ -44,7 +44,7 @@ export class IdUtility {
   /**
    * Searches a folder recursively for a metadata.json that contains this ID.
    */
-  async findFileContaining(folderPath: string, fs: IFileSystem, prompt: IPrompt): Promise<string | null> {
+  async findFileContaining(folderPath: string, fs: FileSystem, prompt: Prompt): Promise<string | null> {
     const folderUri = B6PUri.fromFsPath(folderPath);
     const entries = await fs.readDirectory(folderUri);
 
@@ -70,7 +70,7 @@ export class IdUtility {
   /**
    * Recursively find all metadata.json files under a directory.
    */
-  private async findMetadataFiles(dirPath: string, fs: IFileSystem): Promise<string[]> {
+  private async findMetadataFiles(dirPath: string, fs: FileSystem): Promise<string[]> {
     const results: string[] = [];
     const entries = await fs.readDirectory(B6PUri.fromFsPath(dirPath));
 

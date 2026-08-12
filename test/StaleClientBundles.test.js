@@ -156,6 +156,60 @@ test("no bundles → no warnings (e.g. a component with only the root tsconfig)"
   assert.deepStrictEqual(stale, []);
 });
 
+// ── Regression: a folder-MARKED sourceRoot must still match ───────────────
+//
+// `TsConfig.folder()` is built from `rawUri.dirname`. An intermediate revision of
+// b6p-core 0.5.0 made `B6PUri.dirname` return a folder-marked URI, so
+// findStaleClientBundles began handing this helper a sourceRoot ending in a
+// separator. `path.normalize` PRESERVES that separator, so the old containment test
+// compared every draft file against "<root>" + sep + sep, matched nothing, and the
+// push warning went silently dead. Every case above passes an UNMARKED root, which
+// is exactly why the suite could not see it.
+test("a folder-marked sourceRoot matches the same files as an unmarked one", () => {
+  const root = j("U1", "Report", "draft", "static");
+  const files = [
+    { fsPath: j(root, "script.ts"), mtime: 2000 },
+    { fsPath: j(root, ".build", "script.js"), mtime: 1000 }, // stale
+  ];
+  const buildFolder = j(root, ".build");
+
+  const unmarked = ScriptRoot.selectStaleBundles({ files, bundles: [{ sourceRoot: root, buildFolder }] });
+  const marked = ScriptRoot.selectStaleBundles({
+    files,
+    bundles: [{ sourceRoot: root + path.sep, buildFolder }],
+  });
+
+  assert.strictEqual(unmarked.length, 1, "sanity: the unmarked root detects the stale bundle");
+  assert.strictEqual(marked.length, 1, "a marked sourceRoot must detect it too");
+});
+
+test("a folder-marked buildFolder still matches its compiled output", () => {
+  const root = j("U1", "Report", "draft", "static");
+  const stale = ScriptRoot.selectStaleBundles({
+    files: [
+      { fsPath: j(root, "script.ts"), mtime: 2000 },
+      { fsPath: j(root, ".build", "script.js"), mtime: 1000 },
+    ],
+    bundles: [{ sourceRoot: root, buildFolder: j(root, ".build") + path.sep }],
+  });
+  assert.strictEqual(stale.length, 1, "a marked buildFolder must still find its .js");
+});
+
+test("a sibling whose name extends the source root is not treated as inside it", () => {
+  const root = j("U1", "Report", "draft", "static");
+  const sibling = j("U1", "Report", "draft", "staticExtra");
+  const stale = ScriptRoot.selectStaleBundles({
+    // Only the SIBLING has a newer source; the bundle itself is in sync.
+    files: [
+      { fsPath: j(root, "script.ts"), mtime: 1000 },
+      { fsPath: j(root, ".build", "script.js"), mtime: 2000 },
+      { fsPath: j(sibling, "other.ts"), mtime: 9999 },
+    ],
+    bundles: [{ sourceRoot: root, buildFolder: j(root, ".build") }],
+  });
+  assert.deepStrictEqual(stale, [], "staticExtra/ must not count as a source of static/");
+});
+
 if (failures > 0) {
   console.error(`\n${failures} test(s) failed.`);
   process.exit(1);

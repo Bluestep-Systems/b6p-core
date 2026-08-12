@@ -2,7 +2,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import * as os from "os";
 import * as crypto from "crypto";
-import type { IPersistence, ILockDiagnoser, LockHolder } from "../providers";
+import type { Persistence, LockDiagnoser, LockHolder } from "../providers";
 import { lockdownDir } from "./dirLockdown";
 
 /**
@@ -32,7 +32,7 @@ import { lockdownDir } from "./dirLockdown";
  * git commits, file shares). It does not protect against an attacker with
  * shell access as the same OS user, since the key sits next to the file.
  */
-export class SharedFilePersistence implements IPersistence {
+export class SharedFilePersistence implements Persistence {
   private readonly configDir: string;
   private readonly statePath: string;
   private readonly secretsPath: string;
@@ -41,9 +41,9 @@ export class SharedFilePersistence implements IPersistence {
   private cachedKey: Buffer | null = null;
   private dirReady = false;
   private pendingBootstrap: Promise<void> | null = null;
-  private readonly lockDiagnoser?: ILockDiagnoser;
+  private readonly lockDiagnoser?: LockDiagnoser;
 
-  constructor(configDirOverride?: string, lockDiagnoser?: ILockDiagnoser) {
+  constructor(configDirOverride?: string, lockDiagnoser?: LockDiagnoser) {
     this.configDir = configDirOverride ?? path.join(os.homedir(), ".b6p");
     this.statePath = path.join(this.configDir, "state.json");
     this.secretsPath = path.join(this.configDir, "secrets.enc");
@@ -267,13 +267,13 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
 // retry with backoff before giving up. Spacing the renames out also dampens
 // the rapid write-then-rename burst that trips ransomware heuristics in the
 // first place. A kernel filesystem minifilter (e.g. Sophos CryptoGuard) holds
-// no user-mode handle, so an ILockDiagnoser can only confirm "no user-mode
+// no user-mode handle, so an LockDiagnoser can only confirm "no user-mode
 // locker" — which is itself a minifilter fingerprint (see buildRenameError).
 const RENAME_RETRY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
 const RENAME_RETRY_DELAYS_MS = [50, 100, 200, 400, 800, 1000] as const;
 const RENAME_MAX_ATTEMPTS = RENAME_RETRY_DELAYS_MS.length + 1;
 
-async function atomicWrite(filePath: string, contents: string, lockDiagnoser?: ILockDiagnoser): Promise<void> {
+async function atomicWrite(filePath: string, contents: string, lockDiagnoser?: LockDiagnoser): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp.${process.pid}.${crypto.randomBytes(4).toString("hex")}`;
   try {
@@ -339,7 +339,7 @@ const DIAGNOSE_TIMEOUT_MS = 2_000;
 async function buildRenameError(
   filePath: string,
   originalError: unknown,
-  lockDiagnoser?: ILockDiagnoser
+  lockDiagnoser?: LockDiagnoser
 ): Promise<Error> {
   const fileName = path.basename(filePath);
   const dir = path.dirname(filePath);
@@ -390,7 +390,7 @@ function annotateError(originalError: unknown, message: string): Error {
  * caller can distinguish "diagnosed, none found" from "could not diagnose".
  * @lastreviewed null
  */
-async function diagnoseSafely(lockDiagnoser: ILockDiagnoser, filePath: string): Promise<LockHolder[] | null> {
+async function diagnoseSafely(lockDiagnoser: LockDiagnoser, filePath: string): Promise<LockHolder[] | null> {
   try {
     return await Promise.race([
       lockDiagnoser.diagnose(filePath),

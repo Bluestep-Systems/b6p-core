@@ -1,4 +1,4 @@
-import type { IPersistence } from "../providers";
+import type { Persistence } from "../providers";
 import { PseudoMap } from "./PseudoMap";
 import { Persistable } from "./Persistable";
 import type { Serializable } from "./Serializable";
@@ -7,7 +7,7 @@ import type { Serializable } from "./Serializable";
  * A persistable version of a pseudomap. Extending classes must implement an initializer
  * that will load the data from the appropriate source, and a storage method.
  *
- * Now uses IPersistence interface for storage, allowing the same persistence layer
+ * Now uses Persistence interface for storage, allowing the same persistence layer
  * to be shared between legacy extension code and the new B6PCore.
  */
 export abstract class PersistablePseudoMap<T extends Serializable>
@@ -22,14 +22,14 @@ export abstract class PersistablePseudoMap<T extends Serializable>
   /**
    * The persistence provider (replaces direct vscode.ExtensionContext access).
    */
-  protected readonly persistence: IPersistence;
+  protected readonly persistence: Persistence;
 
   /**
    * Creates an instance of PersistableMap.
    * @param key The key used for persisting the map.
    * @param persistence The persistence provider.
    */
-  constructor(key: string, persistence: IPersistence) {
+  constructor(key: string, persistence: Persistence) {
     super();
     this.key = key;
     this.persistence = persistence;

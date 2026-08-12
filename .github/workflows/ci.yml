@@ -57,11 +57,14 @@ jobs:
       - name: Type check
         run: npm run check-types
 
-      - name: Lint
-        run: npm run lint
+      - name: Format check
+        run: npm run format-check
 
       - name: Compile
         run: npm run compile
 
+      # `npm test` recompiles, then runs every spec in test/ against dist/.
+      # Do not inline a single spec file here: the suite is not globbed, so a
+      # spec only runs if it is listed in package.json's `test` script.
       - name: Test
-        run: node test/DownstairsPathParser.test.js
+        run: npm test

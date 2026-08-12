@@ -4,7 +4,7 @@ import { ApiEndpoints, FolderNames, Http, MimeTypes, WebDAVElements } from "../c
 import { Err } from "../Err";
 import { ScriptKey } from "./ScriptKey";
 import type { SessionManager } from "../session/SessionManager";
-import type { ILogger, IPrompt } from "../providers";
+import type { Logger, Prompt } from "../providers";
 import { OrgWorker } from "./OrgWorker";
 
 type FilePointers = { upstairsPath: string; downstairsPath: string; trailing?: string };
@@ -13,7 +13,7 @@ type GetScriptRet = FilePointers[] | null;
 /**
  * Parses and interacts with BlueStep WebDAV script URLs.
  *
- * Takes a {@link SessionManager}, `ILogger`, and `IPrompt` via constructor injection.
+ * Takes a {@link SessionManager}, `Logger`, and `Prompt` via constructor injection.
  */
 export class ScriptUrlParser {
   static readonly URL_TYPES = ["files", "public"] as const;
@@ -31,8 +31,8 @@ export class ScriptUrlParser {
   constructor(
     public readonly rawUrlString: string,
     private readonly sessionManager: SessionManager,
-    private readonly logger: ILogger,
-    private readonly prompt: IPrompt
+    private readonly logger: Logger,
+    private readonly prompt: Prompt
   ) {
     if (!rawUrlString || !rawUrlString.trim()) {
       throw new Err.UrlParsingError("URL string cannot be empty");

@@ -4,14 +4,14 @@ import { OrgWorker } from "../data/OrgWorker";
 import { HttpClient } from "../network/HttpClient";
 import { Err } from "../Err";
 import { PublicKeys, PublicPersistanceMap } from "../persistence";
-import type { IPersistence, ILogger, IPrompt } from "../providers";
+import type { Persistence, Logger, Prompt } from "../providers";
 
 /**
  * Minimal settings shape required by {@link OrgCache}.
  *
  * Implementations may pull values from any backing store (VS Code config, env, file).
  */
-export interface IOrgCacheSettings {
+export interface OrgCacheSettings {
   /**
    * Returns an override URL for the given U if one is configured (e.g. via debug-mode
    * settings); returns `null` if no override applies.
@@ -33,47 +33,114 @@ export interface OrgCacheDisposable {
 export class OrgCache implements OrgCacheDisposable {
   private readonly orgCacheMap: PublicPersistanceMap<OrgCacheElement[]>;
   private _cleanupTimer: ReturnType<typeof setTimeout> | null = null;
+  private _disposed = false;
 
   /**
    * Optional callback invoked when the cache changes (e.g. for MCP server updates).
    */
   public onChanged: (() => void) | null = null;
 
+  /**
+   * Resolves once the backing map has loaded and the first cleanup pass has run.
+   * Every public method that *reads or mutates the cache* awaits this first. The two
+   * exceptions are deliberate: {@link map} hands out the backing map itself (its
+   * caller owns the timing) and {@link dispose} must stay synchronous. Resolves —
+   * never rejects — so a failed load leaves the cache empty rather than hanging
+   * awaiters.
+   * @lastreviewed null
+   */
+  private readonly ready: Promise<void>;
+
   constructor(
-    persistence: IPersistence,
-    private readonly logger: ILogger,
-    private readonly settings: IOrgCacheSettings,
+    persistence: Persistence,
+    private readonly logger: Logger,
+    private readonly settings: OrgCacheSettings,
     private readonly isDebugMode: () => boolean,
-    private readonly prompt?: IPrompt
+    private readonly prompt?: Prompt
   ) {
     this.orgCacheMap = new PublicPersistanceMap(PublicKeys.U_CACHE, persistence);
-    this.cleanupOldEntries();
+    // MUST await the load before the first cleanup. `PublicPersistanceMap` loads
+    // asynchronously and *reassigns* its backing object when the load lands, so a
+    // cleanup that ran synchronously here would iterate an empty map and then
+    // `store()` that emptiness over the real file — silently wiping the persisted
+    // cache on every construction, invisibly, because the in-memory copy arrives
+    // immediately afterwards and looks correct for the rest of the session.
+    this.ready = this.orgCacheMap
+      .whenReady()
+      .then(() => this.cleanupOldEntries())
+      .catch((e) => {
+        // Must not reject. `whenReady()` never does, but `cleanupOldEntries` reaches
+        // `Persistence.set`, and a consumer implementation may throw synchronously.
+        // Nothing awaits `ready` at construction time, so a rejection here would be
+        // an unhandled rejection that takes the process down — and would then make
+        // every gated method reject for the rest of the process's life.
+        this.logger.warn(`OrgCache initial cleanup failed; continuing with the loaded cache: ${String(e)}`);
+      });
   }
 
-  /** Gets the underlying persistence map. */
+  /**
+   * Awaits the initial load. Public methods do this for you; call it directly only
+   * before {@link findUCacheOnly}, which is synchronous and cannot await.
+   * @lastreviewed null
+   */
+  public whenReady(): Promise<void> {
+    return this.ready;
+  }
+
+  /**
+   * Gets the underlying persistence map. **Not gated on the initial load** — await
+   * {@link whenReady} (or the map's own `whenReady()`) before reading from it.
+   * @lastreviewed null
+   */
   public map(): PublicPersistanceMap<OrgCacheElement[]> {
     return this.orgCacheMap;
   }
 
   public async delete(u: string): Promise<void> {
+    await this.ready;
     this.orgCacheMap.delete(u);
     await this.orgCacheMap.store();
     this.onChanged?.();
   }
 
-  /** Cleans up entries that have not been accessed in the last 3 days. */
+  /**
+   * Cleans up entries that have not been accessed in the last 3 days, then
+   * re-arms itself for a day later.
+   *
+   * Only ever called after {@link ready} has settled — see the constructor.
+   * @lastreviewed null
+   */
   private cleanupOldEntries() {
+    // The first sweep is deferred onto `ready`, so `dispose()` can land before this
+    // ever runs — at which point `_cleanupTimer` was still null and dispose() found
+    // nothing to clear. Without this guard the deferred sweep would then arm a timer
+    // that re-arms itself forever, on an object its owner already disposed.
+    if (this._disposed) {
+      return;
+    }
     const now = Date.now();
     const cutoff = now - Numerical.millisecondsInXDays(3);
+    let changed = false;
     for (const [u, elementArray] of this.orgCacheMap) {
       const filteredArray = elementArray.filter((element) => element.lastAccess >= cutoff);
       if (filteredArray.length === 0) {
         this.orgCacheMap.delete(u);
+        changed = true;
       } else if (filteredArray.length < elementArray.length) {
-        this.orgCacheMap.set(u, filteredArray);
+        // `update: false` — this set() would otherwise store() on the spot, and the
+        // single write below would then be a second, redundant one.
+        this.orgCacheMap.set(u, filteredArray, false);
+        changed = true;
       }
     }
-    this.orgCacheMap.store();
+    // Only write when something actually expired. The old unconditional store()
+    // rewrote the whole cache file on every construction, which on Windows is a
+    // rapid-fire write that AV / ransomware heuristics penalise (see the retry
+    // logic in SharedFilePersistence).
+    if (changed) {
+      this.orgCacheMap.store();
+      this.onChanged?.();
+    }
     this._cleanupTimer = setTimeout(() => this.cleanupOldEntries(), Numerical.millisecondsInXDays(1));
     // Don't keep the process alive just for cleanup (critical for the CLI).
     this._cleanupTimer.unref?.();
@@ -108,6 +175,7 @@ export class OrgCache implements OrgCacheDisposable {
 
   /** Hard-validates all entries in the cache by calling the orgs to verify the U-host association. */
   public async hardValidateAll(): Promise<void> {
+    await this.ready;
     this.cleanDuplicates(true);
     for (const u of this.orgCacheMap.keys()) {
       await this.hardValidateU(u);
@@ -116,6 +184,7 @@ export class OrgCache implements OrgCacheDisposable {
 
   /** Hard-validates an individual U by ensuring each known host connects to the same U. */
   public async hardValidateU(u: string): Promise<void> {
+    await this.ready;
     const elementArr = this.orgCacheMap.get(u);
     if (!elementArr) {
       return;
@@ -148,6 +217,7 @@ export class OrgCache implements OrgCacheDisposable {
     if (!/^U\d{6}$/.test(u)) {
       throw new Err.OrgCacheError("Invalid U format: " + u);
     }
+    await this.ready;
     this.cleanDuplicates();
     // check cache first
     if (this.orgCacheMap.has(u)) {
@@ -177,6 +247,7 @@ export class OrgCache implements OrgCacheDisposable {
 
   /** Associates a host with a U value in the cache. */
   public async addHost(u: string, url: URL): Promise<void> {
+    await this.ready;
     this.cleanDuplicates(false);
     const host = url.hostname;
     if (this.orgCacheMap.has(u)) {
@@ -200,6 +271,7 @@ export class OrgCache implements OrgCacheDisposable {
 
   /** Clears the entire cache. */
   public async clearCache(): Promise<void> {
+    await this.ready;
     await this.orgCacheMap.clear();
     this.onChanged?.();
   }
@@ -209,6 +281,7 @@ export class OrgCache implements OrgCacheDisposable {
    * If not cached, will attempt to call the org to get the U.
    */
   public async findU(url: string | URL, cacheOnly = false): Promise<string> {
+    await this.ready;
     url = new URL(url);
     const existingU = this.findUCacheOnly(url);
     if (existingU) {
@@ -222,8 +295,20 @@ export class OrgCache implements OrgCacheDisposable {
     return U;
   }
 
-  /** Finds the U associated with the provided URL from cache only. */
+  /**
+   * Finds the U associated with the provided URL from cache only.
+   *
+   * Synchronous, so it cannot await the initial load itself. External callers must
+   * `await orgCache.whenReady()` first; without that it reports a miss on a cache
+   * that is merely not loaded yet, which an unlucky caller turns into a needless
+   * BlueHQ round trip. Internal callers all run after {@link ready} has settled.
+   * @lastreviewed null
+   */
   public findUCacheOnly(url: URL): string | null {
+    if (!this.orgCacheMap.isInitialized()) {
+      this.logger.warn("OrgCache.findUCacheOnly called before the cache finished loading; reporting a miss.");
+      return null;
+    }
     url = new URL(url);
     const newHostName = url.hostname;
     for (const [u, elementArray] of this.orgCacheMap) {
@@ -239,6 +324,7 @@ export class OrgCache implements OrgCacheDisposable {
   }
 
   dispose() {
+    this._disposed = true;
     if (this._cleanupTimer) {
       clearTimeout(this._cleanupTimer);
       this._cleanupTimer = null;

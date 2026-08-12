@@ -9,14 +9,14 @@
 //
 // b6p-core has no test framework; this is a minimal, dependency-free node script
 // (run via `npm test`) exercising the COMPILED store from dist/ against an
-// in-memory IPersistence that counts disk writes.
+// in-memory Persistence that counts disk writes.
 const assert = require("node:assert");
 const { ScriptMetaDataStore } = require("../dist/cache/ScriptMetaDataStore.js");
 
 // The persistence key the store writes under (PublicKeys.SCRIPT_METADATA).
 const SCRIPT_METADATA_KEY = "b6p:script_metadata";
 
-/** In-memory IPersistence that counts writes and exposes the last stored value. */
+/** In-memory Persistence that counts writes and exposes the last stored value. */
 function makePersistence(initial) {
   const store = new Map(Object.entries(initial || {}));
   const secrets = new Map();
