@@ -42,10 +42,19 @@ All AI-generated or AI-modified JSDoc **MUST** include the `@lastreviewed null` 
 replaces `null` with the review date after verifying accuracy. Modifying an already-reviewed JSDoc
 block resets its tag to `null` — the old review date does not cover the new text.
 
-This rule is **enforced by CI** as a ratchet: `test/JsdocLastReviewed.test.js` (part of `npm test`)
-fails when any file gains untagged JSDoc blocks beyond the tolerated count in
+The rule is **partially enforced by CI** as a ratchet: `test/JsdocLastReviewed.test.js` (part of
+`npm test`) fails when any file gains **net-new untagged** JSDoc blocks beyond the tolerated count in
 `test/jsdoc-lastreviewed.baseline.json` (pre-rule blocks are grandfathered there; new files tolerate
-zero). When you tag previously-untagged blocks, tighten the ratchet with
+zero). Be precise about what that does and does not catch:
+
+- **Caught**: adding a JSDoc block without a well-formed `@lastreviewed null`/date tag.
+- **Not caught**: *modifying* an existing block — a rewritten block keeps its old count and, worse, a
+  stale review date. Resetting the date to `null` on modification is therefore a reviewer-diligence
+  duty, not something CI can verify.
+- **False positive**: moving an untagged (grandfathered) block between files reads as a new untagged
+  block in the destination file. Tag it in passing — cheaper than fighting the ratchet.
+
+When you tag previously-untagged blocks, tighten the ratchet with
 `node test/JsdocLastReviewed.test.js --update`. Never raise a baseline number to make the check pass —
 tag the JSDoc instead.
 

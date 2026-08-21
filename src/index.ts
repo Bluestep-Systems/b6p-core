@@ -46,7 +46,7 @@ export { ScriptFile } from "./script/ScriptFile";
 export type { ScriptFolder } from "./script/ScriptFolder";
 export type { ScriptContext } from "./script/ScriptContext";
 export { ScriptService } from "./script/ScriptService";
-export type { AuditResult, DeployConfig } from "./script/ScriptService";
+export type { AuditResult, DeployConfig, PullResult } from "./script/ScriptService";
 export { TsLibResolver } from "./script/TsLibResolver";
 
 // ─── Constants ───────────────────────────────────────────────────────

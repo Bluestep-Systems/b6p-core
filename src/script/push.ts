@@ -51,14 +51,23 @@ async function readGitIgnorePatterns(rootPath: string, fs: FileSystem): Promise<
 
 /**
  * Outcome of a push, for callers that need more signal than the human-facing
- * messages — e.g. a CLI that must exit non-zero or emit `--json` when a
- * snapshot shipped without a history entry.
+ * messages — e.g. a CLI that must exit non-zero or emit `--json` when nothing
+ * was uploaded or a snapshot shipped without a history entry. Check `pushed`
+ * before reading anything else: a push that aborted early uploaded nothing,
+ * regardless of what the other fields say.
  * @lastreviewed null
  */
 export interface PushResult {
   /**
-   * False only for a snapshot push whose history entry could not be recorded
-   * (no restore point exists).
+   * True when the upload actually ran. False when the push aborted before
+   * uploading anything (draft folder missing, or empty) — a state a machine
+   * consumer must not read as success.
+   * @lastreviewed null
+   */
+  pushed: boolean;
+  /**
+   * False for a snapshot push whose history entry could not be recorded (no
+   * restore point exists), and for any push that did not run (`pushed: false`).
    * @lastreviewed null
    */
   historyRecorded: boolean;
@@ -88,7 +97,7 @@ export async function executePush(opts: {
   const draftUri = B6PUri.fromFsPath(draftPath);
   if (!(await fs.exists(draftUri))) {
     prompt.error(`Draft folder not found: ${draftPath}`);
-    return { historyRecorded: true };
+    return { pushed: false, historyRecorded: false };
   }
 
   // Build a parser from the target URL so the ScriptRoot can resolve
@@ -128,7 +137,7 @@ export async function executePush(opts: {
 
   if (allFiles.length === 0) {
     prompt.info("No files to push — draft folder is empty.");
-    return { historyRecorded: true };
+    return { pushed: false, historyRecorded: false };
   }
 
   const uploadTasks: ProgressTask<void>[] = allFiles.map((filePath) => ({
@@ -185,7 +194,7 @@ export async function executePush(opts: {
     prompt.info(snapshot ? "Snapshot complete!" : "Push complete!");
   }
 
-  return { historyRecorded };
+  return { pushed: true, historyRecorded };
 }
 
 /**

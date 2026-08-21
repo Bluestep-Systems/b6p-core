@@ -47,6 +47,9 @@ function makeScriptRoot(bodies) {
       csrfFetch: async (_url, init) => {
         calls.push(init);
         const body = bodies[Math.min(calls.length - 1, bodies.length - 1)];
+        if (body.__httpStatus) {
+          return new Response(body.__text ?? "server error", { status: body.__httpStatus });
+        }
         return new Response(JSON.stringify(body), { status: 200 });
       },
     },
@@ -89,6 +92,28 @@ test("persistent version mismatch → throws after exhausting every attempt", as
     (e) => /version mismatch/i.test(e.message)
   );
   assert.strictEqual(calls.length, MAX_ATTEMPTS);
+});
+
+test("non-2xx HTTP response → no retry, throws on the first attempt", async () => {
+  // The one branch where a wrong call would multiply retries against a server
+  // that is actually down.
+  const { scriptRoot, calls } = makeScriptRoot([{ __httpStatus: 500, __text: "boom" }]);
+  await assert.rejects(
+    () => SnapshotHistoryRecorder.record(scriptRoot, "msg", TEST_OPTS),
+    (e) => /500/.test(e.message)
+  );
+  assert.strictEqual(calls.length, 1);
+});
+
+test("unrelated error containing 'version mismatch' phrase → NOT retried", async () => {
+  // The predicate is anchored on the optimistic-lock wording; a fatal
+  // schema/client complaint must fail fast instead of burning the backoff.
+  const { scriptRoot, calls } = makeScriptRoot([{ errors: [{ message: "Schema version mismatch: client too old" }] }]);
+  await assert.rejects(
+    () => SnapshotHistoryRecorder.record(scriptRoot, "msg", TEST_OPTS),
+    (e) => /client too old/.test(e.message)
+  );
+  assert.strictEqual(calls.length, 1);
 });
 
 test("non-mismatch GraphQL error → no retry, throws on the first attempt", async () => {

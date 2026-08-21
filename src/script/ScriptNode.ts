@@ -100,8 +100,40 @@ export abstract class ScriptNode implements ScriptPathElement {
     return this.uri();
   }
 
+  /**
+   * Write the given content to this node's local path **atomically**: the bytes
+   * land in a temp sibling first and are renamed over the target, so a crash or
+   * Ctrl-C mid-write can never leave a truncated file behind. That matters to
+   * pull's divergence guard — a partial write under the file's recorded
+   * `lastVerifiedHash` would otherwise be indistinguishable from a local edit
+   * and get "kept" forever instead of repaired by the next pull.
+   *
+   * If the rename fails (e.g. a transient Windows EPERM while AV holds the
+   * target), the temp file is removed and the write falls back to a direct
+   * (non-atomic) write — the pre-atomic behaviour — rather than failing the
+   * whole operation.
+   * @param buffer The exact bytes to write
+   * @lastreviewed null
+   */
   public async writeContent(buffer: ArrayBuffer) {
-    await this.ctx.fs.writeFile(this.b6pUri(), Buffer.from(buffer));
+    const target = this.b6pUri();
+    const temp = B6PUri.fromFsPath(target.fsPath + ".b6p-tmp");
+    await this.ctx.fs.writeFile(temp, Buffer.from(buffer));
+    try {
+      await this.ctx.fs.rename(temp, target);
+    } catch (renameError) {
+      try {
+        await this.ctx.fs.delete(temp, { recursive: false });
+      } catch {
+        // Best-effort cleanup; the direct write below is what matters.
+      }
+      this.ctx.logger.warn(
+        `Atomic rename into ${target.fsPath} failed (${renameError instanceof Error ? renameError.message : renameError}); ` +
+          `falling back to a direct write.`
+      );
+      await this.ctx.fs.writeFile(target, Buffer.from(buffer));
+    }
+    this._exists = true;
   }
 
   public async exists(): Promise<boolean> {
@@ -279,6 +311,7 @@ export abstract class ScriptNode implements ScriptPathElement {
   public async delete(): Promise<void> {
     if (await this.isCopacetic()) {
       await this.ctx.fs.delete(this.b6pUri(), { recursive: true });
+      this._exists = false;
     } else {
       throw new Err.ScriptNotCopaceticError();
     }

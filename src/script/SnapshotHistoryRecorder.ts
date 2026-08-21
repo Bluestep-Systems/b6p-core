@@ -89,13 +89,18 @@ export class SnapshotHistoryRecorder {
     // failure is thrown on the first attempt.
     const retryDelaysMs = opts?.retryDelaysMs ?? SnapshotHistoryRecorder.VERSION_MISMATCH_RETRY_DELAYS_MS;
     const maxAttempts = retryDelaysMs.length + 1;
+    // Serialized once: `variables` embeds the full draft-tree content, so
+    // re-stringifying megabytes per retry would be pure waste. The request-init
+    // OBJECT stays per-attempt — csrfFetch mutates `options.headers` in place,
+    // and a shared literal would leak the previous attempt's CSRF token forward.
+    const body = JSON.stringify({ query, variables });
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const response = await ctx.sessionManager.csrfFetch(gqlUrl, {
         method: Http.Methods.POST,
         headers: {
           [Http.Headers.CONTENT_TYPE]: MimeTypes.APPLICATION_JSON,
         },
-        body: JSON.stringify({ query, variables }),
+        body,
       });
 
       if (!response.ok) {
@@ -110,15 +115,18 @@ export class SnapshotHistoryRecorder {
       }
 
       const messages = json.errors.map((e) => e.message).join(", ");
-      // Matches the observed wording ("Unable to update BaseTable because of
-      // version mismatch: expected ver. 5, actual ver. 6") plus the version
-      // clause on its own, in case the server ever drops the lead-in.
-      const isVersionMismatch = /version mismatch|expected ver\./i.test(messages);
+      // Anchored on the optimistic-lock wording ("Unable to update BaseTable
+      // because of version mismatch: expected ver. 5, actual ver. 6") plus the
+      // numbered version clause on its own, in case the server ever drops the
+      // lead-in. Deliberately NOT a bare /version mismatch/: that would also
+      // retry unrelated fatal errors that happen to contain the phrase (e.g. a
+      // schema/client version complaint), burning the whole backoff budget.
+      const isVersionMismatch = /because of version mismatch|expected ver\.\s*\d+/i.test(messages);
       if (isVersionMismatch && attempt < maxAttempts) {
         const delayMs = retryDelaysMs[attempt - 1];
         ctx.logger.info(
           `Snapshot history hit a version mismatch (the platform is still settling the pushed files); ` +
-            `retrying in ${delayMs}ms (attempt ${attempt}/${maxAttempts})...`
+            `attempt ${attempt} of ${maxAttempts} failed, retrying in ${delayMs}ms...`
         );
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         continue;

@@ -168,7 +168,8 @@ export class ScriptFile extends ScriptNode {
 
   /**
    * Downloads the file from the upstairs location and writes it to the local file system.
-   * Performs integrity verification using ETag headers (SHA-512 hashes only) and updates the lastPulled timestamp.
+   * Performs integrity verification using ETag headers (SHA-512 hashes only) and records the
+   * file's `lastVerifiedHash` via {@link touch}.
    * Skips download if the file is in .gitignore and removes it from metadata instead.
    * Skips integrity verification for numeric and complex ETags (no hash available).
    *
@@ -244,9 +245,9 @@ export class ScriptFile extends ScriptNode {
 
     if (!(await this.shouldOverwriteLocal(incomingHash, opts))) {
       const message =
-        `Keeping the local copy of ${this.uri().fsPath} — it has local edits and was NOT synced ` +
-        `with the platform. Sync via an audit pull to take the platform version, or delete the ` +
-        `file and pull again.`;
+        `Keeping the local copy of ${this.uri().fsPath} — it differs from what was last synced ` +
+        `(local edits, or a previously interrupted pull) and was NOT synced with the platform. ` +
+        `Sync via an audit pull to take the platform version, or delete the file and pull again.`;
       if (opts?.onLocalKept) {
         opts.onLocalKept(this.uri().fsPath);
         this.ctx.logger.info(message);

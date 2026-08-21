@@ -14,11 +14,16 @@
 // WITHOUT prompting (download runs once per file inside the pull loop, where a
 // blocking read can never complete on non-interactive stdin, and a per-file
 // prompt would also contradict an already-confirmed audit pull). Flows that
-// have confirmed the intent pass `overwriteLocal: true`. A file with differing
-// content but NO metadata record overwrites as before: the record store is
+// have confirmed the intent pass `overwriteLocal: true` — scoped per file by
+// ScriptService.pull's `overwriteLocalPaths`. A file with differing content
+// but NO metadata record overwrites as before: the record store is
 // machine-local and routinely empty (fresh clone, new machine), so guarding it
 // would make a first pull write nothing. A kept file's metadata stays
 // untouched, so `audit` keeps flagging the divergence.
+//
+// The write itself is ATOMIC (temp sibling + rename): a crash mid-write must
+// never leave a truncated file that the guard would then misread as a local
+// edit and keep forever.
 //
 // b6p-core has no test framework; this is a minimal, dependency-free node
 // script (run via `npm test`). It exercises the COMPILED classes from dist/
@@ -38,13 +43,15 @@ function test(name, fn) {
 
 const ROOT_PATH = path.join(path.parse(process.cwd()).root, "ws", "U100001", "MyScript");
 const FILE_PATH = path.join(ROOT_PATH, "draft", "README.md");
+const TARGET = B6PUri.fromFsPath(FILE_PATH).fsPath;
 
 function sha512(content) {
   return crypto.createHash("sha512").update(Buffer.from(content, "utf8")).digest("hex");
 }
 
 /**
- * Build a ScriptFile wired to a fake ScriptContext.
+ * Build a ScriptFile wired to a fake ScriptContext over an in-memory file map,
+ * so the atomic temp-write + rename path is exercised for real.
  *
  * @param opts.localContent  current on-disk content, or null when the file does not exist
  * @param opts.remoteContent body the GET returns (its quoted SHA-512 is the ETag unless etagOverride is set)
@@ -52,32 +59,48 @@ function sha512(content) {
  * @param opts.etagOverride  explicit ETag header value (to force an integrity failure)
  */
 function makeScenario(opts) {
+  const files = {};
+  if (opts.localContent !== null) {
+    files[TARGET] = Buffer.from(opts.localContent, "utf8");
+  }
   const state = {
-    localBytes: opts.localContent === null ? null : Buffer.from(opts.localContent, "utf8"),
-    writes: 0,
+    files,
+    directTargetWrites: 0, // fs.writeFile aimed straight at the target (must stay 0 — atomicity)
+    renamesToTarget: 0, // content arriving at the target via rename
     prompts: 0,
     warns: [],
     metadata: {
       pushPullRecords:
-        opts.lastVerifiedHash == null
-          ? []
-          : [{ downstairsPath: B6PUri.fromFsPath(FILE_PATH).fsPath, lastVerifiedHash: opts.lastVerifiedHash }],
+        opts.lastVerifiedHash == null ? [] : [{ downstairsPath: TARGET, lastVerifiedHash: opts.lastVerifiedHash }],
     },
   };
 
   const noop = () => {};
   const logger = { debug: noop, info: noop, warn: noop, error: noop };
   const fs = {
-    stat: async () => {
-      if (state.localBytes === null) {
+    stat: async (uri) => {
+      const bytes = state.files[uri.fsPath];
+      if (bytes === undefined) {
         throw new Error("ENOENT");
       }
-      return { type: "file", mtime: 0, ctime: 0, size: state.localBytes.length };
+      return { type: "file", mtime: 0, ctime: 0, size: bytes.length };
     },
-    readFile: async () => new Uint8Array(state.localBytes),
-    writeFile: async (_uri, bytes) => {
-      state.writes++;
-      state.localBytes = Buffer.from(bytes);
+    readFile: async (uri) => new Uint8Array(state.files[uri.fsPath]),
+    writeFile: async (uri, bytes) => {
+      if (uri.fsPath === TARGET) {
+        state.directTargetWrites++;
+      }
+      state.files[uri.fsPath] = Buffer.from(bytes);
+    },
+    rename: async (from, to) => {
+      if (to.fsPath === TARGET) {
+        state.renamesToTarget++;
+      }
+      state.files[to.fsPath] = state.files[from.fsPath];
+      delete state.files[from.fsPath];
+    },
+    delete: async (uri) => {
+      delete state.files[uri.fsPath];
     },
   };
   const etag = opts.etagOverride !== undefined ? opts.etagOverride : '"' + sha512(opts.remoteContent) + '"';
@@ -116,6 +139,10 @@ function makeScenario(opts) {
   return { file, state };
 }
 
+function targetContent(state) {
+  return state.files[TARGET] === undefined ? null : state.files[TARGET].toString("utf8");
+}
+
 const PLATFORM = "# README\n\nplatform copy\n";
 const ORIGINAL = "# README\n\noriginal synced copy\n";
 const EDITED = "# README\n\ncarefully written local overview\n";
@@ -125,9 +152,16 @@ const EDITED = "# README\n\ncarefully written local overview\n";
 test("local file absent → downloads and records metadata", async () => {
   const { file, state } = makeScenario({ localContent: null, remoteContent: PLATFORM, lastVerifiedHash: null });
   await file.download();
-  assert.strictEqual(state.writes, 1);
-  assert.strictEqual(state.localBytes.toString("utf8"), PLATFORM);
+  assert.strictEqual(targetContent(state), PLATFORM);
   assert.strictEqual(state.metadata.pushPullRecords[0].lastVerifiedHash, sha512(PLATFORM));
+});
+
+test("the write is atomic: temp + rename, never a direct truncate of the target", async () => {
+  const { file, state } = makeScenario({ localContent: null, remoteContent: PLATFORM, lastVerifiedHash: null });
+  await file.download();
+  assert.strictEqual(state.directTargetWrites, 0, "target must only ever receive content via rename");
+  assert.strictEqual(state.renamesToTarget, 1);
+  assert.strictEqual(Object.keys(state.files).length, 1, "no temp file may linger after a successful download");
 });
 
 test("local identical to platform copy → no warning, no kept file", async () => {
@@ -147,9 +181,8 @@ test("local unmodified since last sync, platform moved → overwrites silently",
     lastVerifiedHash: sha512(ORIGINAL),
   });
   await file.download();
-  assert.strictEqual(state.writes, 1);
+  assert.strictEqual(targetContent(state), PLATFORM);
   assert.strictEqual(state.warns.length, 0);
-  assert.strictEqual(state.localBytes.toString("utf8"), PLATFORM);
 });
 
 test("no metadata record + differing content → first sync on this machine, overwrites", async () => {
@@ -161,8 +194,7 @@ test("no metadata record + differing content → first sync on this machine, ove
     lastVerifiedHash: null,
   });
   await file.download();
-  assert.strictEqual(state.writes, 1);
-  assert.strictEqual(state.localBytes.toString("utf8"), PLATFORM);
+  assert.strictEqual(targetContent(state), PLATFORM);
 });
 
 // ─── the reported case: genuine local edits ──────────────────────────────────
@@ -174,8 +206,9 @@ test("locally edited → kept, warned, metadata untouched, no prompt", async () 
     lastVerifiedHash: sha512(ORIGINAL),
   });
   await file.download();
-  assert.strictEqual(state.writes, 0);
-  assert.strictEqual(state.localBytes.toString("utf8"), EDITED);
+  assert.strictEqual(targetContent(state), EDITED);
+  assert.strictEqual(state.renamesToTarget, 0);
+  assert.strictEqual(state.directTargetWrites, 0);
   assert.strictEqual(state.warns.length, 1);
   assert.strictEqual(state.prompts, 0, "download() must never prompt");
   // lastVerifiedHash still points at the old sync, so audit keeps flagging this file
@@ -189,9 +222,8 @@ test("locally edited + overwriteLocal (confirmed audit pull) → platform copy w
     lastVerifiedHash: sha512(ORIGINAL),
   });
   await file.download(undefined, { overwriteLocal: true });
-  assert.strictEqual(state.writes, 1);
+  assert.strictEqual(targetContent(state), PLATFORM);
   assert.strictEqual(state.warns.length, 0);
-  assert.strictEqual(state.localBytes.toString("utf8"), PLATFORM);
   assert.strictEqual(state.metadata.pushPullRecords[0].lastVerifiedHash, sha512(PLATFORM));
 });
 
@@ -203,8 +235,8 @@ test("locally edited + onLocalKept collector → collected once, no per-file war
   });
   const kept = [];
   await file.download(undefined, { onLocalKept: (fsPath) => kept.push(fsPath) });
-  assert.deepStrictEqual(kept, [B6PUri.fromFsPath(FILE_PATH).fsPath]);
-  assert.strictEqual(state.writes, 0);
+  assert.deepStrictEqual(kept, [TARGET]);
+  assert.strictEqual(targetContent(state), EDITED);
   assert.strictEqual(state.warns.length, 0, "batch callers aggregate; no per-file warning");
 });
 
@@ -218,8 +250,9 @@ test("failed ETag integrity check throws BEFORE anything is written", async () =
     etagOverride: '"' + "a".repeat(128) + '"',
   });
   await assert.rejects(() => file.download(), Err.FileIntegrityError);
-  assert.strictEqual(state.writes, 0);
-  assert.strictEqual(state.localBytes.toString("utf8"), ORIGINAL);
+  assert.strictEqual(targetContent(state), ORIGINAL);
+  assert.strictEqual(state.directTargetWrites + state.renamesToTarget, 0);
+  assert.strictEqual(Object.keys(state.files).length, 1, "no temp file may be written before integrity passes");
 });
 
 (async () => {

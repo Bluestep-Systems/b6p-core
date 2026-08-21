@@ -22,6 +22,9 @@ const path = require("path");
 const SRC_DIR = path.join(__dirname, "..", "src");
 const BASELINE_PATH = path.join(__dirname, "jsdoc-lastreviewed.baseline.json");
 const JSDOC_BLOCK = /\/\*\*[\s\S]*?\*\//g;
+// A real tag with a value (`null` or a date) — prose that merely mentions the
+// word "@lastreviewed" does not count.
+const LASTREVIEWED_TAG = /@lastreviewed\s+(null|\d{4}-\d{2}-\d{2})\b/;
 
 function collectCounts() {
   const counts = {};
@@ -33,7 +36,7 @@ function collectCounts() {
       } else if (entry.name.endsWith(".ts")) {
         const source = fs.readFileSync(full, "utf8");
         const blocks = source.match(JSDOC_BLOCK) || [];
-        const missing = blocks.filter((b) => !b.includes("@lastreviewed")).length;
+        const missing = blocks.filter((b) => !LASTREVIEWED_TAG.test(b)).length;
         if (missing > 0) {
           const rel = path.relative(path.join(__dirname, ".."), full).split(path.sep).join("/");
           counts[rel] = missing;
