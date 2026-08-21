@@ -43,8 +43,17 @@ export class ScriptFile extends ScriptNode {
   public async getHash(): Promise<string | null> {
     await this.requireExists();
     const bufferSource = await this.ctx.fs.readFile(B6PUri.fromFsPath(this.uri().fsPath));
-    const localHashBuffer = await webcrypto.subtle.digest(CryptoAlgorithms.SHA_512, bufferSource);
-    const hexArray = Array.from(new Uint8Array(localHashBuffer));
+    return ScriptFile.computeHash(bufferSource);
+  }
+
+  /**
+   * SHA-512 of the given bytes, hex-encoded — same encoding as {@link getHash},
+   * for content that is not (yet) on disk, e.g. a downloaded body that has not
+   * been written.
+   */
+  private static async computeHash(bytes: ArrayBuffer | Uint8Array): Promise<string> {
+    const hashBuffer = await webcrypto.subtle.digest(CryptoAlgorithms.SHA_512, bytes);
+    const hexArray = Array.from(new Uint8Array(hashBuffer));
     if (hexArray.length !== 64) {
       throw new Err.HashCalculationError();
     }
@@ -159,13 +168,33 @@ export class ScriptFile extends ScriptNode {
    * Skips download if the file is in .gitignore and removes it from metadata instead.
    * Skips integrity verification for numeric and complex ETags (no hash available).
    *
+   * Both the integrity check and the local-divergence guard run against the
+   * downloaded bytes BEFORE anything is written, so a failed integrity check or
+   * a kept local file leaves the disk exactly as it was.
+   *
+   * When the local file has been edited since the last push/pull (its content
+   * hash no longer matches the recorded `lastVerifiedHash`) and the platform
+   * copy differs from it, the local copy is KEPT and reported rather than
+   * overwritten — deliberately without prompting, because download() runs once
+   * per file inside a pull loop where a blocking read can never complete on
+   * non-interactive stdin. A flow that has already confirmed the user's intent
+   * to take the platform copy (e.g. an audit pull) passes
+   * `opts.overwriteLocal: true` to bypass the guard. A kept file's metadata is
+   * left untouched so `audit` keeps reporting the divergence.
+   *
+   * @param opts.overwriteLocal platform copy wins even over local edits (caller has confirmed intent)
+   * @param opts.onLocalKept called instead of the per-file warning when the guard keeps a local file,
+   *   so a batch caller (pull) can aggregate into one summary
    * @returns Response object with status 418 if file is in .gitignore, otherwise the actual HTTP response
    * @throws an {@link Err.HttpResponseError} When the download fails due to a bad response
    * @throws an {@link Err.FileIntegrityError} When the downloaded file's integrity check fails
    * @throws an {@link Err.EtagParsingError} When the ETag header cannot be parsed
    * @lastreviewed 2025-10-01
    */
-  public async download(parser?: ScriptUrlParser): Promise<Response> {
+  public async download(
+    parser?: ScriptUrlParser,
+    opts?: { overwriteLocal?: boolean; onLocalKept?: (fsPath: string) => void }
+  ): Promise<Response> {
     const ignore = await super.isInGitIgnore();
     if (ignore) {
       this.ctx.logger.info(`not downloading \`${this.name()}\` because in .gitignore`);
@@ -187,20 +216,18 @@ export class ScriptFile extends ScriptNode {
       );
     }
     const buffer = await response.arrayBuffer();
-    await this.writeContent(buffer);
+    const incomingHash = await ScriptFile.computeHash(buffer);
     const etagHeader = response.headers.get(Http.Headers.ETAG);
 
     if (ScriptFile.EtagPattern.test(etagHeader || "")) {
       const etag = JSON.parse(etagHeader?.toLowerCase() || "null");
-      const hash = await this.getHash();
-      if (hash !== etag) {
+      if (incomingHash !== etag) {
         throw new Err.FileIntegrityError();
       }
     } else if (ScriptFile.WeakEtagPattern.test(etagHeader || "")) {
       this.ctx.logger.debug("weak etagHeader:", etagHeader);
       const etag = JSON.parse(etagHeader?.substring(2).toLowerCase() || "null");
-      const hash = await this.getHash();
-      if (hash !== etag) {
+      if (incomingHash !== etag) {
         throw new Err.FileIntegrityError();
       }
     } else if (ScriptFile.NumericEtagPattern.test(etagHeader || "")) {
@@ -211,8 +238,59 @@ export class ScriptFile extends ScriptNode {
       throw new Err.EtagParsingError(etagHeader || "null");
     }
 
+    if (!(await this.shouldOverwriteLocal(incomingHash, opts))) {
+      const message =
+        `Keeping the local copy of ${this.uri().fsPath} — it has local edits and was NOT synced ` +
+        `with the platform. Sync via an audit pull to take the platform version, or delete the ` +
+        `file and pull again.`;
+      if (opts?.onLocalKept) {
+        opts.onLocalKept(this.uri().fsPath);
+        this.ctx.logger.info(message);
+      } else {
+        this.ctx.prompt.warn(message);
+      }
+      return response;
+    }
+
+    await this.writeContent(buffer);
     await this.touch();
     return response;
+  }
+
+  /**
+   * Divergence guard for {@link download}: decides whether the incoming platform
+   * content may overwrite the local file. Never prompts — see the download() doc
+   * for why.
+   *
+   * Overwriting is fine when the caller has already confirmed the intent
+   * (`overwriteLocal`), when the local file does not exist, when the incoming
+   * content is identical to it, or when the local content still matches the
+   * recorded `lastVerifiedHash` (i.e. it has not been edited since the last
+   * push/pull — only the platform side moved). A file with content differences
+   * but NO metadata record also overwrites: the record store is machine-local
+   * and routinely empty (fresh clone, new machine, cleared state), so treating
+   * "no record" as a local edit would make a first pull on such a machine write
+   * nothing at all. Only a recorded last-sync hash that no longer matches the
+   * local content — a genuine local edit — keeps the local copy.
+   *
+   * @returns `true` when writing may proceed, `false` when the local copy must be kept
+   */
+  private async shouldOverwriteLocal(incomingHash: string, opts?: { overwriteLocal?: boolean }): Promise<boolean> {
+    if (opts?.overwriteLocal) {
+      return true;
+    }
+    if (!(await this.exists())) {
+      return true;
+    }
+    const localHash = await this.getHash();
+    if (localHash === incomingHash) {
+      return true;
+    }
+    const lastVerifiedHash = await this.getLastVerifiedHash();
+    if (lastVerifiedHash === null) {
+      return true;
+    }
+    return localHash === lastVerifiedHash;
   }
 
   private async deleteFromMetadata() {

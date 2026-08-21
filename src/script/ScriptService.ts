@@ -2,7 +2,7 @@ import * as path from "path";
 import { B6PUri } from "../B6PUri";
 import { DownstairsPathParser } from "../data/DownstairsPathParser";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
-import { executePush } from "./push";
+import { executePush, type PushResult } from "./push";
 import type { ScriptContext } from "./ScriptContext";
 import { ScriptFactory } from "./ScriptFactory";
 
@@ -100,14 +100,19 @@ export class ScriptService {
 
   // ── Push / Pull ───────────────────────────────────────────────────
 
-  async push(opts: { targetUrl?: string; rootPath: string; snapshot?: boolean; message?: string }): Promise<void> {
+  async push(opts: {
+    targetUrl?: string;
+    rootPath: string;
+    snapshot?: boolean;
+    message?: string;
+  }): Promise<PushResult | null> {
     const targetUrl = opts.targetUrl ?? (await this.ctx.prompt.inputBox({ prompt: "Paste in the target formula URI" }));
     if (targetUrl === undefined) {
       this.ctx.prompt.error("No target formula URI provided");
-      return;
+      return null;
     }
     this.ctx.logger.info(`Pushing script from ${opts.rootPath} to ${targetUrl}${opts.snapshot ? " (snapshot)" : ""}`);
-    await executePush({
+    return await executePush({
       ctx: this.ctx,
       targetUrl,
       rootPath: opts.rootPath,
@@ -116,7 +121,7 @@ export class ScriptService {
     });
   }
 
-  async pushCurrent(opts: { filePath: string; snapshot?: boolean; message?: string }): Promise<void> {
+  async pushCurrent(opts: { filePath: string; snapshot?: boolean; message?: string }): Promise<PushResult | null> {
     this.ctx.logger.info(`Push current for file: ${opts.filePath}`);
     const baseUrl = await this.deriveBaseUrl(opts.filePath);
     if (!baseUrl) {
@@ -124,20 +129,19 @@ export class ScriptService {
         prompt: "Could not determine script URL. Paste the target formula URI:",
       });
       if (!url) {
-        return;
+        return null;
       }
       // Derive rootPath from the file's path structure
       const parser = new DownstairsPathParser(opts.filePath);
-      await this.push({
+      return await this.push({
         targetUrl: url,
         rootPath: parser.getShavedName(),
         snapshot: opts.snapshot,
         message: opts.message,
       });
-      return;
     }
     const parser = new DownstairsPathParser(opts.filePath);
-    await this.push({
+    return await this.push({
       targetUrl: baseUrl,
       rootPath: parser.getShavedName(),
       snapshot: opts.snapshot,
@@ -145,7 +149,7 @@ export class ScriptService {
     });
   }
 
-  async pull(opts: { formulaUrl?: string; workspacePath: string }): Promise<void> {
+  async pull(opts: { formulaUrl?: string; workspacePath: string; overwriteLocal?: boolean }): Promise<void> {
     const formulaUrl =
       opts.formulaUrl ?? (await this.ctx.prompt.inputBox({ prompt: "Paste in the desired formula URL" }));
     if (formulaUrl === undefined) {
@@ -184,6 +188,9 @@ export class ScriptService {
     }
 
     const factory = this.getFactory();
+    // Locally-edited files the divergence guard kept instead of overwriting;
+    // reported as one summary after the loop rather than one warning per file.
+    const keptLocalPaths: string[] = [];
 
     const pullTasks = fetchedScriptObject.map((entry) => ({
       execute: async () => {
@@ -208,7 +215,10 @@ export class ScriptService {
           if (!(await this.ctx.fs.exists(parentUri))) {
             await this.ctx.fs.createDirectory(parentUri);
           }
-          await file.download(parser);
+          await file.download(parser, {
+            overwriteLocal: opts.overwriteLocal,
+            onLocalKept: (fsPath) => keptLocalPaths.push(fsPath),
+          });
         }
         return ultimatePath;
       },
@@ -243,6 +253,13 @@ export class ScriptService {
       }
     }
 
+    if (keptLocalPaths.length > 0) {
+      this.ctx.prompt.warn(
+        `Kept ${keptLocalPaths.length} locally-edited file(s) that differ from the platform copy ` +
+          `(NOT synced):\n\n${keptLocalPaths.join("\n")}\n\n` +
+          `Sync via an audit pull to take the platform versions, or delete a file and pull again.`
+      );
+    }
     this.ctx.prompt.info("Pull complete!");
   }
 
@@ -342,7 +359,11 @@ export class ScriptService {
       return;
     }
 
-    await this.pull({ formulaUrl: result.baseUrl, workspacePath: opts.workspacePath });
+    // The user just confirmed "Sync" over the explicit changed-file list, so the
+    // platform copy wins even over locally-edited files — without this, the
+    // download-side divergence guard would keep them and quietly undo the very
+    // sync the user asked for.
+    await this.pull({ formulaUrl: result.baseUrl, workspacePath: opts.workspacePath, overwriteLocal: true });
   }
 
   // ── Deploy ────────────────────────────────────────────────────────

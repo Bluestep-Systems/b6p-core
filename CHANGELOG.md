@@ -5,6 +5,60 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`pull` no longer silently overwrites a locally-edited file** (ClickUp 86bbdr4r0, reported
+  against `draft/README.md`). `ScriptFile.download()` wrote the fetched bytes unconditionally;
+  nothing between the gitignore check and the write looked at the local file, so local edits —
+  including content the tooling itself scaffolded — were destroyed without a word. It now hashes
+  the fetched bytes first and, when the local file has been edited since the last push/pull (its
+  content hash no longer matches the recorded `lastVerifiedHash`) and the platform copy differs,
+  **keeps the local copy** and reports it — one aggregated warning at the end of the pull listing
+  every kept file. A kept file's metadata is left untouched, so `audit` keeps reporting the
+  divergence; to take the platform copy, sync via an audit pull (which the guard deliberately does
+  not block — see below) or delete the file and pull again.
+
+  The guard deliberately does **not** prompt: `download()` runs once per file inside the pull
+  loop, where a blocking stdin read can never complete non-interactively (a piped `pull` would
+  hang and then exit 0 with a half-written tree and its deferred metadata batch unflushed), and a
+  dismissed or mistyped answer would be indistinguishable from a deliberate choice. Flows that
+  have already confirmed the user's intent pass the new `overwriteLocal: true`
+  (`ScriptService.pull` option, threaded to `download()`): `auditPull` sets it after its "Sync?"
+  confirmation, so a confirmed sync is not silently undone per-file.
+
+  A file with differing content but **no** metadata record still overwrites, as before: the record
+  store is machine-local and routinely empty (fresh clone, new machine, cleared state), so
+  guarding that case would make a first pull on such a machine write nothing at all. Files that
+  are absent, identical, or unmodified-since-last-sync download exactly as before. Covered by
+  `test/PullDivergenceGuard.test.js`.
+
+  The ETag integrity check also moved **before** the write (it compares the fetched bytes rather
+  than the just-written file), so a failed integrity check no longer leaves the local file already
+  clobbered by the bad download.
+
+- **Snapshot history survives the platform's post-upload version settling** (ClickUp 86bbed9wu).
+  The second consecutive snapshot push to the same component failed to record its history entry
+  with a server-side optimistic-locking rejection ("Unable to update BaseTable because of version
+  mismatch: expected ver. N, actual ver. N+1") — the upload that just finished bumps the script
+  object's version, and the bump can still be settling when the history mutation lands. The client
+  sends no version anywhere, so there is nothing to refresh locally; waiting is the fix (running
+  `b6p audit` between pushes "worked" purely as a delay). `SnapshotHistoryRecorder.record()` now
+  retries the mutation with backoff (1s/2s/4s by default, injectable via a new `retryDelaysMs`
+  option) when — and only when — the GraphQL error is a version mismatch (matched loosely enough
+  to survive a rewording that keeps the `expected ver.` clause); every other failure still throws
+  on the first attempt. Covered by `test/SnapshotHistoryRetry.test.js`.
+
+- **A snapshot push whose history step fails no longer claims "Snapshot complete!".** `executePush`
+  swallowed the recorder error into a `[WARN]` line and printed the success message anyway, so the
+  operator had no signal that no restore point exists for that snapshot. It now ends with an
+  explicit warning saying the files were uploaded but the history entry was not recorded, and how
+  to retry. For machine consumers, `executePush` (and `ScriptService.push`/`pushCurrent`) now
+  returns a `PushResult` (`{ historyRecorded }`, exported from the package root; `null` from the
+  service methods when the push was aborted before starting) so a CLI can exit non-zero or emit
+  the failure in `--json` instead of relying on a human reading stderr.
+
 ## [0.5.0] - 2026-08-12
 
 ### Fixed

@@ -32,7 +32,7 @@ const TEXT_EXTENSIONS = new Set([
  * browser IDE's "Project History" view.
  */
 export class SnapshotHistoryRecorder {
-  static async record(scriptRoot: ScriptRoot, message: string): Promise<void> {
+  static async record(scriptRoot: ScriptRoot, message: string, opts?: { retryDelaysMs?: number[] }): Promise<void> {
     const ctx = scriptRoot.ctx;
     const scriptKey = await scriptRoot.getScriptKey();
     const mutationName = scriptKey.mutationName;
@@ -69,28 +69,60 @@ export class SnapshotHistoryRecorder {
 
     ctx.logger.info(`Recording snapshot history for ${scriptKey.toCompoundId()}`);
 
-    const response = await ctx.sessionManager.csrfFetch(gqlUrl, {
-      method: Http.Methods.POST,
-      headers: {
-        [Http.Headers.CONTENT_TYPE]: MimeTypes.APPLICATION_JSON,
-      },
-      body: JSON.stringify({ query, variables }),
-    });
+    // The upload that just finished bumps the script object's version on the
+    // platform, and the bump can still be settling when this mutation lands —
+    // the server then rejects it with an optimistic-locking "version mismatch"
+    // error even though nothing else touched the script. That state resolves
+    // itself in moments, so a mismatch is retried with backoff; every other
+    // failure is thrown on the first attempt.
+    const retryDelaysMs = opts?.retryDelaysMs ?? SnapshotHistoryRecorder.VERSION_MISMATCH_RETRY_DELAYS_MS;
+    const maxAttempts = retryDelaysMs.length + 1;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await ctx.sessionManager.csrfFetch(gqlUrl, {
+        method: Http.Methods.POST,
+        headers: {
+          [Http.Headers.CONTENT_TYPE]: MimeTypes.APPLICATION_JSON,
+        },
+        body: JSON.stringify({ query, variables }),
+      });
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Err.HttpResponseError(`Failed to record snapshot history: ${response.status} ${text}`);
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Err.HttpResponseError(`Failed to record snapshot history: ${response.status} ${text}`);
+      }
+
+      const json = (await response.json()) as { errors?: { message: string }[] };
+      if (!json.errors?.length) {
+        ctx.logger.info("Snapshot history recorded successfully.");
+        return;
+      }
+
+      const messages = json.errors.map((e) => e.message).join(", ");
+      // Matches the observed wording ("Unable to update BaseTable because of
+      // version mismatch: expected ver. 5, actual ver. 6") plus the version
+      // clause on its own, in case the server ever drops the lead-in.
+      const isVersionMismatch = /version mismatch|expected ver\./i.test(messages);
+      if (isVersionMismatch && attempt < maxAttempts) {
+        const delayMs = retryDelaysMs[attempt - 1];
+        ctx.logger.info(
+          `Snapshot history hit a version mismatch (the platform is still settling the pushed files); ` +
+            `retrying in ${delayMs}ms (attempt ${attempt}/${maxAttempts})...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
+
+      throw new Err.HttpResponseError(`GraphQL errors recording snapshot history: ${messages}`);
     }
-
-    const json = (await response.json()) as { errors?: { message: string }[] };
-    if (json.errors?.length) {
-      throw new Err.HttpResponseError(
-        `GraphQL errors recording snapshot history: ${json.errors.map((e) => e.message).join(", ")}`
-      );
-    }
-
-    ctx.logger.info("Snapshot history recorded successfully.");
   }
+
+  /**
+   * Default backoff schedule for retrying the history mutation after a
+   * server-side optimistic-locking "version mismatch" rejection (one retry per
+   * entry). Tests inject their own schedule via `record()`'s `retryDelaysMs`
+   * option rather than mutating shared state.
+   */
+  private static readonly VERSION_MISMATCH_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000];
 
   /**
    * The author recorded alongside a snapshot.
