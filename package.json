@@ -1,6 +1,6 @@
 {
   "name": "@bluestep-systems/b6p-core",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Core (vscode-free) library for BlueStep B6P script management",
   "license": "MIT",
   "repository": {
@@ -20,10 +20,9 @@
     "access": "public"
   },
   "scripts": {
-    "tsc7": "node node_modules/typescript-7/bin/tsc",
-    "compile": "npm run tsc7 -- -p tsconfig.json",
-    "watch": "npm run tsc7 -- -p tsconfig.json --watch",
-    "check-types": "npm run tsc7 -- -p tsconfig.json --noEmit",
+    "compile": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "check-types": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist",
     "format": "prettier --write \"src/**/*.ts\"",
     "format-check": "prettier --check \"src/**/*.ts\"",
@@ -36,7 +35,6 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
-    "prettier": "^3.0.0",
-    "typescript-7": "npm:typescript@7.0.2"
+    "prettier": "^3.0.0"
   }
 }
