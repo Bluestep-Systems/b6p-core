@@ -2,7 +2,7 @@ import * as path from "path";
 import { B6PUri } from "../B6PUri";
 import { DownstairsPathParser } from "../data/DownstairsPathParser";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
-import { executePush } from "./push";
+import { executePush, type PushResult } from "./push";
 import type { ScriptContext } from "./ScriptContext";
 import { ScriptFactory } from "./ScriptFactory";
 
@@ -13,6 +13,24 @@ import { ScriptFactory } from "./ScriptFactory";
 export interface AuditResult {
   changedFiles: string[];
   baseUrl: string;
+}
+
+/**
+ * Outcome of a pull, for callers that need more signal than the human-facing
+ * messages — the pull-side counterpart of `PushResult`. A machine consumer
+ * (CLI `--json`, the VS Code LM tool) that only sees "the promise resolved"
+ * would otherwise report unqualified success for a pull that deliberately
+ * left locally-edited files unsynced.
+ * @lastreviewed null
+ */
+export interface PullResult {
+  /**
+   * Local file paths the divergence guard kept instead of overwriting —
+   * files whose content differed from both the platform copy and the recorded
+   * last-synced hash. Empty when everything synced.
+   * @lastreviewed null
+   */
+  keptLocalPaths: string[];
 }
 
 /**
@@ -100,14 +118,19 @@ export class ScriptService {
 
   // ── Push / Pull ───────────────────────────────────────────────────
 
-  async push(opts: { targetUrl?: string; rootPath: string; snapshot?: boolean; message?: string }): Promise<void> {
+  async push(opts: {
+    targetUrl?: string;
+    rootPath: string;
+    snapshot?: boolean;
+    message?: string;
+  }): Promise<PushResult | null> {
     const targetUrl = opts.targetUrl ?? (await this.ctx.prompt.inputBox({ prompt: "Paste in the target formula URI" }));
     if (targetUrl === undefined) {
       this.ctx.prompt.error("No target formula URI provided");
-      return;
+      return null;
     }
     this.ctx.logger.info(`Pushing script from ${opts.rootPath} to ${targetUrl}${opts.snapshot ? " (snapshot)" : ""}`);
-    await executePush({
+    return await executePush({
       ctx: this.ctx,
       targetUrl,
       rootPath: opts.rootPath,
@@ -116,7 +139,7 @@ export class ScriptService {
     });
   }
 
-  async pushCurrent(opts: { filePath: string; snapshot?: boolean; message?: string }): Promise<void> {
+  async pushCurrent(opts: { filePath: string; snapshot?: boolean; message?: string }): Promise<PushResult | null> {
     this.ctx.logger.info(`Push current for file: ${opts.filePath}`);
     const baseUrl = await this.deriveBaseUrl(opts.filePath);
     if (!baseUrl) {
@@ -124,20 +147,19 @@ export class ScriptService {
         prompt: "Could not determine script URL. Paste the target formula URI:",
       });
       if (!url) {
-        return;
+        return null;
       }
       // Derive rootPath from the file's path structure
       const parser = new DownstairsPathParser(opts.filePath);
-      await this.push({
+      return await this.push({
         targetUrl: url,
         rootPath: parser.getShavedName(),
         snapshot: opts.snapshot,
         message: opts.message,
       });
-      return;
     }
     const parser = new DownstairsPathParser(opts.filePath);
-    await this.push({
+    return await this.push({
       targetUrl: baseUrl,
       rootPath: parser.getShavedName(),
       snapshot: opts.snapshot,
@@ -145,12 +167,28 @@ export class ScriptService {
     });
   }
 
-  async pull(opts: { formulaUrl?: string; workspacePath: string }): Promise<void> {
+  /**
+   * Pull a script tree from the platform into the workspace.
+   *
+   * @param opts.overwriteLocalPaths `downstairsPath` entries (as returned by the
+   *   fetch walk and listed by {@link audit}) for which the platform copy may
+   *   overwrite even a locally-edited file. Scoped per file — never the whole
+   *   tree — so a confirmation shown to the user covers exactly the files that
+   *   can be force-overwritten and nothing more.
+   * @returns The kept-files outcome, or `null` when the pull aborted before
+   *   fetching (no URL, unreadable listing, or the wrong-directory guard).
+   * @lastreviewed null
+   */
+  async pull(opts: {
+    formulaUrl?: string;
+    workspacePath: string;
+    overwriteLocalPaths?: string[];
+  }): Promise<PullResult | null> {
     const formulaUrl =
       opts.formulaUrl ?? (await this.ctx.prompt.inputBox({ prompt: "Paste in the desired formula URL" }));
     if (formulaUrl === undefined) {
       this.ctx.prompt.error("No formula URL provided");
-      return;
+      return null;
     }
     this.ctx.logger.info(`Pulling script from ${formulaUrl} into ${opts.workspacePath}`);
 
@@ -158,7 +196,7 @@ export class ScriptService {
     const fetchedScriptObject = await parser.getScript();
     if (!fetchedScriptObject) {
       this.ctx.logger.warn("fetchedScriptObject is null");
-      return;
+      return null;
     }
 
     const U = await parser.getU();
@@ -180,10 +218,13 @@ export class ScriptService {
           `Proceeding would overwrite the wrong directory. ` +
           `Please report this issue — try pulling again or clearing your local metadata.`
       );
-      return;
+      return null;
     }
 
     const factory = this.getFactory();
+    // Locally-edited files the divergence guard kept instead of overwriting;
+    // reported as one summary after the loop rather than one warning per file.
+    const keptLocalPaths: string[] = [];
 
     const pullTasks = fetchedScriptObject.map((entry) => ({
       execute: async () => {
@@ -208,7 +249,10 @@ export class ScriptService {
           if (!(await this.ctx.fs.exists(parentUri))) {
             await this.ctx.fs.createDirectory(parentUri);
           }
-          await file.download(parser);
+          await file.download(parser, {
+            overwriteLocal: opts.overwriteLocalPaths?.includes(entry.downstairsPath) ?? false,
+            onLocalKept: (fsPath) => keptLocalPaths.push(fsPath),
+          });
         }
         return ultimatePath;
       },
@@ -230,6 +274,21 @@ export class ScriptService {
       });
       pullSucceeded = true;
     } finally {
+      // The kept-files report is emitted here — not after the try/finally — so
+      // it survives a pull that throws mid-loop. onLocalKept suppressed the
+      // per-file warnings on the promise that this aggregate would be shown;
+      // parking it after the block would break that promise on exactly the
+      // runs where files were already overwritten before the error.
+      if (keptLocalPaths.length > 0) {
+        const shown = keptLocalPaths.slice(0, 10);
+        const more = keptLocalPaths.length - shown.length;
+        this.ctx.prompt.warn(
+          `Kept ${keptLocalPaths.length} file(s) that differ from what was last synced ` +
+            `(local edits, or a previously interrupted pull) — NOT synced:\n\n${shown.join("\n")}` +
+            `${more > 0 ? `\n…and ${more} more` : ""}\n\n` +
+            `Sync via an audit pull to take the platform versions, or delete a file and pull again.`
+        );
+      }
       try {
         await this.ctx.scriptMetadataStore.flush();
       } catch (flushError) {
@@ -244,19 +303,19 @@ export class ScriptService {
     }
 
     this.ctx.prompt.info("Pull complete!");
+    return { keptLocalPaths };
   }
 
-  async pullCurrent(opts: { filePath: string; workspacePath: string }): Promise<void> {
+  async pullCurrent(opts: { filePath: string; workspacePath: string }): Promise<PullResult | null> {
     const baseUrl = await this.deriveBaseUrl(opts.filePath);
     if (!baseUrl) {
       const url = await this.ctx.prompt.inputBox({ prompt: "Could not determine script URL. Paste the formula URL:" });
       if (!url) {
-        return;
+        return null;
       }
-      await this.pull({ formulaUrl: url, workspacePath: opts.workspacePath });
-      return;
+      return await this.pull({ formulaUrl: url, workspacePath: opts.workspacePath });
     }
-    await this.pull({ formulaUrl: baseUrl, workspacePath: opts.workspacePath });
+    return await this.pull({ formulaUrl: baseUrl, workspacePath: opts.workspacePath });
   }
 
   // ── Audit ─────────────────────────────────────────────────────────
@@ -330,19 +389,38 @@ export class ScriptService {
       return;
     }
 
-    const YES = "Sync";
-    const NO = "Cancel";
+    // "Cancel" is deliberately FIRST: prompt implementations answer with
+    // options[0] on an empty answer and under non-interactive auto-confirm
+    // (the CLI's --yes), and this prompt authorizes overwriting locally-edited
+    // files. An auto-supplied answer is not a human decision, so the default
+    // must be the safe branch; syncing requires typing "Sync" (or clicking it).
+    const SYNC = "Sync";
+    const CANCEL = "Cancel";
     const response = await this.ctx.prompt.confirm(
-      `Detected ${result.changedFiles.length} file(s) with differences:\n\n${result.changedFiles.join("\n")}\n\nSync local copy with the server?`,
-      [YES, NO]
+      `Detected ${result.changedFiles.length} file(s) with differences:\n\n${result.changedFiles.join("\n")}\n\n` +
+        `Sync local copy with the server? Locally-edited files in this list will be OVERWRITTEN ` +
+        `with the platform copy.`,
+      [CANCEL, SYNC]
     );
 
-    if (response !== YES) {
+    if (response !== SYNC) {
       this.ctx.logger.info("User declined audit-pull sync");
       return;
     }
 
-    await this.pull({ formulaUrl: result.baseUrl, workspacePath: opts.workspacePath });
+    // The user confirmed "Sync" over the explicit changed-file list, so the
+    // platform copy wins over local edits — but only for the files that were
+    // actually in that list. Scoping the overwrite to the confirmed set keeps
+    // the confirmation honest: files audit could not compare (no server content
+    // hash) were never disclosed, so they stay protected by the download-side
+    // divergence guard. "(new)" entries have no local file to overwrite.
+    const NEW_SUFFIX = " (new)";
+    const confirmedPaths = result.changedFiles.filter((f) => !f.endsWith(NEW_SUFFIX));
+    await this.pull({
+      formulaUrl: result.baseUrl,
+      workspacePath: opts.workspacePath,
+      overwriteLocalPaths: confirmedPaths,
+    });
   }
 
   // ── Deploy ────────────────────────────────────────────────────────

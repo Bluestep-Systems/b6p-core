@@ -4,6 +4,7 @@ export type { ReportResult } from "./B6PCore";
 export { B6PUri } from "./B6PUri";
 export { Err } from "./Err";
 export { executePush } from "./script/push";
+export type { PushResult } from "./script/push";
 export type { PlatformContext } from "./PlatformContext";
 
 // ─── Provider interfaces ─────────────────────────────────────────────
@@ -45,7 +46,7 @@ export { ScriptFile } from "./script/ScriptFile";
 export type { ScriptFolder } from "./script/ScriptFolder";
 export type { ScriptContext } from "./script/ScriptContext";
 export { ScriptService } from "./script/ScriptService";
-export type { AuditResult, DeployConfig } from "./script/ScriptService";
+export type { AuditResult, DeployConfig, PullResult } from "./script/ScriptService";
 export { TsLibResolver } from "./script/TsLibResolver";
 
 // ─── Constants ───────────────────────────────────────────────────────

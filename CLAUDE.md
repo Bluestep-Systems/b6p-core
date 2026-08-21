@@ -38,9 +38,11 @@ All of those live in `tsconfig.base.json` — strictness belongs there, and `tsc
 this package's output settings (`rootDir`, `outDir`, `declaration`, `declarationMap`, `types`).
 
 There is **no test framework**. `test/` holds dependency-free node scripts (`node:assert`, `require`)
-that `npm test` runs in sequence after a compile; each asserts against the **compiled** output in
-`dist/`, not `src/`. A new test file must be appended to the `test` script in `package.json` by hand —
-nothing globs the directory, so a file that is not listed there silently never runs.
+that `npm test` runs in sequence after a compile; behavioural specs assert against the **compiled**
+output in `dist/`, not `src/` (the one exception is `test/JsdocLastReviewed.test.js`, a source-level
+convention ratchet — see AGENTS.md). A new test file must be appended to the `test` script in
+`package.json` by hand — nothing globs the directory, so a file that is not listed there silently
+never runs.
 
 These are behavioural specs for the pure, high-risk logic that is awkward to reach from a consumer
 (integrity auditing, path/URL parsing, URI canonicality and the folder marker, `outDir` resolution,

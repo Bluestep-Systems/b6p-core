@@ -50,6 +50,30 @@ async function readGitIgnorePatterns(rootPath: string, fs: FileSystem): Promise<
 }
 
 /**
+ * Outcome of a push, for callers that need more signal than the human-facing
+ * messages — e.g. a CLI that must exit non-zero or emit `--json` when nothing
+ * was uploaded or a snapshot shipped without a history entry. Check `pushed`
+ * before reading anything else: a push that aborted early uploaded nothing,
+ * regardless of what the other fields say.
+ * @lastreviewed null
+ */
+export interface PushResult {
+  /**
+   * True when the upload actually ran. False when the push aborted before
+   * uploading anything (draft folder missing, or empty) — a state a machine
+   * consumer must not read as success.
+   * @lastreviewed null
+   */
+  pushed: boolean;
+  /**
+   * False for a snapshot push whose history entry could not be recorded (no
+   * restore point exists), and for any push that did not run (`pushed: false`).
+   * @lastreviewed null
+   */
+  historyRecorded: boolean;
+}
+
+/**
  * Core push implementation.
  *
  * Delegates the per-file work to {@link ScriptFile.upload}, which handles:
@@ -65,7 +89,7 @@ export async function executePush(opts: {
   rootPath: string;
   snapshot: boolean;
   message?: string;
-}): Promise<void> {
+}): Promise<PushResult> {
   const { ctx, targetUrl, rootPath, snapshot, message } = opts;
   const { fs, prompt, logger, sessionManager, progress } = ctx;
   const draftPath = path.join(rootPath, FolderNames.DRAFT);
@@ -73,7 +97,7 @@ export async function executePush(opts: {
   const draftUri = B6PUri.fromFsPath(draftPath);
   if (!(await fs.exists(draftUri))) {
     prompt.error(`Draft folder not found: ${draftPath}`);
-    return;
+    return { pushed: false, historyRecorded: false };
   }
 
   // Build a parser from the target URL so the ScriptRoot can resolve
@@ -113,7 +137,7 @@ export async function executePush(opts: {
 
   if (allFiles.length === 0) {
     prompt.info("No files to push — draft folder is empty.");
-    return;
+    return { pushed: false, historyRecorded: false };
   }
 
   const uploadTasks: ProgressTask<void>[] = allFiles.map((filePath) => ({
@@ -150,15 +174,27 @@ export async function executePush(opts: {
     gitignoreMatcher,
   });
 
+  let historyRecorded = true;
   if (snapshot) {
     try {
       await SnapshotHistoryRecorder.record(scriptRoot, message ?? "");
     } catch (e) {
+      historyRecorded = false;
       logger.warn(`Failed to record snapshot history: ${e instanceof Error ? e.message : e}`);
     }
   }
 
-  prompt.info(snapshot ? "Snapshot complete!" : "Push complete!");
+  if (snapshot && !historyRecorded) {
+    prompt.warn(
+      "Snapshot files uploaded and compiled, but the snapshot history entry could NOT be recorded — " +
+        "the browser IDE's Project History has no restore point for this snapshot. " +
+        "Run the snapshot push again to retry recording it."
+    );
+  } else {
+    prompt.info(snapshot ? "Snapshot complete!" : "Push complete!");
+  }
+
+  return { pushed: true, historyRecorded };
 }
 
 /**

@@ -5,6 +5,82 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`pull` no longer overwrites a locally-edited file it has previously synced** (ClickUp
+  86bbdr4r0, reported against `draft/README.md`). `ScriptFile.download()` wrote the fetched bytes
+  unconditionally; nothing between the gitignore check and the write looked at the local file, so
+  local edits — including content the tooling itself scaffolded — were destroyed without a word.
+  It now hashes the fetched bytes first and, when the local file has been edited since the last
+  push/pull (its content hash no longer matches the recorded `lastVerifiedHash`) and the platform
+  copy differs, **keeps the local copy** and reports it — one aggregated warning (capped at ten
+  listed paths) emitted from the pull's `finally`, so it survives a pull that throws mid-loop. A
+  kept file's metadata is left untouched, so `audit` keeps reporting the divergence; to take the
+  platform copy, sync via an audit pull or delete the file and pull again.
+
+  The guard deliberately does **not** prompt: `download()` runs once per file inside the pull
+  loop, where a blocking stdin read can never complete non-interactively (a piped `pull` would
+  hang and then exit 0 with a half-written tree and its deferred metadata batch unflushed), and a
+  dismissed or mistyped answer would be indistinguishable from a deliberate choice.
+
+  The protection is scoped, not absolute — the qualifier matters: a file with differing content
+  but **no** metadata record still overwrites, as before. The record store is machine-local and
+  routinely empty (fresh clone, new machine, cleared state), so guarding that case would make a
+  first pull on such a machine write nothing at all. Files that are absent, identical, or
+  unmodified-since-last-sync download exactly as before. Covered by
+  `test/PullDivergenceGuard.test.js`.
+
+  The ETag integrity check also moved **before** the write (it compares the fetched bytes rather
+  than the just-written file), so a failed integrity check no longer leaves the local file already
+  clobbered by the bad download. And the write itself is now **atomic** (temp sibling + rename,
+  with a direct-write fallback if the rename fails): an interrupted pull can no longer leave a
+  truncated file that the guard would misread as a local edit and keep forever — pre-guard, a
+  re-pull repaired such a file, and atomicity preserves that property.
+
+- **`pull` reports its outcome to machine consumers, and `auditPull` cannot silently authorize
+  overwrites.** `ScriptService.pull`/`pullCurrent` now return a `PullResult`
+  (`{ keptLocalPaths }`, exported from the package root; `null` when the pull aborted before
+  fetching), so a CLI `--json` or an agent-facing tool can see that files were deliberately left
+  unsynced instead of reporting unqualified success.
+
+  `auditPull`'s confirmation puts **"Cancel" first**: prompt implementations answer with the first
+  option on an empty answer and under non-interactive auto-confirm (the CLI's `--yes`), and this
+  prompt authorizes overwriting locally-edited files — an auto-supplied answer is not a human
+  decision. Non-interactive audit-pulls therefore decline the sync (delete-and-pull remains the
+  non-interactive path to a platform copy). On a real confirmation, the overwrite is **scoped to
+  exactly the files the user saw**: `pull`'s option is now `overwriteLocalPaths: string[]` (was
+  `overwriteLocal: boolean`, never released) and `auditPull` passes the confirmed changed-file
+  list — files audit could not compare (numeric/complex-ETag declarations, which it never listed)
+  stay protected by the guard instead of being force-overwritten undisclosed.
+
+- **Snapshot history survives the platform's post-upload version settling** (ClickUp 86bbed9wu).
+  The second consecutive snapshot push to the same component failed to record its history entry
+  with a server-side optimistic-locking rejection ("Unable to update BaseTable because of version
+  mismatch: expected ver. N, actual ver. N+1") — the upload that just finished bumps the script
+  object's version, and the bump can still be settling when the history mutation lands. The client
+  sends no version anywhere, so there is nothing to refresh locally; waiting is the fix (running
+  `b6p audit` between pushes "worked" purely as a delay). `SnapshotHistoryRecorder.record()` now
+  retries the mutation with backoff (1s/2s/4s by default, injectable via a new `retryDelaysMs`
+  option) when — and only when — the GraphQL error is a version mismatch, anchored on the
+  optimistic-lock wording (`because of version mismatch` or a numbered `expected ver. N` clause) so
+  an unrelated fatal error that merely contains the phrase "version mismatch" fails fast instead of
+  burning the backoff; every other failure, including a non-2xx HTTP response, still throws on the
+  first attempt. Covered by `test/SnapshotHistoryRetry.test.js`.
+
+- **A snapshot push whose history step fails no longer claims "Snapshot complete!".** `executePush`
+  swallowed the recorder error into a `[WARN]` line and printed the success message anyway, so the
+  operator had no signal that no restore point exists for that snapshot. It now ends with an
+  explicit warning saying the files were uploaded but the history entry was not recorded, and how
+  to retry. For machine consumers, `executePush` (and `ScriptService.push`/`pushCurrent`) now
+  returns a `PushResult` (`{ pushed, historyRecorded }`, exported from the package root; the
+  service methods return `null` when the target-URL prompt was cancelled) so a CLI can exit
+  non-zero or emit the failure in `--json` instead of relying on a human reading stderr. `pushed`
+  is false — and must be checked first — when the push aborted before uploading anything (draft
+  folder missing or empty): those paths print an error/notice but previously had no
+  machine-readable signal at all, so a wrapper could mark a deploy green on a `--root` typo.
+
 ## [0.5.0] - 2026-08-12
 
 ### Fixed

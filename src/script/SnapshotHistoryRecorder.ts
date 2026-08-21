@@ -32,7 +32,19 @@ const TEXT_EXTENSIONS = new Set([
  * browser IDE's "Project History" view.
  */
 export class SnapshotHistoryRecorder {
-  static async record(scriptRoot: ScriptRoot, message: string): Promise<void> {
+  /**
+   * Record one history entry for the snapshot that was just pushed, via the
+   * script type's GraphQL update mutation. Retries on the platform's
+   * optimistic-locking "version mismatch" rejection only (see the loop below);
+   * every other failure throws on the first attempt.
+   * @param scriptRoot The script whose draft tree was just snapshot-pushed
+   * @param message The user's snapshot message ("" for none)
+   * @param opts.retryDelaysMs Backoff schedule overriding
+   *   {@link VERSION_MISMATCH_RETRY_DELAYS_MS} (one retry per entry); used by tests
+   * @throws an {@link Err.HttpResponseError} When the mutation ultimately fails
+   * @lastreviewed null
+   */
+  static async record(scriptRoot: ScriptRoot, message: string, opts?: { retryDelaysMs?: number[] }): Promise<void> {
     const ctx = scriptRoot.ctx;
     const scriptKey = await scriptRoot.getScriptKey();
     const mutationName = scriptKey.mutationName;
@@ -69,28 +81,69 @@ export class SnapshotHistoryRecorder {
 
     ctx.logger.info(`Recording snapshot history for ${scriptKey.toCompoundId()}`);
 
-    const response = await ctx.sessionManager.csrfFetch(gqlUrl, {
-      method: Http.Methods.POST,
-      headers: {
-        [Http.Headers.CONTENT_TYPE]: MimeTypes.APPLICATION_JSON,
-      },
-      body: JSON.stringify({ query, variables }),
-    });
+    // The upload that just finished bumps the script object's version on the
+    // platform, and the bump can still be settling when this mutation lands —
+    // the server then rejects it with an optimistic-locking "version mismatch"
+    // error even though nothing else touched the script. That state resolves
+    // itself in moments, so a mismatch is retried with backoff; every other
+    // failure is thrown on the first attempt.
+    const retryDelaysMs = opts?.retryDelaysMs ?? SnapshotHistoryRecorder.VERSION_MISMATCH_RETRY_DELAYS_MS;
+    const maxAttempts = retryDelaysMs.length + 1;
+    // Serialized once: `variables` embeds the full draft-tree content, so
+    // re-stringifying megabytes per retry would be pure waste. The request-init
+    // OBJECT stays per-attempt — csrfFetch mutates `options.headers` in place,
+    // and a shared literal would leak the previous attempt's CSRF token forward.
+    const body = JSON.stringify({ query, variables });
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await ctx.sessionManager.csrfFetch(gqlUrl, {
+        method: Http.Methods.POST,
+        headers: {
+          [Http.Headers.CONTENT_TYPE]: MimeTypes.APPLICATION_JSON,
+        },
+        body,
+      });
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Err.HttpResponseError(`Failed to record snapshot history: ${response.status} ${text}`);
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Err.HttpResponseError(`Failed to record snapshot history: ${response.status} ${text}`);
+      }
+
+      const json = (await response.json()) as { errors?: { message: string }[] };
+      if (!json.errors?.length) {
+        ctx.logger.info("Snapshot history recorded successfully.");
+        return;
+      }
+
+      const messages = json.errors.map((e) => e.message).join(", ");
+      // Anchored on the optimistic-lock wording ("Unable to update BaseTable
+      // because of version mismatch: expected ver. 5, actual ver. 6") plus the
+      // numbered version clause on its own, in case the server ever drops the
+      // lead-in. Deliberately NOT a bare /version mismatch/: that would also
+      // retry unrelated fatal errors that happen to contain the phrase (e.g. a
+      // schema/client version complaint), burning the whole backoff budget.
+      const isVersionMismatch = /because of version mismatch|expected ver\.\s*\d+/i.test(messages);
+      if (isVersionMismatch && attempt < maxAttempts) {
+        const delayMs = retryDelaysMs[attempt - 1];
+        ctx.logger.info(
+          `Snapshot history hit a version mismatch (the platform is still settling the pushed files); ` +
+            `attempt ${attempt} of ${maxAttempts} failed, retrying in ${delayMs}ms...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
+
+      throw new Err.HttpResponseError(`GraphQL errors recording snapshot history: ${messages}`);
     }
-
-    const json = (await response.json()) as { errors?: { message: string }[] };
-    if (json.errors?.length) {
-      throw new Err.HttpResponseError(
-        `GraphQL errors recording snapshot history: ${json.errors.map((e) => e.message).join(", ")}`
-      );
-    }
-
-    ctx.logger.info("Snapshot history recorded successfully.");
   }
+
+  /**
+   * Default backoff schedule for retrying the history mutation after a
+   * server-side optimistic-locking "version mismatch" rejection (one retry per
+   * entry). Tests inject their own schedule via `record()`'s `retryDelaysMs`
+   * option rather than mutating shared state.
+   * @lastreviewed null
+   */
+  private static readonly VERSION_MISMATCH_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000];
 
   /**
    * The author recorded alongside a snapshot.
