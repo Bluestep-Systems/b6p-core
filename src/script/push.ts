@@ -53,9 +53,14 @@ async function readGitIgnorePatterns(rootPath: string, fs: FileSystem): Promise<
  * Outcome of a push, for callers that need more signal than the human-facing
  * messages — e.g. a CLI that must exit non-zero or emit `--json` when a
  * snapshot shipped without a history entry.
+ * @lastreviewed null
  */
 export interface PushResult {
-  /** False only for a snapshot push whose history entry could not be recorded (no restore point exists). */
+  /**
+   * False only for a snapshot push whose history entry could not be recorded
+   * (no restore point exists).
+   * @lastreviewed null
+   */
   historyRecorded: boolean;
 }
 

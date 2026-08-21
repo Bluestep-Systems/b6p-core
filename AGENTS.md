@@ -39,7 +39,15 @@ When you change code, keep the docs in sync in the **same change**:
 ## JSDoc Review Requirement
 
 All AI-generated or AI-modified JSDoc **MUST** include the `@lastreviewed null` flag. A human reviewer
-replaces `null` with the review date after verifying accuracy.
+replaces `null` with the review date after verifying accuracy. Modifying an already-reviewed JSDoc
+block resets its tag to `null` — the old review date does not cover the new text.
+
+This rule is **enforced by CI** as a ratchet: `test/JsdocLastReviewed.test.js` (part of `npm test`)
+fails when any file gains untagged JSDoc blocks beyond the tolerated count in
+`test/jsdoc-lastreviewed.baseline.json` (pre-rule blocks are grandfathered there; new files tolerate
+zero). When you tag previously-untagged blocks, tighten the ratchet with
+`node test/JsdocLastReviewed.test.js --update`. Never raise a baseline number to make the check pass —
+tag the JSDoc instead.
 
 ```typescript
 /**
@@ -69,6 +77,35 @@ Use underscores for thousands separators in numeric literals (e.g. `1_000`, `10_
 
 Prettier governs style (see `.prettierrc`): 120 print width, 2-space tabs, semicolons,
 `trailingComma: es5`. Run `npm run format` before committing.
+
+## Branch, Commit, PR, and ClickUp Conventions
+
+Substantive work is tracked by a ClickUp task; feedback-pipeline reports and their tracking tasks live
+in the **AI.List** list. The conventions below match this repo's history — follow them so ClickUp's
+GitHub integration can auto-link the work.
+
+- **Branches** carry the ClickUp task id with the `CU-` prefix: `CU-<taskid>` for a task-scoped branch,
+  or `<type>/<slug>-CU-<taskid>` when a descriptive slug helps (e.g.
+  `generic-refactor-and-updates-CU-86bbcwx7p`). The `CU-` spelling is what ClickUp's GitHub
+  integration matches — a bare id or another prefix does not auto-link.
+- **Commits** use conventional-commit style: `fix(scope):`, `feat:`, `test:`, `refactor:`, `chore:`,
+  `docs:`, and `release: vX.Y.Z — summary` for release commits. Reference the ClickUp task in the
+  subject or body as `(CU-<taskid>)`. AI-authored commits end with their agent's `Co-Authored-By`
+  trailer.
+- **PRs** target `master`. CI must pass — type-check, format-check, compile, and the full test suite on
+  Node 20 and 22. Expect automated review rounds (e.g. Copilot); address them as follow-up commits on
+  the same branch (`fix: address Copilot review on PR #N`). AI-generated PR bodies end with the
+  Claude Code attribution line.
+- **Feedback-pipeline lifecycle**: when a fix has actually shipped to users, comment on the reporting
+  ClickUp task and move it to **"check on 20"** — the bspecs side runs a live verification wave.
+  **Never close tasks directly**: a pass is closed by the resolution-note email flow (which also
+  notifies reporters); a fail comes back on the "rejected fix" lane with the failing check cited.
+- **Shipping chain**: this library reaches users only through its consumers. A core fix is "shipped"
+  once a b6p-core release lands **and** a consumer release (b6p-cli, vscode-extension) bundles it —
+  not when the PR merges here.
+- **Line endings**: repo blobs are LF. On a CRLF checkout (Windows `autocrlf`), a local
+  `npm run format-check` false-fails on every file while CI passes — trust CI, or run the check from
+  an LF checkout. Do not commit a mass "reformat" for what is actually line-ending noise.
 
 ## Overriding Guidelines
 

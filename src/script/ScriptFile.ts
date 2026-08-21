@@ -50,6 +50,10 @@ export class ScriptFile extends ScriptNode {
    * SHA-512 of the given bytes, hex-encoded — same encoding as {@link getHash},
    * for content that is not (yet) on disk, e.g. a downloaded body that has not
    * been written.
+   * @param bytes The raw content to hash (a fetched body or a file read)
+   * @returns The lowercase hex-encoded SHA-512 digest
+   * @throws an {@link Err.HashCalculationError} When the digest is not the expected 64 bytes
+   * @lastreviewed null
    */
   private static async computeHash(bytes: ArrayBuffer | Uint8Array): Promise<string> {
     const hashBuffer = await webcrypto.subtle.digest(CryptoAlgorithms.SHA_512, bytes);
@@ -189,7 +193,7 @@ export class ScriptFile extends ScriptNode {
    * @throws an {@link Err.HttpResponseError} When the download fails due to a bad response
    * @throws an {@link Err.FileIntegrityError} When the downloaded file's integrity check fails
    * @throws an {@link Err.EtagParsingError} When the ETag header cannot be parsed
-   * @lastreviewed 2025-10-01
+   * @lastreviewed null
    */
   public async download(
     parser?: ScriptUrlParser,
@@ -273,7 +277,10 @@ export class ScriptFile extends ScriptNode {
    * nothing at all. Only a recorded last-sync hash that no longer matches the
    * local content — a genuine local edit — keeps the local copy.
    *
+   * @param incomingHash SHA-512 (hex) of the fetched platform content
+   * @param opts.overwriteLocal caller-confirmed intent to take the platform copy
    * @returns `true` when writing may proceed, `false` when the local copy must be kept
+   * @lastreviewed null
    */
   private async shouldOverwriteLocal(incomingHash: string, opts?: { overwriteLocal?: boolean }): Promise<boolean> {
     if (opts?.overwriteLocal) {

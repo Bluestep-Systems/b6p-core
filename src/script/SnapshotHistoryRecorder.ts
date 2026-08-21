@@ -32,6 +32,18 @@ const TEXT_EXTENSIONS = new Set([
  * browser IDE's "Project History" view.
  */
 export class SnapshotHistoryRecorder {
+  /**
+   * Record one history entry for the snapshot that was just pushed, via the
+   * script type's GraphQL update mutation. Retries on the platform's
+   * optimistic-locking "version mismatch" rejection only (see the loop below);
+   * every other failure throws on the first attempt.
+   * @param scriptRoot The script whose draft tree was just snapshot-pushed
+   * @param message The user's snapshot message ("" for none)
+   * @param opts.retryDelaysMs Backoff schedule overriding
+   *   {@link VERSION_MISMATCH_RETRY_DELAYS_MS} (one retry per entry); used by tests
+   * @throws an {@link Err.HttpResponseError} When the mutation ultimately fails
+   * @lastreviewed null
+   */
   static async record(scriptRoot: ScriptRoot, message: string, opts?: { retryDelaysMs?: number[] }): Promise<void> {
     const ctx = scriptRoot.ctx;
     const scriptKey = await scriptRoot.getScriptKey();
@@ -121,6 +133,7 @@ export class SnapshotHistoryRecorder {
    * server-side optimistic-locking "version mismatch" rejection (one retry per
    * entry). Tests inject their own schedule via `record()`'s `retryDelaysMs`
    * option rather than mutating shared state.
+   * @lastreviewed null
    */
   private static readonly VERSION_MISMATCH_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000];
 
