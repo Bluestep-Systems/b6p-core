@@ -5,6 +5,37 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-08-21
+
+### Changed
+
+- **Rolled back the TypeScript 7 type-checker; this package now builds and runs on one exact-pinned
+  compiler, `typescript` 5.9.2.** The `typescript-7` alias (`npm:typescript@7.0.2`) and the `tsc7`
+  script indirection are gone; `compile`, `watch` and `check-types` call `tsc` directly. No source
+  changed — the tree type-checks clean on 5.9.2, 6.0.0-beta and 7.0.2 alike — so this is a toolchain
+  change only. The published `dist/` is now emitted by 5.9.2; the suite runs against `dist/`, so that
+  is covered.
+
+  **Why.** This library compiles TypeScript *at runtime*: `push --snapshot` transpiles
+  `draft/scripts/*.ts` in-process through `ScriptTranspiler`, so it needs the compiler as a library.
+  TypeScript 7 cannot serve that. Its `typescript` entry point is only a version stub, the classic API
+  (`createProgram`, `transpileModule`, `parseJsonConfigFileContent`, `sys`) is absent, and the
+  replacement `typescript/unstable/sync` drives a per-platform native Go binary over JSON-RPC — 20
+  optional dependencies located at runtime by `lib/getExePath.js`, unbundleable into the CLI's single
+  `dist/cli.js` and its Node SEA binaries. TypeScript 7 additionally ships **zero** `lib.*.d.ts` files
+  (the Go port embeds them) while the transpiler needs real lib files on disk.
+
+  So type-checking with 7 while compiling with 5.9 at runtime bought build-time speed in exchange for
+  a permanent two-compiler split, and it is the split — not the speed — that shaped the code: the
+  `tsc7` indirection existed only because both packages declared a `tsc` bin, and the CLI's
+  `copy-ts-libs` step had to resolve `typescript` from *this* package's directory so the shipped libs
+  matched the compiler that reads them.
+
+  Going forward again needs a TypeScript that can compile **in-process**. The decision, the
+  alternatives (including why not the 6.0 beta — there is no stable 6.x, and its 107 lib files against
+  this runtime's 99 re-arm the mismatch hazard) and the trigger to revisit are recorded in
+  `b6p-cli/docs/adr/0002-typescript-version-strategy.md`.
+
 ## [0.6.0] - 2026-08-21
 
 ### Fixed

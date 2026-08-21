@@ -19,7 +19,7 @@ public API surface.
 ## Common Development Commands
 
 ```bash
-npm run compile       # Build → dist/ (TypeScript 7 tsc)
+npm run compile       # Build → dist/ (tsc, TypeScript 5.9.2)
 npm run watch         # Incremental rebuild on change
 npm run check-types   # Type-check only (tsc --noEmit)
 npm run format        # Prettier --write (config in .prettierrc)
@@ -141,30 +141,35 @@ decorative**: TypeScript is structural, so an empty base interface is the top ob
 - **Output**: `dist/` with `.d.ts` declarations (`declaration: true`). `declarationMap` is disabled —
   consumers bundle the library, so source maps to `src/` would dangle in the published tarball.
 
-### Two TypeScripts, on purpose
+### One TypeScript, exact-pinned at 5.9.2 — and why not 7
 
-This repo installs TypeScript **twice**, and the split is load-bearing — do not "simplify" it:
+`typescript` is an exact-pinned **runtime `dependency`**, not a devDependency, and it both builds this
+package and does its work at runtime. Do not float the pin, and do not add a second compiler:
 
-| Role | Package name in `package.json` | Version | Used by |
-|------|-------------------------------|---------|---------|
-| Build compiler | `typescript-7` (`npm:typescript@7.0.2`), devDependency | 7.x | `compile` / `watch` / `check-types`, via the `tsc7` script |
-| Runtime compiler API | `typescript`, **dependency**, exact pin | `5.9.2` | `ScriptTranspiler`, `TsLibResolver` (`import ts from "typescript"`) |
+| Role | Version | Used by |
+|------|---------|---------|
+| Runtime compiler API | `typescript`, **dependency**, exact `5.9.2` | `ScriptTranspiler`, `TsLibResolver` (`import ts from "typescript"`) |
+| Build compiler | the same `5.9.2` | `compile` / `watch` / `check-types` |
 
-`src/` must keep importing the compiler API as plain `"typescript"` — that is the 5.9 pin, and it must
-stay 5.9. TypeScript 7 is the native Go compiler: its `typescript` entry point is only a version stub
-(`lib/version.cjs`), the classic API (`createProgram`, `transpileModule`, `parseJsonConfigFileContent`,
-`sys`) is gone, and the replacement `typescript/unstable/sync` API talks JSON-RPC to a per-platform
-native binary — unbundleable into the CLI's single `dist/cli.js` and its SEA. The pin is exact so a
-consumer on TypeScript 7 gets `5.9.2` nested under this package rather than hoisting theirs over it.
+**The runtime use is what pins the version.** This library compiles TypeScript *while running* — a
+`push --snapshot` transpiles `draft/scripts/*.ts` in-process — so it needs the compiler as a library.
+TypeScript 7 cannot do that: its `typescript` entry point is only a version stub (`lib/version.cjs`),
+the classic API (`createProgram`, `transpileModule`, `parseJsonConfigFileContent`, `sys`) is gone, and
+the replacement `typescript/unstable/sync` drives a **per-platform native Go binary over JSON-RPC**
+(20 optional dependencies, located at runtime by `lib/getExePath.js`). That is unbundleable into the
+CLI's single `dist/cli.js` and its Node SEA binaries. TypeScript 7 also ships **no** `lib.*.d.ts` at
+all — the Go port embeds them — while the transpiler needs real lib files on disk.
 
-The build compiler is invoked by explicit path (`node node_modules/typescript-7/bin/tsc`, wrapped as
-`npm run tsc7`) because both packages declare a `tsc` bin; npm gives `node_modules/.bin/tsc` to the
-real `typescript` (5.9). Bare `tsc` in a script would silently build with 5.9.
+An earlier revision installed TypeScript twice, aliased as `typescript-7`, to type-check with 7 while
+still compiling with 5.9 at runtime. That was rolled back: it bought type-check speed in exchange for
+a permanent two-compiler split, a `tsc7` script indirection (needed only because both packages declare
+a `tsc` bin), and a lib-copying hazard in the CLI. Revisit only when a TypeScript release can compile
+**in-process**; see `b6p-cli/docs/adr/0002-typescript-version-strategy.md` for the decision and the
+trigger.
 
-What keeps `typescript` (not `typescript-7`) as the un-aliased name is the runtime import above: `src/`
-resolves the compiler API by the bare specifier, so the bare name must be the 5.9 pin. (A second
-constraint, `@typescript-eslint`'s `typescript >=4.8.4 <6.1.0` peer, disappeared when ESLint was
-removed — it was redundant with this one.)
+The pin is exact so a consumer on a different TypeScript gets `5.9.2` nested under this package rather
+than hoisting theirs over it. It also keeps `@typescript-eslint`'s `typescript >=4.8.4 <6.1.0` peer
+satisfiable, should a linter ever come back here.
 
 ## Important Development Guidelines
 
