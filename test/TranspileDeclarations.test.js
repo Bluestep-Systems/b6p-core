@@ -17,12 +17,14 @@
 // emit nothing, so this changes only what is type-checked, not what is emitted.
 //
 // b6p-core has no test framework; this is a minimal, dependency-free node
-// script (run via `npm test`) that exercises the COMPILED static method against
-// a real on-disk fixture (the method resolves globs and existence via ts.sys).
+// script (run via `npm test`). It exercises the COMPILED code against a real
+// on-disk fixture: the static resolveDeclarationRootFiles (glob/existence via
+// ts.sys) and the instance compileProject (the actual program build + emit).
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const assert = require("node:assert");
+const ts = require("typescript");
 const { ScriptTranspiler } = require("../dist/script/ScriptTranspiler.js");
 
 let failures = 0;
@@ -102,6 +104,78 @@ test("a declaration listed but absent on disk is dropped (no phantom root file)"
   try {
     const decls = ScriptTranspiler.resolveDeclarationRootFiles(fx.tsconfigPath, fx.config);
     assert.deepStrictEqual(decls, [], "a non-existent include entry must not be returned");
+  } finally {
+    rmrf(fx.root);
+  }
+});
+
+// ── Fixture-level: the merge actually resolves globals and does not change emit ──
+//
+// The helper tests above only cover resolveDeclarationRootFiles. These drive the
+// real program build (ScriptTranspiler.compileProject) against an on-disk fixture,
+// so reverting the "declarations first into rootFiles" merge turns the WITH-decls
+// case red (platform global unresolved) instead of leaving the suite green.
+
+const NOOP_LOGGER = { info() {}, warn() {}, debug() {}, error() {} };
+
+function optionsFor(draftDir) {
+  // The transpile invariants that matter for this assertion, set directly so the
+  // test does not depend on the private applyTranspileInvariants.
+  return {
+    module: ts.ModuleKind.ESNext,
+    target: ts.ScriptTarget.ES2022,
+    // Absolute so emit lands inside the fixture (a relative outDir resolves
+    // against process.cwd(), i.e. the repo root, not the temp dir).
+    outDir: path.join(draftDir, ".build"),
+    rootDir: draftDir,
+    listEmittedFiles: true,
+    skipLibCheck: true,
+    noEmitOnError: false,
+  };
+}
+
+function messages(diagnostics) {
+  return diagnostics.map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"));
+}
+
+test("WITH declarations: the platform global resolves and only app.js is emitted", () => {
+  const fx = makeFixture(["../declarations/index.d.ts", "scripts/**/*.ts"]);
+  try {
+    const decls = ScriptTranspiler.resolveDeclarationRootFiles(fx.tsconfigPath, fx.config);
+    const appTs = path.join(fx.draftDir, "scripts", "app.ts");
+    const transpiler = new ScriptTranspiler({ logger: NOOP_LOGGER, typescriptLibDirs: undefined });
+    const res = transpiler.compileProject(fx.tsconfigPath, [appTs], decls, optionsFor(fx.draftDir));
+
+    assert.strictEqual(res.emitSkipped, false, "emit must not be skipped");
+    assert.ok(
+      !messages(res.diagnostics).some((m) => m.includes("Cannot find name 'B'")),
+      "the platform global B must resolve once declarations are merged in"
+    );
+    const emitted = res.emittedFiles.map((f) => f.replace(/\\/g, "/"));
+    assert.ok(
+      emitted.some((f) => f.endsWith("/app.js")),
+      `app.js must be emitted, got: ${emitted.join(", ")}`
+    );
+    assert.ok(
+      !emitted.some((f) => f.endsWith(".d.ts") || f.includes("declarations/")),
+      `declarations must emit nothing, got: ${emitted.join(", ")}`
+    );
+  } finally {
+    rmrf(fx.root);
+  }
+});
+
+test("WITHOUT declarations: the same program cannot resolve the platform global", () => {
+  const fx = makeFixture(["../declarations/index.d.ts", "scripts/**/*.ts"]);
+  try {
+    const appTs = path.join(fx.draftDir, "scripts", "app.ts");
+    const transpiler = new ScriptTranspiler({ logger: NOOP_LOGGER, typescriptLibDirs: undefined });
+    const res = transpiler.compileProject(fx.tsconfigPath, [appTs], [], optionsFor(fx.draftDir));
+
+    assert.ok(
+      messages(res.diagnostics).some((m) => m.includes("Cannot find name 'B'")),
+      "without the declaration, B must be unresolved — this is what the merge fixes"
+    );
   } finally {
     rmrf(fx.root);
   }

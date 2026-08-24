@@ -73,9 +73,12 @@ export interface PushResult {
   historyRecorded: boolean;
   /**
    * Type-check outcome of the pre-publish transpile:
-   *  - `null` — no compile ran. A plain (non-snapshot) push does not compile,
-   *    and a push that aborted before compiling never got there.
-   *  - `0` — compiled with zero diagnostics: genuinely type-checked.
+   *  - `null` — no platform-code type-check ran. A plain (non-snapshot) push
+   *    does not compile; a push that aborted before compiling never got there;
+   *    and a snapshot whose TS all lives under nested client bundles (nothing
+   *    governed by the draft-root tsconfig) has no draft-root code to check.
+   *  - `0` — the draft-root code compiled with zero diagnostics: genuinely
+   *    type-checked.
    *  - `> 0` — compiled, but N diagnostics were reported. The JavaScript was
    *    emitted and published anyway (the platform runs the emitted JS on
    *    GraalVM regardless of type errors, and local declarations may be

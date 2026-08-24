@@ -5,6 +5,41 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-08-24
+
+### Fixed
+
+- **`push --snapshot` now type-checks against the component's declarations instead of shipping
+  un-type-checked JavaScript while reporting success.** The pre-publish transpile compiled
+  `draft/scripts/app.ts` in isolation — it built its own file list from `draft/` and parsed the
+  tsconfig with a stubbed `readDirectory`, discarding the `include` list. A draft tsconfig's `include`
+  points at `../declarations/index.d.ts` (outside `draft/`), so every platform global (`B`, `console`,
+  generated `MEFR_*`/`Record_*`, the `Bluestep` namespace, imported query globals) resolved to
+  "Cannot find name"; the JS emitted anyway and the push reported success having checked only syntax.
+  Since local `tsc` is forbidden, this push was the only type-check, so the failure was invisible.
+  `ScriptTranspiler` now resolves the tsconfig's ambient `.d.ts` (`resolveDeclarationRootFiles`) and
+  adds them to the program — the automatic equivalent of a hand-written `/// <reference … />`. Ambient
+  `.d.ts` emit nothing, so the emitted-file set is unchanged.
+
+### Added
+
+- **`PushResult.typeCheckDiagnostics: number | null`** — the pre-publish type-check result for the
+  platform-compiled draft-root code: `0` = clean, `> 0` = published with diagnostics (JS emitted and
+  live, but not type-clean), `null` = no draft-root type-check ran (plain push, or a component whose TS
+  all lives under nested client bundles). Diagnostics never block emit (the platform runs the emitted
+  JS on GraalVM regardless, and local declarations may be incomplete); a snapshot with `> 0` prints the
+  diagnostics loudly instead of "Snapshot complete!". Client-bundle (`static/`) diagnostics stay
+  advisory and are excluded from the count, so a benign browser-global wall never fails a push.
+- **`ScriptRoot.getDraftTsConfigPath()`** — the single source of truth for the draft-root tsconfig
+  path, shared by `transpile` (which gates on it) and `findStaleClientBundles` (which excludes it).
+
+### Changed
+
+- **BREAKING (internal API):** `ScriptTranspiler.transpile()` and `ScriptRoot.compileDraftFolder()` now
+  return a `TranspileOutcome` (exported from the package root) instead of `string[]` / `void`. No
+  external consumer calls these directly — b6p-cli and the VS Code extension go through `executePush` —
+  but the signatures changed.
+
 ## [0.6.1] - 2026-08-21
 
 ### Changed
@@ -16,7 +51,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   change only. The published `dist/` is now emitted by 5.9.2; the suite runs against `dist/`, so that
   is covered.
 
-  **Why.** This library compiles TypeScript *at runtime*: `push --snapshot` transpiles
+  **Why.** This library compiles TypeScript _at runtime_: `push --snapshot` transpiles
   `draft/scripts/*.ts` in-process through `ScriptTranspiler`, so it needs the compiler as a library.
   TypeScript 7 cannot serve that. Its `typescript` entry point is only a version stub, the classic API
   (`createProgram`, `transpileModule`, `parseJsonConfigFileContent`, `sys`) is absent, and the
@@ -28,7 +63,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   So type-checking with 7 while compiling with 5.9 at runtime bought build-time speed in exchange for
   a permanent two-compiler split, and it is the split — not the speed — that shaped the code: the
   `tsc7` indirection existed only because both packages declared a `tsc` bin, and the CLI's
-  `copy-ts-libs` step had to resolve `typescript` from *this* package's directory so the shipped libs
+  `copy-ts-libs` step had to resolve `typescript` from _this_ package's directory so the shipped libs
   matched the compiler that reads them.
 
   Going forward again needs a TypeScript that can compile **in-process**. The decision, the
@@ -120,7 +155,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `cleanDuplicates` issued the write without awaiting it, so a rejected write surfaced as an
   unhandled rejection — from construction, and from the 1-day timer, which sat in no promise chain
   at all. The `catch` on the readiness promise did **not** cover this: it only ever saw a
-  *synchronous* throw. Both methods are now `async` and await the write, `whenReady()` consequently
+  _synchronous_ throw. Both methods are now `async` and await the write, `whenReady()` consequently
   waits for the first cleanup write to land rather than resolving while it is in flight, and the
   timer path has its own handler so a failed scheduled sweep cannot end the process.
 
@@ -129,7 +164,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **`B6PUri.stripDirectoryMarker` mishandled roots, backslashes and query strings.** As first
   written it trimmed trailing characters matching `path.sep` or `/`, which meant three things: it
-  recognised `\` only when *running on Windows*, making every comparison built on it
+  recognised `\` only when _running on Windows_, making every comparison built on it
   host-dependent — untenable in a repo whose specs drive Windows paths from POSIX hosts; it trimmed
   roots into different locations (`C:\` → `C:`, the drive-relative path; `file:///C:/` →
   `file:///C:`); and it could not see a marker that sat before a query or fragment, so
@@ -137,7 +172,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   query — keyed apart.
 
   It now treats `/` and `\` alike on every host, preserves roots, and for a hierarchical URL strips
-  the marker from the *pathname* so query and fragment survive.
+  the marker from the _pathname_ so query and fragment survive.
 
 - **The integrity check threw `crypto is not defined` on Node 18.** `ScriptFile.getHash()` called the
   ambient `crypto.subtle`, which Node only exposes unflagged from 19 — so on Node 18 every
@@ -180,7 +215,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `dispose()` now sets a flag the sweep checks before arming.
 
 - **Constructing `B6PCore` wiped the persisted org cache.** `OrgCache`'s constructor ran its
-  expiry sweep synchronously, but `PublicPersistanceMap` loads asynchronously and *reassigns* its
+  expiry sweep synchronously, but `PublicPersistanceMap` loads asynchronously and _reassigns_ its
   backing object when the load lands. The sweep therefore iterated a still-empty map and `store()`d
   that emptiness over the real file. Reproduced against the compiled output: a cache holding one U
   became `{}` on disk after nothing but `new OrgCache(...)`.
@@ -219,15 +254,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   script-management operation moved verbatim onto the new `ScriptService` (`src/script/ScriptService.ts`),
   reached as `core.script`:
 
-  | Was | Now |
-  | --- | --- |
+  | Was                              | Now                                            |
+  | -------------------------------- | ---------------------------------------------- |
   | `core.push` / `core.pushCurrent` | `core.script.push` / `core.script.pushCurrent` |
   | `core.pull` / `core.pullCurrent` | `core.script.pull` / `core.script.pullCurrent` |
-  | `core.audit` / `core.auditPull` | `core.script.audit` / `core.script.auditPull` |
-  | `core.deploy` | `core.script.deploy` |
-  | `core.getSetupUrl` | `core.script.getSetupUrl` |
-  | `core.deriveWorkspacePath` | `core.script.deriveWorkspacePath` |
-  | `core.getScriptFactory()` | `core.script.getFactory()` |
+  | `core.audit` / `core.auditPull`  | `core.script.audit` / `core.script.auditPull`  |
+  | `core.deploy`                    | `core.script.deploy`                           |
+  | `core.getSetupUrl`               | `core.script.getSetupUrl`                      |
+  | `core.deriveWorkspacePath`       | `core.script.deriveWorkspacePath`              |
+  | `core.getScriptFactory()`        | `core.script.getFactory()`                     |
 
   Behaviour is unchanged in every case; the call sites move and nothing else. `AuditResult` is now
   exported from `ScriptService` rather than `B6PCore` (the re-export from the package root is
@@ -235,7 +270,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Remaining on `B6PCore`: `updateCredentials`, `clearSessions`, `clearSettings`, `clearAll`, `report`,
   `getConfig`/`setConfig`, `checkForUpdates`, `dispose`, and the platform singletons it owns.
 
-- **`B6PCore` no longer implements `ScriptContext`** — it *builds* one and holds it as
+- **`B6PCore` no longer implements `ScriptContext`** — it _builds_ one and holds it as
   passes it to `ScriptService`, and does not expose it. Consumers that passed a `B6PCore` where a
   `ScriptContext` was expected (e.g. `new ScriptFactory(core)`) must construct their own bundle from
   the providers they already hold — core deliberately offers no accessor, since publishing one would
@@ -243,7 +278,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   of wanting a `ScriptFactory`.
 
   The `implements` relation was the defect. `ScriptContext` is a dependency bundle for the script
-  tree, but making the orchestrator satisfy it meant the interface tracked *B6PCore's* growth rather
+  tree, but making the orchestrator satisfy it meant the interface tracked _B6PCore's_ growth rather
   than the tree's needs — every field added to the orchestrator became a candidate for leaking in.
   Holding the bundle instead of inheriting its shape also severs the construction cycle in which
   `B6PCore` both assembled the script tree and was a member of it.
@@ -283,12 +318,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   service locator: a subsystem could reach `core.persistence` instead of receiving a bundle.
 
   They also falsified this class's own documentation. The 0.5.0 work removed `implements
-  ScriptContext` and the doc comment claimed the class "deliberately does not implement any of the
+ScriptContext` and the doc comment claimed the class "deliberately does not implement any of the
   interfaces it hands out" — but `const ctx: ScriptContext = core` still type-checked, because
   these fields supplied every member. TypeScript is structural: dropping the clause removed the
   declaration, not the conformance. Making them private is what makes the claim true, and it is
   now verified rather than asserted. Still public: `auth`, `sessionManager`, `scriptMetadataStore`,
-  `orgCache`, `updateService`, `script` — the objects core *builds*, which a consumer cannot reach
+  `orgCache`, `updateService`, `script` — the objects core _builds_, which a consumer cannot reach
   any other way.
 
 - **Basic auth replaced by bearer auth.** `BasicAuthProvider` and `BasicAuthParams` are gone,
@@ -353,7 +388,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **`B6PUri.isDirectoryMarked` and `B6PUri.asDirectory()`** — first-class handling of the
-  trailing-separator folder marker that `ScriptFactory.createNode` uses as its *only* folder signal
+  trailing-separator folder marker that `ScriptFactory.createNode` uses as its _only_ folder signal
   (it cannot touch the filesystem, so a path is classified by shape alone).
 
   `isDirectoryMarked` tests the URL pathname, which matches `createNode`'s `fsPath.endsWith(path.sep)`
@@ -388,7 +423,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   drives the lifecycle through the interface, and never inspects the credentials themselves.
 
 - **`AuthParams`**, the base every scheme's credential shape extends, carrying a `readonly scheme:
-  string` discriminant. The discriminant is what makes the base load-bearing: TypeScript is structural,
+string` discriminant. The discriminant is what makes the base load-bearing: TypeScript is structural,
   so an empty base would be the top object type and `T extends AuthParams` would admit every non-nullish
   type, including `string` and `() => void`. With `scheme` present the constraint binds, concrete params
   form a discriminated union, and a provider can verify what it read back out of storage.
@@ -682,7 +717,7 @@ Initial standalone release. Extracted (with history) from the former
   `.prettierrc`) so the package builds independently of the old monorepo root.
 - CI workflow (`.github/workflows/ci.yml`) validating type-check, lint, and compile on PRs and pushes.
 - Publish workflow (`.github/workflows/publish.yml`) — tag `v*.*.*` → `npm publish --provenance
-  --access public` to the public npm registry.
+--access public` to the public npm registry.
 - Committed `.npmrc` pinning the `@bluestep-systems` scope to `registry.npmjs.org`.
 
 ### Changed
