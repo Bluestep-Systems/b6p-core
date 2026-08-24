@@ -42,6 +42,7 @@ export { ResponseCodes } from "./network/StatusCodes";
 export { ScriptFactory } from "./script/ScriptFactory";
 export { ScriptNode } from "./script/ScriptNode";
 export { ScriptRoot } from "./script/ScriptRoot";
+export type { TranspileOutcome } from "./script/ScriptTranspiler";
 export { ScriptFile } from "./script/ScriptFile";
 export type { ScriptFolder } from "./script/ScriptFolder";
 export type { ScriptContext } from "./script/ScriptContext";

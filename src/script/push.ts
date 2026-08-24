@@ -71,6 +71,22 @@ export interface PushResult {
    * @lastreviewed null
    */
   historyRecorded: boolean;
+  /**
+   * Type-check outcome of the pre-publish transpile:
+   *  - `null` — no platform-code type-check ran. A plain (non-snapshot) push
+   *    does not compile; a push that aborted before compiling never got there;
+   *    and a snapshot whose TS all lives under nested client bundles (nothing
+   *    governed by the draft-root tsconfig) has no draft-root code to check.
+   *  - `0` — the draft-root code compiled with zero diagnostics: genuinely
+   *    type-checked.
+   *  - `> 0` — compiled, but N diagnostics were reported. The JavaScript was
+   *    emitted and published anyway (the platform runs the emitted JS on
+   *    GraalVM regardless of type errors, and local declarations may be
+   *    incomplete), so this is a loud warning, not a failure. A machine consumer
+   *    should treat `> 0` as "published without a passing type-check".
+   * @lastreviewed null
+   */
+  typeCheckDiagnostics: number | null;
 }
 
 /**
@@ -97,7 +113,7 @@ export async function executePush(opts: {
   const draftUri = B6PUri.fromFsPath(draftPath);
   if (!(await fs.exists(draftUri))) {
     prompt.error(`Draft folder not found: ${draftPath}`);
-    return { pushed: false, historyRecorded: false };
+    return { pushed: false, historyRecorded: false, typeCheckDiagnostics: null };
   }
 
   // Build a parser from the target URL so the ScriptRoot can resolve
@@ -114,8 +130,14 @@ export async function executePush(opts: {
   // Snapshots transpile TS into the draft build folder so both the source
   // and emitted JS get uploaded and captured in history. Must run before
   // flattenDirectory so the emitted files are included in the upload set.
+  // A plain (non-snapshot) push does not compile, so its type-check status is
+  // null rather than a count.
+  let typeCheckDiagnostics: number | null = null;
+  let typeCheckDetail = "";
   if (snapshot) {
-    await scriptRoot.compileDraftFolder();
+    const compileOutcome = await scriptRoot.compileDraftFolder();
+    typeCheckDiagnostics = compileOutcome.diagnosticCount;
+    typeCheckDetail = compileOutcome.diagnosticText;
   }
 
   // Push does NOT transpile client bundles (e.g. a MergeReport `static/script.ts`
@@ -137,7 +159,7 @@ export async function executePush(opts: {
 
   if (allFiles.length === 0) {
     prompt.info("No files to push — draft folder is empty.");
-    return { pushed: false, historyRecorded: false };
+    return { pushed: false, historyRecorded: false, typeCheckDiagnostics };
   }
 
   const uploadTasks: ProgressTask<void>[] = allFiles.map((filePath) => ({
@@ -184,17 +206,33 @@ export async function executePush(opts: {
     }
   }
 
+  // A snapshot that compiled with diagnostics shipped un-type-checked JS. Say so
+  // loudly and do NOT let the run read as a clean success — the platform never
+  // type-checks, so this push was the only gate (ClickUp 86bbeb659).
+  const shippedWithDiagnostics = snapshot && typeCheckDiagnostics !== null && typeCheckDiagnostics > 0;
+  if (shippedWithDiagnostics) {
+    prompt.warn(
+      `Published WITHOUT a passing type-check: the pre-publish transpile reported ` +
+        `${typeCheckDiagnostics} diagnostic(s). The JavaScript was emitted and is now live, but these ` +
+        `were NOT verified — each is either a real type error or a missing platform declaration, and ` +
+        `the platform does not type-check on its side. Review them before relying on this build:\n\n` +
+        typeCheckDetail
+    );
+  }
+
   if (snapshot && !historyRecorded) {
     prompt.warn(
       "Snapshot files uploaded and compiled, but the snapshot history entry could NOT be recorded — " +
         "the browser IDE's Project History has no restore point for this snapshot. " +
         "Run the snapshot push again to retry recording it."
     );
+  } else if (shippedWithDiagnostics) {
+    prompt.info("Snapshot uploaded — but see the type-check warning above.");
   } else {
     prompt.info(snapshot ? "Snapshot complete!" : "Push complete!");
   }
 
-  return { pushed: true, historyRecorded };
+  return { pushed: true, historyRecorded, typeCheckDiagnostics };
 }
 
 /**

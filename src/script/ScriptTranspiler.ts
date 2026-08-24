@@ -10,6 +10,31 @@ import { ScriptFactory } from "./ScriptFactory";
 import { TsLibResolver } from "./TsLibResolver";
 
 /**
+ * Outcome of a {@link ScriptTranspiler.transpile} run. `emittedFiles` spans
+ * every tsconfig project it compiled; the diagnostic fields do NOT (see below).
+ *
+ * `diagnosticCount` counts only the diagnostics from the platform-compiled
+ * draft-root project (`scripts/*.ts`) — the code whose type-check gates the
+ * push; `0` means that code type-checked cleanly. It is **`null`** when the
+ * draft-root project was not among the compiled projects (a component whose TS
+ * all lives under nested client bundles), i.e. no platform-code type-check ran
+ * — distinct from `0`, so a machine consumer never reads "not checked" as
+ * "checked clean". Client-bundle diagnostics (nested tsconfigs, e.g. a
+ * MergeReport `static/`) are logged advisory and deliberately excluded, since
+ * they legitimately reference browser-only globals the component declares
+ * nowhere. `diagnosticText` is the formatted list of the same counted
+ * diagnostics. Emit is never blocked by diagnostics (the platform runs the
+ * emitted JS regardless), so callers use the count to report loudly rather than
+ * to abort; a true emit failure throws instead of returning.
+ * @lastreviewed null
+ */
+export interface TranspileOutcome {
+  emittedFiles: string[];
+  diagnosticCount: number | null;
+  diagnosticText: string;
+}
+
+/**
  * Compiler for TypeScript files in script projects.
  * Manages compilation of multiple TypeScript files organized by their tsconfig.json files.
  * @lastreviewed 2025-10-01
@@ -43,11 +68,13 @@ export class ScriptTranspiler {
     return LOCAL_CONFIG;
   }
 
-  private async getCompilerOptions(sn: ScriptNode): Promise<ts.CompilerOptions> {
+  private async getProjectConfig(
+    sn: ScriptNode
+  ): Promise<{ options: ts.CompilerOptions; declarationRootFiles: string[] }> {
     const tsConfigFile = await sn.getClosestTsConfigFile();
     if (!tsConfigFile) {
       this.ctx.logger.info("No tsconfig.json found, using default compiler options.");
-      return this.getDefaultOptions(sn);
+      return { options: this.getDefaultOptions(sn), declarationRootFiles: [] };
     }
 
     const tsconfigTextArray = await this.ctx.fs.readFile(B6PUri.fromFsPath(tsConfigFile.uri().fsPath));
@@ -55,11 +82,33 @@ export class ScriptTranspiler {
       tsConfigFile.path(),
       Buffer.from(tsconfigTextArray).toString("utf-8")
     );
-    pseudoParsedConfig.config.compilerOptions.rootDir = tsConfigFile.folder().path();
     if (pseudoParsedConfig.error) {
       const message = ts.flattenDiagnosticMessageText(pseudoParsedConfig.error.messageText, "\n");
       throw new Err.CompilationError(`Error parsing tsconfig.json at ${tsConfigFile.path()}: ${message}`);
     }
+    pseudoParsedConfig.config.compilerOptions = pseudoParsedConfig.config.compilerOptions ?? {};
+    pseudoParsedConfig.config.compilerOptions.rootDir = tsConfigFile.folder().path();
+
+    // Resolve the ambient declaration files the tsconfig's include/files pull in
+    // BEFORE the options-only parse below stubs out readDirectory. Without this
+    // the transpile can't see the platform globals and the type-check is a
+    // syntax check only (see resolveDeclarationRootFiles).
+    const declarationRootFiles = ScriptTranspiler.resolveDeclarationRootFiles(
+      tsConfigFile.path(),
+      pseudoParsedConfig.config
+    );
+    if (declarationRootFiles.length > 0) {
+      this.ctx.logger.info(
+        `Including ${declarationRootFiles.length} declaration file(s) in the type-check:\n` +
+          declarationRootFiles.join("\n")
+      );
+    }
+    // The "no declarations resolved" case is NOT warned here: a client-bundle
+    // tsconfig (e.g. a MergeReport `static/`) legitimately pulls in none, so a
+    // per-project warning would fire on every such push. transpile() warns only
+    // for the gated draft-root project, where empty declarations really do mean
+    // an ineffective type-check.
+
     const parsedConfig = ts.parseJsonConfigFileContent(
       pseudoParsedConfig.config,
       {
@@ -71,7 +120,51 @@ export class ScriptTranspiler {
       tsConfigFile.path()
     );
     this.ctx.logger.info("Using tsconfig.json compiler options from:", tsConfigFile.path());
-    return ScriptTranspiler.applyTranspileInvariants(parsedConfig.options);
+    return { options: ScriptTranspiler.applyTranspileInvariants(parsedConfig.options), declarationRootFiles };
+  }
+
+  /**
+   * Resolve the ambient declaration files (`*.d.ts`) a tsconfig pulls in via its
+   * `include`/`files`. These carry the platform globals — `B`, `console`, the
+   * generated `MEFR_*`/`Record_*` types, the `Bluestep` namespace, imported
+   * query globals — declared in the component's sibling `declarations/` tree
+   * (a real draft tsconfig's `include` starts with `../declarations/index.d.ts`).
+   *
+   * The transpile builds its own root-file list by walking the `draft/` folder
+   * and parses the tsconfig with `readDirectory: () => []`, so the tsconfig's
+   * `include` — which points OUTSIDE `draft/` — is otherwise dropped. That left
+   * every platform global an unresolved "Cannot find name" and reduced the only
+   * pre-publish type-check to a syntax check, so a push shipped un-type-checked
+   * JavaScript while reporting success (ClickUp 86bbeb659). Ambient `.d.ts`
+   * emit no JavaScript, so adding them to the program's root files fixes the
+   * type-check without changing the emitted-file set — the same effect as a
+   * hand-written `/// <reference path="../../declarations/index.d.ts" />`.
+   *
+   * Resolution uses the real `ts.sys` (not the stubbed `readDirectory`) so
+   * globbed includes resolve, then keeps only existing `.d.ts` so a stale
+   * include entry cannot itself introduce a "file not found" diagnostic.
+   * @lastreviewed null
+   */
+  static resolveDeclarationRootFiles(tsConfigPath: string, configJson: object): string[] {
+    const parsed = ts.parseJsonConfigFileContent(
+      configJson,
+      ts.sys,
+      path.dirname(tsConfigPath),
+      undefined,
+      tsConfigPath
+    );
+    return parsed.fileNames.filter((f) => ScriptTranspiler.isDeclarationFile(f) && ts.sys.fileExists(f));
+  }
+
+  /**
+   * Whether a path is an ambient declaration file — matched broadly enough
+   * (`.d.ts`, `.d.mts`, `.d.cts`) that a future switch to a module-flavored
+   * declaration name cannot silently drop the platform globals and regress the
+   * type-check back to syntax-only.
+   * @lastreviewed null
+   */
+  private static isDeclarationFile(fsPath: string): boolean {
+    return /\.d\.(ts|mts|cts)$/i.test(fsPath);
   }
 
   /**
@@ -84,10 +177,12 @@ export class ScriptTranspiler {
    *   MergeReport `static/` client bundle) produces 30+ lib-vs-lib conflicts
    *   (`ImportExportKind`, duplicate index signatures, `location` mismatch, ...)
    *   that have nothing to do with the project's own code.
-   * - `noEmitOnError`: emit must succeed even when type diagnostics exist. The
-   *   consuming workspaces' CLAUDE.md states local tsconfig/declarations "are
-   *   not guaranteed to produce a clean local build", so the type-check here is
-   *   advisory — a project must not be able to block emit by setting this true.
+   * - `noEmitOnError`: emit must succeed even when type diagnostics exist —
+   *   the platform never type-checks (it runs the emitted JS on GraalVM) and a
+   *   component's local declarations may be incomplete, so a diagnostic must not
+   *   block the emit a push depends on. This is NOT the same as swallowing the
+   *   diagnostics: `transpile` returns their count so the push surfaces them
+   *   loudly instead of reporting a clean success (ClickUp 86bbeb659).
    * @lastreviewed null
    */
   private static applyTranspileInvariants(options: ts.CompilerOptions): ts.CompilerOptions {
@@ -115,50 +210,118 @@ export class ScriptTranspiler {
     this.projects.set(newTsConfigFile.path(), vals);
   }
 
-  public async transpile(sharedRoot?: ScriptRoot): Promise<string[]> {
+  public async transpile(sharedRoot?: ScriptRoot): Promise<TranspileOutcome> {
     const f = sharedRoot ? sharedRoot.factory : new ScriptFactory(this.ctx);
 
+    // The draft-root tsconfig governs the platform-compiled scripts (`scripts/*.ts`)
+    // — the ONLY code whose type-check gates the push. Nested tsconfigs are
+    // client bundles (e.g. a MergeReport `static/`) whose diagnostics stay
+    // advisory: they legitimately reference browser-only third-party globals the
+    // component declares nowhere, so gating on them would fail a push over benign
+    // noise (see the b6p-push skill's third-party-lib-type-noise gotcha). When no
+    // root is supplied we can't tell them apart, so we gate on everything.
+    const draftRootTsConfigPath = sharedRoot ? sharedRoot.getDraftTsConfigPath() : null;
+
     const emittedFiles: string[] = [];
+    const gatedDiagnostics: ts.Diagnostic[] = [];
+    // Whether the gated (draft-root) project was actually among the compiled
+    // projects. If a component's TS all lives under nested client bundles and
+    // nothing is governed by the draft-root tsconfig, no platform-code
+    // type-check ran — and `diagnosticCount: 0` would falsely read as "checked
+    // clean". We return `null` in that case instead (ClickUp 86bbeb659 review).
+    let gatedProjectCompiled = false;
     for (const [tsConfigPath, sfList] of this.projects.entries()) {
       if (sfList.length === 0) {
         throw new Err.NoFilesToCompileError(tsConfigPath);
       }
       const sf = f.createFile(B6PUri.fromFsPath(tsConfigPath), sharedRoot);
-      const compilerOptions = await this.getCompilerOptions(sf);
-      const sfUris = sfList.map((sf) => sf.uri());
-      const program = this.createProgram(
-        sfUris.map((uri) => uri.fsPath),
-        compilerOptions,
-        tsConfigPath
-      );
-      const emitResult = program.emit();
-      emittedFiles.push(...(emitResult.emittedFiles || []));
+      const { options: compilerOptions, declarationRootFiles } = await this.getProjectConfig(sf);
+      const sfPaths = sfList.map((sf) => sf.uri().fsPath);
+      const isGated = draftRootTsConfigPath === null || path.normalize(tsConfigPath) === draftRootTsConfigPath;
+      if (isGated) {
+        gatedProjectCompiled = true;
+        // Only the gated draft-root project needs declarations to type-check
+        // meaningfully; an empty set here means the check is effectively a
+        // syntax pass, which is exactly the regression this guards against.
+        if (declarationRootFiles.length === 0) {
+          this.ctx.logger.warn(
+            `No declaration files resolved from ${tsConfigPath} (include/files) — ` +
+              `platform globals may be unresolved and the type-check ineffective.`
+          );
+        }
+      }
 
-      const allDiagnostics = ts.getPreEmitDiagnostics(program).concat(emitResult.diagnostics);
-      // Contract: this step is an emit gate, not a type-audit gate. Push depends
-      // on emit succeeding, NOT on zero diagnostics — the consuming workspaces'
-      // CLAUDE.md documents that local declarations "are not guaranteed to
-      // produce a clean local build". So type diagnostics are ADVISORY (warn),
-      // while a genuine emit failure is FATAL: we throw so callers
+      const {
+        emittedFiles: projectEmitted,
+        diagnostics: allDiagnostics,
+        emitSkipped,
+      } = this.compileProject(tsConfigPath, sfPaths, declarationRootFiles, compilerOptions);
+      emittedFiles.push(...projectEmitted);
+
+      // Contract: this step is an emit gate, not a hard type-audit gate. A
+      // genuine emit failure is FATAL — we throw so callers
       // (ScriptRoot.compileDraftFolder → executePush) abort instead of pushing
-      // with missing JavaScript. The gate is enforced here because no caller
-      // inspects the returned file list for completeness.
-      if (emitResult.emitSkipped) {
+      // missing JavaScript. Type diagnostics do NOT block emit (the platform
+      // never type-checks — it runs the emitted JS on GraalVM, and local
+      // declarations may be incomplete). For the platform-compiled draft-root
+      // project they are NO LONGER silently advisory: the count is returned so
+      // the push reports loudly instead of claiming a clean success (ClickUp
+      // 86bbeb659). Client-bundle diagnostics stay advisory (logged, not gated).
+      if (emitSkipped) {
         throw new Err.CompilationError(
           `TypeScript emit was skipped for ${tsConfigPath}; no JavaScript was produced.` +
             (allDiagnostics.length > 0 ? "\n" + this.formatDiagnostics(allDiagnostics) : "")
         );
       } else if (allDiagnostics.length > 0) {
-        this.ctx.logger.warn(
-          `TypeScript reported ${allDiagnostics.length} diagnostic(s) during transpile ` +
-            `(advisory — emit succeeded):\n` +
-            this.formatDiagnostics(allDiagnostics)
-        );
+        if (isGated) {
+          gatedDiagnostics.push(...allDiagnostics);
+          this.ctx.logger.warn(
+            `TypeScript reported ${allDiagnostics.length} diagnostic(s) for ${tsConfigPath}:\n` +
+              this.formatDiagnostics(allDiagnostics)
+          );
+        } else {
+          this.ctx.logger.warn(
+            `TypeScript reported ${allDiagnostics.length} advisory diagnostic(s) for client bundle ` +
+              `${tsConfigPath} (not gated — client-side globals may be intentionally undeclared):\n` +
+              this.formatDiagnostics(allDiagnostics)
+          );
+        }
       } else {
-        this.ctx.prompt.info("TypeScript compiled successfully.");
+        this.ctx.logger.info(`TypeScript type-checked ${tsConfigPath} cleanly.`);
       }
     }
-    return emittedFiles;
+    return {
+      emittedFiles,
+      diagnosticCount: gatedProjectCompiled ? gatedDiagnostics.length : null,
+      diagnosticText: this.formatDiagnostics(gatedDiagnostics),
+    };
+  }
+
+  /**
+   * Build the `ts.Program` for one tsconfig project and emit it, returning the
+   * emitted files and the combined pre-emit + emit diagnostics.
+   *
+   * The declaration files come FIRST so the type-check resolves platform
+   * globals; ambient `.d.ts` emit nothing, so adding them changes only what is
+   * type-checked, not the emitted-file set (the invariant the regression test
+   * pins). The `Set` dedupes only exact string matches — declaration paths come
+   * from `ts.sys` (forward slashes) and `sfPaths` from `B6PUri` (native
+   * separators), so on Windows a `.d.ts` also under the draft tree may appear
+   * twice; harmless (TypeScript canonicalizes internally, and a `.d.ts` still
+   * emits nothing), just not deduped here.
+   * @lastreviewed null
+   */
+  private compileProject(
+    tsConfigPath: string,
+    sfPaths: string[],
+    declarationRootFiles: string[],
+    options: ts.CompilerOptions
+  ): { emittedFiles: string[]; diagnostics: ts.Diagnostic[]; emitSkipped: boolean } {
+    const rootFiles = Array.from(new Set([...declarationRootFiles, ...sfPaths]));
+    const program = this.createProgram(rootFiles, options, tsConfigPath);
+    const emitResult = program.emit();
+    const diagnostics = ts.getPreEmitDiagnostics(program).concat(emitResult.diagnostics);
+    return { emittedFiles: emitResult.emittedFiles ?? [], diagnostics, emitSkipped: emitResult.emitSkipped };
   }
 
   /**

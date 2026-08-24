@@ -11,7 +11,7 @@ import { B6PUri } from "../B6PUri";
 import { ScriptFile } from "./ScriptFile";
 import type { ScriptFolder } from "./ScriptFolder";
 import { ScriptNode } from "./ScriptNode";
-import { ScriptTranspiler } from "./ScriptTranspiler";
+import { ScriptTranspiler, type TranspileOutcome } from "./ScriptTranspiler";
 import { TsConfig } from "./TsConfig";
 import type { ScriptContext } from "./ScriptContext";
 
@@ -303,7 +303,7 @@ export class ScriptRoot {
    * @lastreviewed null
    */
   public async findStaleClientBundles(): Promise<{ bundle: string; buildFolder: string }[]> {
-    const draftRootTsConfigPath = path.normalize(this.getDraftFolder().uri().joinPath(TsConfig.NAME).fsPath);
+    const draftRootTsConfigPath = this.getDraftTsConfigPath();
     const bundles: { sourceRoot: string; buildFolder: string }[] = [];
     for (const tsConfig of await this.findTsConfigFiles()) {
       if (path.normalize(tsConfig.path()) === draftRootTsConfigPath) {
@@ -402,7 +402,7 @@ export class ScriptRoot {
     return stale;
   }
 
-  public async compileDraftFolder(): Promise<void> {
+  public async compileDraftFolder(): Promise<TranspileOutcome> {
     await this.deleteBuildFolder();
     const draftFolder = this.getDraftFolder();
     const allDraftFiles = await draftFolder.flatten();
@@ -420,12 +420,13 @@ export class ScriptRoot {
         await transpiler.addFile(file);
       }
     }
-    const emittedEntries = await transpiler.transpile(this);
-    this.ctx.logger.info(`Transpiled ${emittedEntries.length} TypeScript files.`);
-    this.ctx.logger.info(`Emitted Files: \n${emittedEntries.join("\n")}`);
-    const emittedScriptNodes = emittedEntries.map((e) => this.factory.createNode(B6PUri.fromFsPath(e), this));
+    const outcome = await transpiler.transpile(this);
+    this.ctx.logger.info(`Transpiled ${outcome.emittedFiles.length} TypeScript files.`);
+    this.ctx.logger.info(`Emitted Files: \n${outcome.emittedFiles.join("\n")}`);
+    const emittedScriptNodes = outcome.emittedFiles.map((e) => this.factory.createNode(B6PUri.fromFsPath(e), this));
     this.ctx.logger.info(`Emitted ScriptNodes: \n${emittedScriptNodes.map((n) => n.path()).join("\n")}`);
     await this.tidyMetadataFile();
+    return outcome;
   }
 
   private async tidyMetadataFile() {
@@ -440,6 +441,21 @@ export class ScriptRoot {
 
   public getDraftFolder() {
     return this.factory.createFolder(this.rootUri.joinPath(FolderNames.DRAFT), this);
+  }
+
+  /**
+   * The normalized absolute path of the draft-root `tsconfig.json` — the project
+   * that governs the platform-compiled `scripts/*.ts`. Single source of truth so
+   * that {@link findStaleClientBundles} (which EXCLUDES this project as
+   * platform-compiled) and {@link ScriptTranspiler.transpile} (which GATES the
+   * push on it) partition projects identically. A divergence would silently
+   * mis-gate — cf. the folder-marker regression that once killed
+   * {@link selectStaleBundles}. `joinPath` drops the draft folder's directory
+   * marker, so the result ends in `tsconfig.json` with no trailing separator.
+   * @lastreviewed null
+   */
+  public getDraftTsConfigPath(): string {
+    return path.normalize(this.getDraftFolder().uri().joinPath(TsConfig.NAME).fsPath);
   }
 
   public async getDraftBuildFolder() {
