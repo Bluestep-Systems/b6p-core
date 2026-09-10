@@ -1,122 +1,133 @@
-# AI Agent Guidelines
+# b6p-core — agent rules
 
-## Overview
-
-This repository is the **single-package library** `@bluestep-systems/b6p-core` — the vscode-free core
-shared by the `b6p` CLI and the VS Code extension (each in its own repo, depending on this package by
-version). The public API surface is [src/index.ts](src/index.ts); the headless orchestrator is
+Single-package library `@bluestep-systems/b6p-core`, published to public npm: the vscode-free core
+shared by the `b6p` CLI and the VS Code extension, each in its own repo depending on this package by
+version. Public API surface is [src/index.ts](src/index.ts); the headless orchestrator is
 [src/B6PCore.ts](src/B6PCore.ts).
 
-Hard constraints for this repo:
+## Hard constraints
 
-- **No `vscode` imports.** Platform behaviour is delegated to the provider interfaces in
-  [src/providers.ts](src/providers.ts). A `vscode` import breaks the CLI build and the package's purpose.
-- **New exported symbols MUST be added to `src/index.ts`.** That file defines what consumers can import.
-- **Never use `any`.** If it appears unavoidable, leave a `//HUMAN-REVIEW-NEEDED` comment explaining the
-  situation. If a human reviewer later accepts `any`, they add a `//REASON-FOR-ANY` comment.
+- **No `vscode` imports anywhere in `src/`.** Platform behaviour is delegated to the provider
+  interfaces in [src/providers.ts](src/providers.ts). A `vscode` import breaks the CLI build and the
+  package's reason for existing.
+- **A new exported symbol MUST be added to `src/index.ts`** — that file defines what consumers can
+  import.
+- **Never use `any`.** If it seems unavoidable, leave a `//HUMAN-REVIEW-NEEDED` comment explaining
+  why; a human who later accepts it adds `//REASON-FOR-ANY`.
+- **Keep types accurate** — update `src/types.ts` and function signatures when behaviour changes;
+  never rely on implied types.
+- **No `I` prefix on interfaces**: `FileSystem`, `Persistence`, `Prompt`, `Logger`, `Progress`,
+  `AuthProvider`, `LockDiagnoser` — not `IFileSystem`. A new provider under the old convention is a
+  rename-shaped merge conflict waiting to happen.
+- **Number formatting**: underscores for thousands (`1_000`, `10_000_000`).
 
-## Required Documentation Updates
+## Architecture rules
 
-When you change code, keep the docs in sync in the **same change**:
+`B6PCore` is a **composition root and implements none of the interfaces it hands out.** Consumers
+construct it with their `B6PProviders`; it owns the platform-facing singletons (auth, session,
+`OrgCache`, `ScriptMetaDataStore`) and assembles the subsystem services over them. The rules below
+are load-bearing rather than stylistic — each records something this repo undid once already.
 
-| File | Purpose | Update when |
-|------|---------|-------------|
-| `README.md` | User/consumer-facing docs | Public API, install, or usage changes |
-| `CLAUDE.md` | Developer/agent guide | Architecture, subsystem, or workflow changes |
-| `AGENTS.md` | AI agent rules (this file) | Conventions or process changes |
-| `CHANGELOG.md` | Version history | Any user-visible change, fix, or breaking change |
+- **New platform areas get their own service beside `script`, never flattened onto `B6PCore`.**
+  Script management is `core.script` (a `ScriptService`). What stays on `B6PCore` is only the
+  genuinely cross-cutting: `updateCredentials`, `clearSessions`, `clearSettings`, `clearAll`,
+  `report`, `getConfig`/`setConfig`, `checkForUpdates`, `dispose`.
+- **`PlatformContext` is the shared half of every subsystem's dependency bundle** (`fs`,
+  `sessionManager`, `logger`, `prompt`, `progress`, `isDebugMode()`); `ScriptContext` extends it with
+  what only the script tree reads. `B6PCore` builds the shared half once and spreads it, so adding a
+  provider is one edit rather than one per subsystem. A new subsystem extends `PlatformContext` too —
+  do not flatten its members into a per-subsystem interface.
+- **Do not restore `B6PCore implements ScriptContext`**, and every member of `ScriptContext` must
+  have a real reader under `src/script/`. While the clause held, the interface tracked the
+  orchestrator's growth instead of the tree's needs and grew two members no node read.
+- **The five raw providers (`fs`, `persistence`, `prompt`, `logger`, `progress`) are `private` and
+  must stay private.** TypeScript is structural, so dropping `implements` alone did nothing —
+  privacy is what actually severs the conformance, and it stops a subsystem reaching
+  `core.persistence` instead of receiving a bundle.
+- **`AuthParams` keeps its `readonly scheme` discriminant** — the same structural trap. An empty
+  base interface is the top object type, so `T extends AuthParams` would constrain nothing and
+  `AuthProvider<string>` would type-check. Do not "simplify" it to an empty marker; if you change
+  this or the rule above, re-check the other.
+- **The bearer token is a bootstrap, not a per-request credential.** `SessionManager.login()` is the
+  only caller of `AuthProvider.authHeaderValue()`: it sends the bearer once to `LOOKUP_TEST`, then
+  harvests the `JSESSIONID`/`INGRESSCOOKIE` cookies that carry every later request.
 
-**Never leave documentation outdated** — it is worse than no documentation. If uncertain, leave a
-`//HUMAN-REVIEW-NEEDED` note.
+Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
+CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
+snapshot history), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
+parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles).
 
-## Documentation Quality Standards
+## Commands
 
-- **Be specific**: include file paths, class names, and method signatures.
-- **Be actionable**: provide concrete examples.
-- **Be current**: remove outdated information when you change behaviour.
-- **Be consistent**: use the same terminology across all docs.
-
-## JSDoc Review Requirement
-
-All AI-generated or AI-modified JSDoc **MUST** include the `@lastreviewed null` flag. A human reviewer
-replaces `null` with the review date after verifying accuracy. Modifying an already-reviewed JSDoc
-block resets its tag to `null` — the old review date does not cover the new text.
-
-The rule is **partially enforced by CI** as a ratchet: `test/JsdocLastReviewed.test.js` (part of
-`npm test`) fails when any file gains **net-new untagged** JSDoc blocks beyond the tolerated count in
-`test/jsdoc-lastreviewed.baseline.json` (pre-rule blocks are grandfathered there; new files tolerate
-zero). Be precise about what that does and does not catch:
-
-- **Caught**: adding a JSDoc block without a well-formed `@lastreviewed null`/date tag.
-- **Not caught**: *modifying* an existing block — a rewritten block keeps its old count and, worse, a
-  stale review date. Resetting the date to `null` on modification is therefore a reviewer-diligence
-  duty, not something CI can verify.
-- **False positive**: moving an untagged (grandfathered) block between files reads as a new untagged
-  block in the destination file. Tag it in passing — cheaper than fighting the ratchet.
-
-When you tag previously-untagged blocks, tighten the ratchet with
-`node test/JsdocLastReviewed.test.js --update`. Never raise a baseline number to make the check pass —
-tag the JSDoc instead.
-
-```typescript
-/**
- * Processes user input and validates the data.
- * @param input The user input to process
- * @returns Processed and validated data
- * @lastreviewed null
- */
-function processInput(input: string): ProcessedData {
-  // implementation
-}
+```bash
+npm run compile       # build → dist/ with .d.ts declarations
+npm run watch         # incremental rebuild on change
+npm run check-types   # type-check only
+npm run format        # prettier --write (.prettierrc: 120 width, 2-space, semicolons, es5 commas)
+npm run format-check  # prettier --check — the style gate in CI
+npm test              # compile, then run every test/*.test.js in sequence
+npm run clean
 ```
 
-## Type Maintenance
+Run `npm run format` before committing. **Writing a test? Read [test/README.md](test/README.md)
+first** — there is no framework, a new file must be listed in `package.json` by hand or it silently
+never runs, and every spec has to pass on Windows and POSIX alike.
 
-Whenever making code changes, ensure all TypeScript types are accurate and up to date:
+**There is no linter**, deliberately: ESLint's five rules were all `warn`, so `npm run lint` exited 0
+no matter what. Correctness comes from `check-types` under `strict` + `noUnusedLocals` +
+`noUnusedParameters` + `noImplicitReturns` + `noFallthroughCasesInSwitch` + `noImplicitOverride`, all
+in `tsconfig.base.json` — strictness belongs there, and `tsconfig.json` carries only this package's
+output settings. Do not reintroduce a linter without wiring it to a **failing** exit code.
 
-- Update type definitions in `src/types.ts` as needed.
-- Ensure function signatures are correct **and not implied**.
-- Verify type imports reflect the current codebase.
+**`typescript` is an exact-pinned runtime `dependency` at 5.9.2**, not a devDependency: this library
+compiles TypeScript *while running* (a `push --snapshot` transpiles in-process), so it needs the
+compiler as a library, and the same version builds the package. Do not float the pin, do not add a
+second compiler, and read `b6p-cli/docs/adr/0002-typescript-version-strategy.md` before touching it —
+it records why TypeScript 7 cannot serve this role and what would have to change first.
 
-## Number Formatting
+## Documentation, in the same change
 
-Use underscores for thousands separators in numeric literals (e.g. `1_000`, `10_000_000`).
+| File | Update when |
+|------|-------------|
+| `README.md` | public API, install or usage changes |
+| `AGENTS.md` (this file) | architecture, subsystem, conventions or process changes |
+| `test/README.md` | how tests are written or run changes |
+| `CHANGELOG.md` | any user-visible change, fix, or breaking change |
 
-## Formatting
+`CLAUDE.md` is a one-line bridge to this file; do not put rules there. Outdated documentation is worse
+than none — if uncertain, leave a `//HUMAN-REVIEW-NEEDED` note.
 
-Prettier governs style (see `.prettierrc`): 120 print width, 2-space tabs, semicolons,
-`trailingComma: es5`. Run `npm run format` before committing.
+## JSDoc review tags
 
-## Branch, Commit, PR, and ClickUp Conventions
+All AI-generated or AI-modified JSDoc **must** carry `@lastreviewed null`; a human replaces `null`
+with the review date. Modifying an already-reviewed block resets its tag to `null` — the old date does
+not cover the new text.
 
-Substantive work is tracked by a ClickUp task; feedback-pipeline reports and their tracking tasks live
-in the **AI.List** list. The conventions below match this repo's history — follow them so ClickUp's
-GitHub integration can auto-link the work.
+`test/JsdocLastReviewed.test.js` enforces this as a **ratchet, and only half of it**: it fails when a
+file gains net-new *untagged* blocks beyond the tolerated count in
+`test/jsdoc-lastreviewed.baseline.json`. It **cannot catch a modified block** — a rewritten block
+keeps its old count and its stale review date, so resetting that date is reviewer diligence, not
+something CI verifies. Moving an untagged grandfathered block between files reads as new in the
+destination; tag it in passing rather than fighting the ratchet. After tagging previously-untagged
+blocks, tighten it with `node test/JsdocLastReviewed.test.js --update`. **Never raise a baseline
+number to make the check pass** — tag the JSDoc instead.
 
-- **Branches** carry the ClickUp task id with the `CU-` prefix: `CU-<taskid>` for a task-scoped branch,
-  or `<type>/<slug>-CU-<taskid>` when a descriptive slug helps (e.g.
-  `generic-refactor-and-updates-CU-86bbcwx7p`). The `CU-` spelling is what ClickUp's GitHub
-  integration matches — a bare id or another prefix does not auto-link.
-- **Commits** use conventional-commit style: `fix(scope):`, `feat:`, `test:`, `refactor:`, `chore:`,
-  `docs:`, and `release: vX.Y.Z — summary` for release commits. Reference the ClickUp task in the
-  subject or body as `(CU-<taskid>)`. AI-authored commits end with their agent's `Co-Authored-By`
-  trailer.
-- **PRs** target `master`. CI must pass — type-check, format-check, compile, and the full test suite on
-  Node 20 and 22. Expect automated review rounds (e.g. Copilot); address them as follow-up commits on
-  the same branch (`fix: address Copilot review on PR #N`). AI-generated PR bodies end with the
-  Claude Code attribution line.
-- **Feedback-pipeline lifecycle**: when a fix has actually shipped to users, comment on the reporting
-  ClickUp task and move it to **"check on 20"** — the bspecs side runs a live verification wave.
-  **Never close tasks directly**: a pass is closed by the resolution-note email flow (which also
-  notifies reporters); a fail comes back on the "rejected fix" lane with the failing check cited.
-- **Shipping chain**: this library reaches users only through its consumers. A core fix is "shipped"
+## Branch, commit, PR, ClickUp
+
+- **Branches** carry the ClickUp id with the `CU-` prefix: `CU-<taskid>` or
+  `<type>/<slug>-CU-<taskid>`. That exact spelling is what ClickUp's GitHub integration matches.
+- **Commits** are conventional (`fix(scope):`, `feat:`, `docs:`, `release: vX.Y.Z — summary`) and
+  reference the task as `(CU-<taskid>)`. AI-authored commits carry their `Co-Authored-By` trailer.
+- **PRs** target `master`. CI must pass — type-check, format-check, compile and the full suite on Node
+  20 and 22. Address automated review rounds as follow-up commits on the same branch.
+- **Feedback-pipeline lifecycle**: when a fix has actually shipped, comment on the reporting ClickUp
+  task and move it to **"check on 20"**. **Never close tasks directly** — a pass closes via the
+  resolution-note email flow, a fail returns on the "rejected fix" lane with the failing check cited.
+- **Shipping chain**: this library reaches users only through its consumers. A core fix is shipped
   once a b6p-core release lands **and** a consumer release (b6p-cli, vscode-extension) bundles it —
   not when the PR merges here.
-- **Line endings**: repo blobs are LF. On a CRLF checkout (Windows `autocrlf`), a local
-  `npm run format-check` false-fails on every file while CI passes — trust CI, or run the check from
-  an LF checkout. Do not commit a mass "reformat" for what is actually line-ending noise.
+- **Line endings**: repo blobs are LF. On a CRLF checkout a local `format-check` false-fails on every
+  file while CI passes — trust CI, and never commit a mass reformat for line-ending noise.
 
-## Overriding Guidelines
-
-In exceptional cases where a guideline is impractical, you may override it — but document the override
-with a `//HUMAN-REVIEW-NEEDED` comment explaining the reason and what a human must review.
+Where a guideline is genuinely impractical you may override it, with a `//HUMAN-REVIEW-NEEDED`
+comment saying why and what a human must check.
