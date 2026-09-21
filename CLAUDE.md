@@ -28,11 +28,10 @@ npm test              # Compile, then run every test/*.test.js in sequence
 npm run clean         # rm -rf dist
 ```
 
-There is **no linter**. ESLint was removed (see CHANGELOG): its five rules were all `warn`, so
-`npm run lint` exited 0 no matter what and gated nothing, and Prettier already covered the only rule
-that fired in practice. Style is enforced by `format-check`, correctness by `check-types` under
-`strict` + `noUnusedLocals` + `noUnusedParameters` + `noImplicitReturns` + `noFallthroughCasesInSwitch`
-+ `noImplicitOverride`. Do not reintroduce a linter without wiring it to a **failing** exit code.
+There is **no linter** — ESLint was removed; see CHANGELOG.md for why. Style is enforced by
+`format-check`, correctness by `check-types` under `strict` + `noUnusedLocals` + `noUnusedParameters` +
+`noImplicitReturns` + `noFallthroughCasesInSwitch` + `noImplicitOverride`. Do not reintroduce a linter
+without wiring it to a **failing** exit code.
 
 All of those live in `tsconfig.base.json` — strictness belongs there, and `tsconfig.json` carries only
 this package's output settings (`rootDir`, `outDir`, `declaration`, `declarationMap`, `types`).
@@ -96,24 +95,14 @@ load-bearing: it is what actually severs the conformance, and it stops a subsyst
 structural-vs-nominal trap documented for `AuthParams` above; if you change either, re-check the
 other.
 
-Key subsystems under `src/`:
-
-- **auth/** — `BearerAuthProvider`: the default `AuthProvider` implementation. Prompts for and stores
-  the opaque access token, and renders the `Authorization: Bearer <token>` header value. Core types
-  against `AuthProvider<AuthParams>`, so a consumer can inject a different scheme via
-  `B6PProviders.auth`.
-- **session/** — `SessionManager`: WebDAV login, CSRF tokens, cookie/session handling, request retry.
-- **network/** — `HttpClient`, response codes.
-- **script/** — `ScriptService` (the `core.script` command surface), the script tree
-  (`ScriptRoot`/`ScriptNode`/`ScriptFile`/`ScriptFolder`), `ScriptFactory`, `ScriptContext`,
-  transpilation, and snapshot history.
-- **persistence/** — `PseudoMap`/`TypedMap` abstractions, `Persistable`, serialization registry, and the
-  public/private persistence maps. Persistence is durable key/value supplied via `Persistence`.
-- **cache/** — `OrgCache`, `ScriptMetaDataStore`.
-- **data/** — pure utilities: URL/path parsers, glob matching, id utilities, org worker.
-- **constants/** — endpoints, auth types, MIME types, settings keys, etc.
-- **update/** — `UpdateService`: GitHub-releases-based update checking.
-- **testing/** — vscode-free test doubles (`MockFileSystem`).
+Key subsystems under `src/` (each a directory of the same name): `auth/` (`BearerAuthProvider`, the
+default `AuthProvider`; core types against `AuthProvider<AuthParams>` so a consumer can inject a
+different scheme via `B6PProviders.auth`), `session/` (`SessionManager`: WebDAV login, CSRF, cookies,
+retry), `network/` (`HttpClient`), `script/` (`ScriptService`, the script tree, `ScriptFactory`,
+`ScriptContext`, transpilation, snapshot history), `persistence/` (`PseudoMap`/`TypedMap`, `Persistable`,
+serialization registry), `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure utilities: URL/path
+parsers, glob matching, id utilities, org worker), `constants/`, `update/` (`UpdateService`), `testing/`
+(vscode-free test doubles, e.g. `MockFileSystem`).
 
 ### Authentication & Session flow
 
@@ -157,12 +146,10 @@ consumer on TypeScript 7 gets `5.9.2` nested under this package rather than hois
 
 The build compiler is invoked by explicit path (`node node_modules/typescript-7/bin/tsc`, wrapped as
 `npm run tsc7`) because both packages declare a `tsc` bin; npm gives `node_modules/.bin/tsc` to the
-real `typescript` (5.9). Bare `tsc` in a script would silently build with 5.9.
-
-What keeps `typescript` (not `typescript-7`) as the un-aliased name is the runtime import above: `src/`
-resolves the compiler API by the bare specifier, so the bare name must be the 5.9 pin. (A second
-constraint, `@typescript-eslint`'s `typescript >=4.8.4 <6.1.0` peer, disappeared when ESLint was
-removed — it was redundant with this one.)
+real `typescript` (5.9), the same bare specifier `src/`'s runtime import resolves — which is why
+`typescript` keeps the un-aliased name and `typescript-7` needs the explicit path. Bare `tsc` in a
+script would silently build with 5.9. (A second constraint, `@typescript-eslint`'s
+`typescript >=4.8.4 <6.1.0` peer, disappeared when ESLint was removed — it was redundant with this one.)
 
 ## Important Development Guidelines
 
