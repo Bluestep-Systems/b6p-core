@@ -29,12 +29,12 @@
 // a parser, metadata and GraphQL, so only the helper is tested here; the live run covers the rest.
 //
 // THE BUG (task 4): a snapshot push published whatever the compile left behind. When
-// `scripts/app.ts` compiled to no `.build/scripts/app.js`, or to a blank one (an app.ts with only
-// types emits 0 bytes), the push still went out and the runtime failed with
-// `NoSuchFileException .../scripts/app` or ran nothing.
+// `scripts/app.ts` compiled to no `.build/scripts/app.js`, or to one with no code (a blank or
+// types-only app.ts compiles to just a source-map comment and `export {};`), the push still went
+// out and the runtime failed with `NoSuchFileException .../scripts/app` or answered an empty 200.
 //
 // THE FIX: checkEmittedEntrypoint() looks at the compiled entrypoint before any upload, and
-// executePush stops with `pushed: false` when it is missing or blank.
+// executePush stops with `pushed: false` when it is missing or has no code.
 //
 // b6p-core has no test framework; this is a minimal, dependency-free node script (run via
 // `npm test`). It exercises the COMPILED classes from dist/ with a fake ScriptContext, so no
@@ -333,6 +333,37 @@ test("entrypoint: a blank compiled app.js → empty", async () => {
     const fs = entrypointFs({ [APP_TS]: "type X = 1;", [APP_JS]: blank });
     const check = await checkEmittedEntrypoint({ draftPath: DRAFT, buildFolderPath: BUILD, fs });
     assert.deepStrictEqual(check, { status: "empty", emittedPath: APP_JS }, JSON.stringify(blank));
+  }
+});
+
+// Measured on bkplayground (task 8): a blank app.ts and a types-only one compile to a source-map
+// comment (plus `export {};`), never to a blank file. Before this case, both went live and the
+// endpoint answered an empty 200.
+const SOURCE_MAP = "//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozfQ==";
+test("entrypoint: only comments, a source map and empty-module lines → empty", async () => {
+  const noCode = [
+    SOURCE_MAP,
+    `export {};\n${SOURCE_MAP}`,
+    `"use strict";\nObject.defineProperty(exports, "__esModule", { value: true });\n${SOURCE_MAP}`,
+    "/* header */\n// note\nexport {};\n",
+  ];
+  for (const js of noCode) {
+    const fs = entrypointFs({ [APP_TS]: "export type X = 1;", [APP_JS]: js });
+    const check = await checkEmittedEntrypoint({ draftPath: DRAFT, buildFolderPath: BUILD, fs });
+    assert.deepStrictEqual(check, { status: "empty", emittedPath: APP_JS }, JSON.stringify(js));
+  }
+});
+
+test("entrypoint: real code next to the source map and module lines → ok", async () => {
+  const withCode = [
+    `B.net.response.out("x");\n${SOURCE_MAP}`,
+    `export {};\nconst u = "http://x"; // url\n${SOURCE_MAP}`,
+    `"use strict";\nconsole.log(1);\n`,
+  ];
+  for (const js of withCode) {
+    const fs = entrypointFs({ [APP_TS]: "x", [APP_JS]: js });
+    const check = await checkEmittedEntrypoint({ draftPath: DRAFT, buildFolderPath: BUILD, fs });
+    assert.deepStrictEqual(check, { status: "ok", emittedPath: APP_JS }, JSON.stringify(js));
   }
 });
 

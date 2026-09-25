@@ -22,8 +22,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `app.js` went live with exit 0). A snapshot push now reads every `snapshot/` copy it wrote back
     by ETag, re-sends a mismatch once, and if one is still wrong stops before cleanup and history
     with `liveVerified: false`.
-  - A compile that left `<build>/scripts/app.js` missing or blank (an `app.ts` holding only types
-    emits 0 bytes) was published anyway. The push now stops before any upload with `pushed: false`.
+  - A compile that left `<build>/scripts/app.js` missing, or with no code, was published anyway. A
+    blank or types-only `app.ts` compiles to just a source-map comment (and `export {};`), which
+    went live as an empty `200`. The push now stops before any upload with `pushed: false`.
 - **Declining an overwrite no longer leaves a push half done** (ClickUp 86bbjennm). The overwrite
   prompt came per file, mid-upload, so the files before the declined one were already written. The
   push now checks every file first and asks once, listing them all, before anything is uploaded.
@@ -57,7 +58,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **`PushResult.liveVerified: boolean | null`, `liveMismatches: string[]` and
   `keptPlatformOnly: string[]`.** `liveVerified` is `null` when no read-back ran (plain push, early
-  abort). The fields are required, so a consumer that builds a `PushResult` itself (a test double)
+  abort). `keptPlatformOnly` also lists files kept because the delete prompt threw with no answer
+  (end of input, a dismissed dialog); such a throw no longer counts as a failed cleanup. The fields are required, so a consumer that builds a `PushResult` itself (a test double)
   must add them; code that only reads it is unaffected.
 - **`ConfirmOptions { destructive?, safeOption? }`**, an optional third argument to
   `Prompt.confirm`. Existing `Prompt` implementations still compile.

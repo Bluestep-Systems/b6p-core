@@ -277,6 +277,20 @@ test("cleanup prompt: --yes keeps the platform-only file, warns with the list, a
   assert.ok(!/answer|--yes|flag/i.test(prompt.warnings[0]), "how to confirm a delete is the consumer's to say");
 });
 
+// Measured on bkplayground (task 8): the CLI's prompt throws at end of input. That throw used to
+// land in cleanup's catch-all, so the kept file was reported as `keptPlatformOnly: []`.
+test("cleanup prompt: a prompt that throws (no answer) keeps the file and still reports it", async () => {
+  const prompt = recordingPrompt(() => {
+    throw new Error("No input available for prompt");
+  });
+  const { opts, deletes } = cleanupScenario(prompt);
+  const kept = await cleanupUnusedUpstairsPaths(opts);
+  assert.deepStrictEqual(deletes(), []);
+  assert.deepStrictEqual(kept, ["scripts/old.ts"]);
+  assert.strictEqual(prompt.warnings.length, 1);
+  assert.ok(prompt.warnings[0].includes(ORPHAN_URL), "the warning must list the file");
+});
+
 test("cleanup prompt: an explicit Yes still deletes, and nothing is reported as kept", async () => {
   const prompt = recordingPrompt(pick("Yes"));
   const { opts, deletes } = cleanupScenario(prompt);

@@ -1,5 +1,6 @@
 import * as path from "path";
 import { XMLParser } from "fast-xml-parser";
+import ts from "typescript";
 import { FileExtensions, FolderNames, Http, SpecialFiles } from "../constants";
 import { B6PUri } from "../B6PUri";
 import { GlobMatcher } from "../data/GlobMatcher";
@@ -144,7 +145,9 @@ export interface EmittedEntrypointCheck {
    * - `"no-source"` — the draft has no `scripts/app.ts` (a JS-only draft): nothing to check.
    * - `"ok"` — the compiled entrypoint exists and has content.
    * - `"missing"` — `scripts/app.ts` exists but the compile wrote no `scripts/app.js`.
-   * - `"empty"` — the compiled entrypoint is blank, e.g. an `app.ts` holding only types.
+   * - `"empty"` — the compiled entrypoint has no code: only comments (the inline source map
+   *   included) and the compiler's empty-module lines, e.g. from a blank `app.ts` or one holding
+   *   only types. The platform serves such a file as an empty `200`.
    * @lastreviewed null
    */
   status: "no-source" | "ok" | "missing" | "empty";
@@ -156,11 +159,43 @@ export interface EmittedEntrypointCheck {
 }
 
 /**
+ * Statements the compiler writes into a module with no code of its own: the ES module marker a
+ * types-only file compiles to, and the CommonJS preamble. Compared token by token, so spacing and
+ * comments don't matter.
+ * @lastreviewed null
+ */
+const EMPTY_MODULE_STATEMENTS = [
+  "export{};",
+  '"use strict";',
+  "'use strict';",
+  'Object.defineProperty(exports,"__esModule",{value:true});',
+];
+
+/**
+ * Whether compiled JavaScript has code beyond comments and {@link EMPTY_MODULE_STATEMENTS}. The
+ * compiler always appends an inline source map comment, so a blank `app.ts` never compiles to a
+ * blank file; the TypeScript scanner drops comments and whitespace as trivia.
+ * @param js The compiled file's text
+ * @lastreviewed null
+ */
+function hasCode(js: string): boolean {
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, js);
+  let tokens = "";
+  for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
+    tokens += scanner.getTokenText();
+  }
+  for (const statement of EMPTY_MODULE_STATEMENTS) {
+    tokens = tokens.split(statement).join("");
+  }
+  return tokens.length > 0;
+}
+
+/**
  * Pre-publish check for a snapshot push: after the compile, the entrypoint the platform runtime
  * loads must be there. The runtime resolves `scripts/app` to `<build folder>/scripts/app.js`; if
- * that file is missing or blank, publishing it breaks the live version (a missing one fails with
- * `NoSuchFileException .../scripts/app`), so the push must stop before any upload (ClickUp
- * 86bbqnrtp).
+ * that file is missing or has no code, publishing it breaks the live version (a missing one fails
+ * with `NoSuchFileException .../scripts/app`, one with no code answers an empty `200`), so the push
+ * must stop before any upload (ClickUp 86bbqnrtp).
  *
  * Only the entrypoint is checked. A helper module may legitimately compile to almost nothing, so
  * checking every emitted file would stop good pushes. The transpiler sets `rootDir` to the
@@ -187,7 +222,7 @@ export async function checkEmittedEntrypoint(opts: {
     return { status: "missing", emittedPath };
   }
   const text = Buffer.from(await fs.readFile(emittedUri)).toString("utf-8");
-  return { status: text.trim().length === 0 ? "empty" : "ok", emittedPath };
+  return { status: hasCode(text) ? "ok" : "empty", emittedPath };
 }
 
 /**
@@ -411,9 +446,10 @@ export async function executePush(opts: {
     const entrypoint = await checkEmittedEntrypoint({ draftPath, buildFolderPath, fs });
     if (entrypoint.status === "missing" || entrypoint.status === "empty") {
       prompt.error(
-        `Snapshot not published: the compiled entrypoint ${entrypoint.emittedPath} is ${entrypoint.status} ` +
-          `after compiling scripts/app.ts. The platform runs that file, so publishing it would break the ` +
-          `live version. Nothing was uploaded. Check the compile output and the draft ${TsConfig.NAME}.`
+        `Snapshot not published: the compiled entrypoint ${entrypoint.emittedPath} ` +
+          `${entrypoint.status === "missing" ? "is missing" : "has no code"} after compiling scripts/app.ts. ` +
+          `The platform runs that file, so publishing it would break the live version. Nothing was ` +
+          `uploaded. Check scripts/app.ts, the compile output and the draft ${TsConfig.NAME}.`
       );
       return {
         pushed: false,
@@ -575,8 +611,9 @@ export async function executePush(opts: {
 
 /**
  * Delete remote files that no longer have a local counterpart, after one confirmation listing
- * them. Anything but an explicit "Yes" keeps them all. Files matched by `.gitignore` are never
- * deleted. Failures are logged, never thrown: a push that uploaded fine is not failed by cleanup.
+ * them. Anything but an explicit "Yes" keeps them all, including a prompt that throws because it
+ * got no answer. Files matched by `.gitignore` are never deleted. Failures are logged, never
+ * thrown: a push that uploaded fine is not failed by cleanup.
  * @param opts.ctx Where requests, prompts and logs go
  * @param opts.targetUrl The script's WebDAV base URL, listed with `PROPFIND`
  * @param opts.draftPath The local draft folder to compare against
@@ -672,11 +709,18 @@ export async function cleanupUnusedUpstairsPaths(opts: {
     // platform files that may exist nowhere else (ClickUp 86bc2h3ef).
     const NO = "No";
     const YES = "Yes";
-    const answer = await prompt.confirm(
-      `The following ${pathsToDelete.length} upstairs path(s) no longer have local counterparts:\n\n${pathsToDelete.join("\n")}\n\nDelete them?`,
-      [NO, YES],
-      { destructive: true, safeOption: NO }
-    );
+    let answer: string | undefined;
+    try {
+      answer = await prompt.confirm(
+        `The following ${pathsToDelete.length} upstairs path(s) no longer have local counterparts:\n\n${pathsToDelete.join("\n")}\n\nDelete them?`,
+        [NO, YES],
+        { destructive: true, safeOption: NO }
+      );
+    } catch (e) {
+      // No answer at all (end of input, a dismissed dialog) is not a yes. The files stay, so they
+      // must be reported as kept, not lost in the catch below as a failed cleanup.
+      logger.warn(`Cleanup prompt got no answer: ${e instanceof Error ? e.message : e}`);
+    }
 
     if (answer !== YES) {
       // A warning, not info: consumers that quiet info (e.g. for machine-readable output) still
