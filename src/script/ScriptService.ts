@@ -394,13 +394,15 @@ export class ScriptService {
     // (the CLI's --yes), and this prompt authorizes overwriting locally-edited
     // files. An auto-supplied answer is not a human decision, so the default
     // must be the safe branch; syncing requires typing "Sync" (or clicking it).
+    // The ConfirmOptions say the same to implementations that read them.
     const SYNC = "Sync";
     const CANCEL = "Cancel";
     const response = await this.ctx.prompt.confirm(
       `Detected ${result.changedFiles.length} file(s) with differences:\n\n${result.changedFiles.join("\n")}\n\n` +
         `Sync local copy with the server? Locally-edited files in this list will be OVERWRITTEN ` +
         `with the platform copy.`,
-      [CANCEL, SYNC]
+      [CANCEL, SYNC],
+      { destructive: true, safeOption: CANCEL }
     );
 
     if (response !== SYNC) {

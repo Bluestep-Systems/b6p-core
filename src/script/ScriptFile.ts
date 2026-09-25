@@ -71,8 +71,24 @@ export class ScriptFile extends ScriptNode {
     const response = await this.ctx.sessionManager.fetch(ops?.upstairsOverride || (await this.upstairsUrl()), {
       method: Http.Methods.HEAD,
     });
-    const etagHeader = response.headers.get(Http.Headers.ETAG);
+    const etag = this.hashFromEtag(response.headers.get(Http.Headers.ETAG));
+    if (!etag) {
+      if (ops?.required) {
+        throw new Err.HashCalculationError();
+      }
+      return null;
+    }
+    return etag;
+  }
 
+  /**
+   * The SHA-512 content hash an ETag header carries, strong (`"<sha512>"`) or weak
+   * (`W/"<sha512>"`), lowercased. Numeric and other ETags carry no content hash.
+   * @param etagHeader The raw `ETag` header, if any
+   * @returns The hex hash, or `null` when the header has none
+   * @lastreviewed null
+   */
+  private hashFromEtag(etagHeader: string | null): string | null {
     let etag: string | null = null;
     if (ScriptFile.EtagPattern.test(etagHeader || "")) {
       etag = JSON.parse(etagHeader?.toLowerCase() || "null");
@@ -84,13 +100,7 @@ export class ScriptFile extends ScriptNode {
     } else {
       this.ctx.logger.debug("complex etagHeader:", etagHeader);
     }
-    if (!etag) {
-      if (ops?.required) {
-        throw new Err.HashCalculationError();
-      }
-      return null;
-    }
-    return etag.toLowerCase();
+    return etag ? etag.toLowerCase() : null;
   }
 
   public async getLastVerifiedHash(): Promise<string | null> {
@@ -141,6 +151,42 @@ export class ScriptFile extends ScriptNode {
 
   public async currentIntegrityMatches(ops?: { upstairsOverride?: URL }): Promise<boolean> {
     return (await this.currentIntegrityStatus(ops)) === "match";
+  }
+
+  /**
+   * Whether an upload would overwrite a platform-side version nobody here has seen, which is what
+   * the overwrite prompt guards. A file is at risk only when all of these hold:
+   *  - it isn't a snapshot or build-folder file (compiled output is always rewritten);
+   *  - the platform has a `draft/` copy (its `HEAD` isn't 404);
+   *  - that copy differs from the local bytes (writing the same bytes loses nothing);
+   *  - it differs from the last sync record, or there is no record (never pulled or pushed here).
+   *
+   * A copy served without a content hash can't be compared, so it counts as at risk. A missing
+   * sync record used to count as a platform change on its own, so every new file asked. Once the
+   * prompt's default became "Cancel", that would have stopped every auto-confirmed push (the CLI's
+   * `--yes`) that adds a file.
+   * @param upstairsOverride The file's `draft/` URL, when it differs from {@link upstairsUrl}
+   * @returns `"changed"` when the platform copy moved since the last sync here, `"unsynced"` when
+   *   the platform has a different copy and this machine never synced it, or `null` when nothing
+   *   is at risk
+   * @lastreviewed null
+   */
+  public async platformChangeAtRisk(upstairsOverride?: URL): Promise<"changed" | "unsynced" | null> {
+    if (this.isInSnapshot() || (await this.isInItsRespectiveBuildFolder())) {
+      return null;
+    }
+    const response = await this.ctx.sessionManager.fetch(upstairsOverride ?? (await this.upstairsUrl()), {
+      method: Http.Methods.HEAD,
+    });
+    if (response.status === ResponseCodes.NOT_FOUND) {
+      return null;
+    }
+    const upstairsHash = this.hashFromEtag(response.headers.get(Http.Headers.ETAG));
+    const lastHash = await this.getLastVerifiedHash();
+    if (upstairsHash !== null && (upstairsHash === (await this.getHash()) || upstairsHash === lastHash)) {
+      return null;
+    }
+    return lastHash ? "changed" : "unsynced";
   }
 
   public async oldIntegrityMatches(ops?: { upstairsOverride?: URL }): Promise<boolean> {
@@ -447,17 +493,32 @@ export class ScriptFile extends ScriptNode {
     const upstairsOverride = new URL(arg?.upstairsUrlOverrideString || (await this.upstairsUrl()).toString());
     const thisUpstairs = await this.upstairsUrl();
     upstairsOverride.pathname = thisUpstairs.pathname;
-    if (!this.isInSnapshot() && !(await this.isInItsRespectiveBuildFolder()) && !(await this.oldIntegrityMatches())) {
-      const OVERWRITE = "Overwrite";
+    const risk = await this.platformChangeAtRisk(upstairsOverride);
+    if (risk) {
+      // "Cancel" is FIRST: an empty answer and the CLI's --yes both take options[0], and this
+      // prompt authorizes overwriting someone's edit on the platform (ClickUp 86bc2h3ef).
       const CANCEL = "Cancel";
-      const overwrite = await this.ctx.prompt.confirm(
-        `The upstairs file (${upstairsOverride}) has changed since the last time you pushed or pulled. Do you wish to overwrite it?`,
-        [OVERWRITE, CANCEL]
+      const OVERWRITE = "Overwrite";
+      const relative = this.pathWithRespectToDraftRoot().split(path.sep).join("/");
+      const why =
+        risk === "changed"
+          ? `${relative} changed on the platform since the last push or pull from here.`
+          : `The platform has a different ${relative}, and this machine has never pulled or pushed it.`;
+      const answer = await this.ctx.prompt.confirm(
+        `${why} Overwrite the platform copy (${upstairsOverride}) with your local file?`,
+        [CANCEL, OVERWRITE],
+        { destructive: true, safeOption: CANCEL }
       );
-      if (overwrite !== OVERWRITE) {
-        await this.ctx.prompt.popup((arg?.isSnapshot ? "Snapshot" : "Push") + " cancelled by user.");
-        throw new Err.UserCancelledError(
-          `User ${overwrite ? overwrite + "ed" : "cancelled"} push due to upstairs file change`
+      if (answer !== OVERWRITE) {
+        const kind = arg?.isSnapshot ? "Snapshot push" : "Push";
+        await this.ctx.prompt.popup(`${kind} cancelled: ${relative} was not overwritten.`);
+        // The message is all a non-interactive caller sees, so it says what was kept and why.
+        // How to confirm an overwrite depends on the consumer (a flag, a button), so it is left to
+        // the consumer, which gets the files in `paths`.
+        throw new Err.OverwriteDeclinedError(
+          `${kind} stopped: ${relative} was not overwritten. ${why} Pull or audit it to see the ` +
+            `platform version before overwriting it.`,
+          [relative]
         );
       }
     }
@@ -475,7 +536,7 @@ export class ScriptFile extends ScriptNode {
     }
 
     const draftResp = await this.putTo(upstairsOverride);
-    // The sync record describes the draft/ copy (oldIntegrityMatches compares it with the draft/
+    // The sync record describes the draft/ copy (platformChangeAtRisk compares it with the draft/
     // ETag), so it is written as soon as that copy lands. Writing it only after the snapshot/ PUT
     // would make a failed snapshot write look like a platform-side edit on the next push.
     await this.touch();

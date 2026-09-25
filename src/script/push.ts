@@ -108,6 +108,14 @@ export interface PushResult {
    * @lastreviewed null
    */
   liveMismatches: string[];
+  /**
+   * Draft-relative paths (`/`-separated) of files that exist only on the platform and were kept
+   * because deleting them was not confirmed: declined, or answered with the safe default (an empty
+   * answer, or the CLI's `--yes`). Empty when there were none, when they were deleted, or when
+   * cleanup did not run.
+   * @lastreviewed null
+   */
+  keptPlatformOnly: string[];
 }
 
 /**
@@ -256,6 +264,7 @@ export async function executePush(opts: {
       typeCheckDiagnostics: null,
       liveVerified: null,
       liveMismatches: [],
+      keptPlatformOnly: [],
     };
   }
 
@@ -290,7 +299,14 @@ export async function executePush(opts: {
           `after compiling scripts/app.ts. The platform runs that file, so publishing it would break the ` +
           `live version. Nothing was uploaded. Check the compile output and the draft ${TsConfig.NAME}.`
       );
-      return { pushed: false, historyRecorded: false, typeCheckDiagnostics, liveVerified: null, liveMismatches: [] };
+      return {
+        pushed: false,
+        historyRecorded: false,
+        typeCheckDiagnostics,
+        liveVerified: null,
+        liveMismatches: [],
+        keptPlatformOnly: [],
+      };
     }
   }
 
@@ -313,7 +329,14 @@ export async function executePush(opts: {
 
   if (allFiles.length === 0) {
     prompt.info("No files to push — draft folder is empty.");
-    return { pushed: false, historyRecorded: false, typeCheckDiagnostics, liveVerified: null, liveMismatches: [] };
+    return {
+      pushed: false,
+      historyRecorded: false,
+      typeCheckDiagnostics,
+      liveVerified: null,
+      liveMismatches: [],
+      keptPlatformOnly: [],
+    };
   }
 
   // Files upload() actually wrote (a resolved Response); skipped files resolve with undefined.
@@ -368,6 +391,7 @@ export async function executePush(opts: {
         typeCheckDiagnostics,
         liveVerified: false,
         liveMismatches: live.mismatches,
+        keptPlatformOnly: [],
       };
     }
     liveVerified = true;
@@ -376,7 +400,7 @@ export async function executePush(opts: {
   // Cleanup: delete unused upstairs paths.
   const gitignorePatterns = await readGitIgnorePatterns(rootPath, fs);
   const gitignoreMatcher = new GlobMatcher(rootPath, gitignorePatterns);
-  await cleanupUnusedUpstairsPaths({
+  const keptPlatformOnly = await cleanupUnusedUpstairsPaths({
     ctx,
     targetUrl,
     draftPath,
@@ -419,18 +443,27 @@ export async function executePush(opts: {
     prompt.info(snapshot ? "Snapshot complete!" : "Push complete!");
   }
 
-  return { pushed: true, historyRecorded, typeCheckDiagnostics, liveVerified, liveMismatches: [] };
+  return { pushed: true, historyRecorded, typeCheckDiagnostics, liveVerified, liveMismatches: [], keptPlatformOnly };
 }
 
 /**
- * Delete remote files that no longer have a local counterpart.
+ * Delete remote files that no longer have a local counterpart, after one confirmation listing
+ * them. Anything but an explicit "Yes" keeps them all. Files matched by `.gitignore` are never
+ * deleted. Failures are logged, never thrown: a push that uploaded fine is not failed by cleanup.
+ * @param opts.ctx Where requests, prompts and logs go
+ * @param opts.targetUrl The script's WebDAV base URL, listed with `PROPFIND`
+ * @param opts.draftPath The local draft folder to compare against
+ * @param opts.gitignoreMatcher The script's `.gitignore` patterns
+ * @returns Draft-relative paths of the platform-only files it kept because deleting them was not
+ *   confirmed; empty when there were none, when they were deleted, or when cleanup failed
+ * @lastreviewed null
  */
-async function cleanupUnusedUpstairsPaths(opts: {
+export async function cleanupUnusedUpstairsPaths(opts: {
   ctx: ScriptContext;
   targetUrl: string;
   draftPath: string;
   gitignoreMatcher: GlobMatcher;
-}): Promise<void> {
+}): Promise<string[]> {
   const { ctx, targetUrl, draftPath, gitignoreMatcher } = opts;
   const { fs, prompt, logger, sessionManager } = ctx;
 
@@ -447,20 +480,21 @@ async function cleanupUnusedUpstairsPaths(opts: {
 
     if (!response.ok) {
       logger.warn(`PROPFIND failed during cleanup: ${response.status}`);
-      return;
+      return [];
     }
 
     const xml = await response.text();
     const parsed = parser.parse(xml);
     const responses = parsed?.["D:multistatus"]?.["D:response"];
     if (!responses?.filter) {
-      return;
+      return [];
     }
 
     const localFiles = await flattenDirectory(draftPath, fs);
     const localRelatives = new Set(localFiles.map((f) => path.relative(draftPath, f).split(path.sep).join("/")));
 
     const pathsToDelete: string[] = [];
+    const relativesToDelete: string[] = [];
 
     for (const entry of responses) {
       const href = entry["D:href"];
@@ -498,31 +532,44 @@ async function cleanupUnusedUpstairsPaths(opts: {
 
       if (!localRelatives.has(draftRelative)) {
         pathsToDelete.push(entryUrl.href);
+        relativesToDelete.push(draftRelative);
       }
     }
 
     if (pathsToDelete.length === 0) {
       logger.info("No unused upstairs paths to delete.");
-      return;
+      return [];
     }
 
-    const YES = "Yes";
+    // "No" is FIRST: an empty answer and the CLI's --yes both take options[0], and a yes deletes
+    // platform files that may exist nowhere else (ClickUp 86bc2h3ef).
     const NO = "No";
+    const YES = "Yes";
     const answer = await prompt.confirm(
       `The following ${pathsToDelete.length} upstairs path(s) no longer have local counterparts:\n\n${pathsToDelete.join("\n")}\n\nDelete them?`,
-      [YES, NO]
+      [NO, YES],
+      { destructive: true, safeOption: NO }
     );
 
     if (answer !== YES) {
-      prompt.info("User chose not to delete unused upstairs paths.");
-      return;
+      // A warning, not info: consumers that quiet info (e.g. for machine-readable output) still
+      // show warnings, and an auto-answered prompt was never shown to anyone. It says what was
+      // kept; how to confirm a delete is the consumer's to explain.
+      prompt.warn(
+        `Kept ${pathsToDelete.length} platform-only file(s): they are on the platform but not in your local ` +
+          `draft folder, and deleting them was not confirmed.\n\n${pathsToDelete.join("\n")}\n\n` +
+          `Pull them to get them locally.`
+      );
+      return relativesToDelete;
     }
 
     for (const url of pathsToDelete) {
       logger.info("Deleting unused upstairs path: " + url);
       await sessionManager.fetch(url, { method: Http.Methods.DELETE });
     }
+    return [];
   } catch (e) {
     logger.warn(`Cleanup failed: ${e instanceof Error ? e.message : e}`);
+    return [];
   }
 }

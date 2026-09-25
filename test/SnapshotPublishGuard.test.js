@@ -39,8 +39,8 @@
 // b6p-core has no test framework; this is a minimal, dependency-free node script (run via
 // `npm test`). It exercises the COMPILED classes from dist/ with a fake ScriptContext, so no
 // network or real filesystem is touched. The fake platform keeps the bytes each copy holds: a PUT
-// replaces them and a HEAD answers with their ETag. The predicates these tasks do not change (build-folder membership, the
-// old-integrity prompt check) are stubbed per instance.
+// replaces them and a HEAD answers with their ETag. The predicates these tasks do not change
+// (build-folder membership, the overwrite prompt check) are stubbed per instance.
 
 const path = require("path");
 const crypto = require("crypto");
@@ -151,7 +151,7 @@ function makeScenario(opts) {
   // Not under test here — see the header.
   file.upstairsUrl = async () => new URL(DRAFT_URL);
   file.isInItsRespectiveBuildFolder = async () => false;
-  file.oldIntegrityMatches = async () => true;
+  file.platformChangeAtRisk = async () => null;
   return { file, state, ctx };
 }
 
