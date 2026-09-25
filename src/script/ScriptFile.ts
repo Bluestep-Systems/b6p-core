@@ -425,6 +425,19 @@ export class ScriptFile extends ScriptNode {
     return snapshotUrl;
   }
 
+  /**
+   * Pushes this file to its `draft/` copy and, on a snapshot push, to its `snapshot/` copy too,
+   * unless {@link getReasonToNotPush} says to skip it. Asks before overwriting a `draft/` copy that
+   * changed on the platform since the last push or pull.
+   * @param arg.upstairsUrlOverrideString A URL whose host replaces the file's own (deploy targets)
+   * @param arg.isSnapshot Whether to publish to `snapshot/` as well
+   * @returns `undefined` when the file was skipped; otherwise the response of the last write. A
+   *   resolved `Response` means every copy the push targets was written and accepted: any refused
+   *   write throws. `executePush` reads it to pick the files the read-back verifies.
+   * @throws an {@link Err.FileSendError} when the platform refuses either write
+   * @throws an {@link Err.UserCancelledError} when the user declines the overwrite
+   * @lastreviewed null
+   */
   async upload(arg?: { upstairsUrlOverrideString?: string; isSnapshot?: boolean }): Promise<Response | void> {
     if (await this.isFolder()) {
       throw new Err.ScriptOperationError("somehow a folder got created to upload with this method. ");
@@ -461,18 +474,7 @@ export class ScriptFile extends ScriptNode {
       );
     }
 
-    const fileContents = await this.ctx.fs.readFile(B6PUri.fromFsPath(this.uri().fsPath));
-    const requestOptions = {
-      method: Http.Methods.PUT,
-      headers: {
-        [Http.Headers.CONTENT_TYPE]: MimeTypes.APPLICATION_JSON,
-      },
-      body: fileContents,
-    };
-    const draftResp = await this.ctx.sessionManager.fetch(upstairsOverride, requestOptions);
-    if (!draftResp.ok) {
-      throw new Err.FileSendError(await getDetails(draftResp, upstairsOverride));
-    }
+    const draftResp = await this.putTo(upstairsOverride);
     // The sync record describes the draft/ copy (oldIntegrityMatches compares it with the draft/
     // ETag), so it is written as soon as that copy lands. Writing it only after the snapshot/ PUT
     // would make a failed snapshot write look like a platform-side edit on the next push.
@@ -483,13 +485,33 @@ export class ScriptFile extends ScriptNode {
     }
     // A failed snapshot/ write leaves the previous version live, so it fails the push exactly like
     // a failed draft/ write. It used to be ignored and reported as success (ClickUp 86bbqnrtp).
-    const snapshotUrl = ScriptFile.snapshotUrl(upstairsOverride);
-    const snapshotResp = await this.ctx.sessionManager.fetch(snapshotUrl, requestOptions);
-    if (!snapshotResp.ok) {
-      throw new Err.FileSendError(await getDetails(snapshotResp, snapshotUrl));
-    }
+    const snapshotResp = await this.putTo(ScriptFile.snapshotUrl(upstairsOverride));
     this.ctx.logger.info("File sent successfully:", this.uri().fsPath);
     return snapshotResp;
+  }
+
+  /**
+   * PUTs the local bytes to one WebDAV location, with no prompt, skip check or sync record. It is
+   * the single write both copies of an upload go through, and what the post-publish read-back uses
+   * to re-send a `snapshot/` copy that came back wrong.
+   * @param target The WebDAV URL to write, e.g. a `draft/` URL or its {@link snapshotUrl}
+   * @returns The platform's response, always ok
+   * @throws an {@link Err.FileSendError} naming the URL and status when the platform refuses the write
+   * @lastreviewed null
+   */
+  public async putTo(target: URL): Promise<Response> {
+    const fileContents = await this.ctx.fs.readFile(B6PUri.fromFsPath(this.uri().fsPath));
+    const resp = await this.ctx.sessionManager.fetch(target, {
+      method: Http.Methods.PUT,
+      headers: {
+        [Http.Headers.CONTENT_TYPE]: MimeTypes.APPLICATION_JSON,
+      },
+      body: fileContents,
+    });
+    if (!resp.ok) {
+      throw new Err.FileSendError(await getDetails(resp, target));
+    }
+    return resp;
     async function getDetails(resp: Response, target: URL) {
       return `
   ========

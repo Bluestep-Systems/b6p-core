@@ -3,8 +3,8 @@ export { B6PCore } from "./B6PCore";
 export type { ReportResult } from "./B6PCore";
 export { B6PUri } from "./B6PUri";
 export { Err } from "./Err";
-export { executePush } from "./script/push";
-export type { PushResult } from "./script/push";
+export { executePush, verifyLiveSnapshot } from "./script/push";
+export type { LiveSnapshotCheck, PushResult } from "./script/push";
 export type { PlatformContext } from "./PlatformContext";
 
 // ─── Provider interfaces ─────────────────────────────────────────────

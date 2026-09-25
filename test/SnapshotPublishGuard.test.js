@@ -20,10 +20,18 @@
 // THE FIX: on a snapshot push a file is skipped only when both draft/ and snapshot/ match local.
 // The snapshot/ HEAD is made only when draft/ already matches. Plain pushes stay draft-only.
 //
+// THE BUG (task 3): the platform can accept a write (2xx) and still serve different bytes. An
+// empty or cut-off app.js answered 204 and went live as-is, so a clean upload proved nothing.
+//
+// THE FIX: verifyLiveSnapshot() HEADs every snapshot/ copy the push wrote and compares its ETag
+// with the local SHA-512. A mismatch is re-sent once and checked again; what is still wrong makes
+// executePush stop before cleanup and history with `liveVerified: false`. executePush itself needs
+// a parser, metadata and GraphQL, so only the helper is tested here; the live run covers the rest.
+//
 // b6p-core has no test framework; this is a minimal, dependency-free node script (run via
 // `npm test`). It exercises the COMPILED classes from dist/ with a fake ScriptContext, so no
-// network or real filesystem is touched. The fake session answers HEAD with the ETag of whatever
-// bytes each copy holds. The predicates these tasks do not change (build-folder membership, the
+// network or real filesystem is touched. The fake platform keeps the bytes each copy holds: a PUT
+// replaces them and a HEAD answers with their ETag. The predicates these tasks do not change (build-folder membership, the
 // old-integrity prompt check) are stubbed per instance.
 
 const path = require("path");
@@ -32,6 +40,7 @@ const assert = require("node:assert");
 const { ScriptFile } = require("../dist/script/ScriptFile.js");
 const { B6PUri } = require("../dist/B6PUri.js");
 const { Err } = require("../dist/Err.js");
+const { verifyLiveSnapshot } = require("../dist/script/push.js");
 
 let failures = 0;
 const tests = [];
@@ -58,13 +67,20 @@ function sha512(content) {
  * @param opts.draftContent     bytes the platform's draft/ copy holds (default: stale "old")
  * @param opts.snapshotContent  bytes the platform's snapshot/ copy holds (default: stale "old");
  *                              `null` means the copy doesn't exist (404, no ETag)
+ * @param opts.snapshotStores   what each accepted snapshot/ PUT keeps, in order, instead of the
+ *                              bytes sent (an empty or cut-off write); once used up, it keeps the
+ *                              bytes sent
+ * @param opts.snapshotHashless the snapshot/ HEAD answers with a numeric ETag (no content hash)
  */
 function makeScenario(opts) {
+  const initial = (content) => (content === undefined ? "old" : content);
   const state = {
     files: { [TARGET]: Buffer.from(LOCAL, "utf8") },
+    platform: { draft: initial(opts.draftContent), snapshot: initial(opts.snapshotContent) },
     requests: [],
     metadata: { pushPullRecords: [{ downstairsPath: TARGET, lastVerifiedHash: sha512("old") }] },
   };
+  const snapshotStores = [...(opts.snapshotStores || [])];
   const noop = () => {};
   const logger = { debug: noop, info: noop, warn: noop, error: noop };
   const fs = {
@@ -82,16 +98,22 @@ function makeScenario(opts) {
       const href = new URL(url).href;
       const method = init && init.method;
       state.requests.push({ method, url: href });
-      const isSnapshot = href.includes("/snapshot/");
+      const copy = href.includes("/snapshot/") ? "snapshot" : "draft";
       if (method === "HEAD") {
-        const content = isSnapshot ? opts.snapshotContent : opts.draftContent;
-        const held = content === undefined ? "old" : content;
-        return held === null
-          ? new Response(null, { status: 404 })
-          : new Response(null, { status: 200, headers: { ETag: `"${sha512(held)}"` } });
+        const held = state.platform[copy];
+        if (held === null) {
+          return new Response(null, { status: 404 });
+        }
+        const etag = copy === "snapshot" && opts.snapshotHashless ? '"1727000000000"' : `"${sha512(held)}"`;
+        return new Response(null, { status: 200, headers: { ETag: etag } });
       }
-      const status = isSnapshot ? opts.snapshotStatus : opts.draftStatus;
-      return new Response(status >= 400 ? "platform said no" : null, { status });
+      const status = copy === "snapshot" ? opts.snapshotStatus : opts.draftStatus;
+      if (status >= 400) {
+        return new Response("platform said no", { status });
+      }
+      const sent = Buffer.from(init.body).toString("utf8");
+      state.platform[copy] = copy === "snapshot" && snapshotStores.length > 0 ? snapshotStores.shift() : sent;
+      return new Response(null, { status });
     },
   };
   const prompt = {
@@ -122,7 +144,7 @@ function makeScenario(opts) {
   file.upstairsUrl = async () => new URL(DRAFT_URL);
   file.isInItsRespectiveBuildFolder = async () => false;
   file.oldIntegrityMatches = async () => true;
-  return { file, state };
+  return { file, state, ctx };
 }
 
 const recordedHash = (state) => state.metadata.pushPullRecords[0].lastVerifiedHash;
@@ -222,6 +244,54 @@ test("plain push: draft/ matches → skipped without looking at snapshot/", asyn
   assert.strictEqual(resp, undefined);
   assert.deepStrictEqual(heads(state), [DRAFT_URL.href]);
   assert.deepStrictEqual(puts(state), []);
+});
+
+test("read-back: live copy matches → nothing to report, nothing re-sent", async () => {
+  const { file, state, ctx } = makeScenario({ snapshotStatus: 201, snapshotContent: LOCAL });
+  const check = await verifyLiveSnapshot([file], ctx);
+  assert.deepStrictEqual(check, { mismatches: [], indeterminate: [] });
+  assert.deepStrictEqual(heads(state), [SNAPSHOT_URL]);
+  assert.deepStrictEqual(puts(state), []);
+});
+
+test("read-back: an empty live copy is re-sent once, and the retry fixes it", async () => {
+  const { file, state, ctx } = makeScenario({ snapshotStatus: 201, snapshotContent: "" });
+  const check = await verifyLiveSnapshot([file], ctx);
+  assert.deepStrictEqual(check, { mismatches: [], indeterminate: [] });
+  assert.deepStrictEqual(heads(state), [SNAPSHOT_URL, SNAPSHOT_URL]);
+  assert.deepStrictEqual(puts(state), [SNAPSHOT_URL]);
+  assert.strictEqual(state.platform.snapshot, LOCAL);
+});
+
+test("read-back: still wrong after the one retry → reported as a mismatch", async () => {
+  const { file, state, ctx } = makeScenario({ snapshotStatus: 201, snapshotContent: "", snapshotStores: [""] });
+  const check = await verifyLiveSnapshot([file], ctx);
+  assert.deepStrictEqual(check, { mismatches: ["scripts/app.ts"], indeterminate: [] });
+  assert.deepStrictEqual(puts(state), [SNAPSHOT_URL]);
+});
+
+test("read-back: a refused re-send leaves the file a mismatch instead of throwing", async () => {
+  const { file, state, ctx } = makeScenario({ snapshotStatus: 500, snapshotContent: "" });
+  const check = await verifyLiveSnapshot([file], ctx);
+  assert.deepStrictEqual(check, { mismatches: ["scripts/app.ts"], indeterminate: [] });
+  assert.deepStrictEqual(puts(state), [SNAPSHOT_URL]);
+});
+
+test("read-back: no content hash on the live copy → indeterminate, not a mismatch, nothing re-sent", async () => {
+  const { file, state, ctx } = makeScenario({ snapshotStatus: 201, snapshotContent: "", snapshotHashless: true });
+  const check = await verifyLiveSnapshot([file], ctx);
+  assert.deepStrictEqual(check, { mismatches: [], indeterminate: ["scripts/app.ts"] });
+  assert.deepStrictEqual(puts(state), []);
+});
+
+test("upload + read-back: the platform keeps an empty snapshot/ write (204) → caught and repaired", async () => {
+  const { file, state, ctx } = makeScenario({ draftStatus: 204, snapshotStatus: 204, snapshotStores: [""] });
+  assert.ok(await file.upload({ isSnapshot: true }), "upload() must report the write");
+  assert.strictEqual(state.platform.snapshot, "");
+  const check = await verifyLiveSnapshot([file], ctx);
+  assert.deepStrictEqual(check, { mismatches: [], indeterminate: [] });
+  assert.deepStrictEqual(puts(state), [DRAFT_URL.href, SNAPSHOT_URL, SNAPSHOT_URL]);
+  assert.strictEqual(state.platform.snapshot, LOCAL);
 });
 
 (async () => {

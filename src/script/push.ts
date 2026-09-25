@@ -9,7 +9,7 @@ import { SnapshotHistoryRecorder } from "./SnapshotHistoryRecorder";
 import type { ScriptContext } from "./ScriptContext";
 import type { FileSystem, ProgressTask } from "../providers";
 import { Err } from "../Err";
-import type { ScriptFile } from "./ScriptFile";
+import { ScriptFile } from "./ScriptFile";
 
 /**
  * Recursively collect all files under a directory.
@@ -87,6 +87,82 @@ export interface PushResult {
    * @lastreviewed null
    */
   typeCheckDiagnostics: number | null;
+  /**
+   * Whether the live (`snapshot/`) copy of every file this push wrote reads back identical to the
+   * local bytes (compared by ETag, the platform's SHA-512 of the content):
+   *  - `null` — no read-back ran: a plain push, or a push that aborted before uploading.
+   *  - `true` — no written file differs. Files skipped as already in sync count as verified, since
+   *    the skip rule compared both copies. Files the platform served without a content hash are
+   *    warned about but don't make this false.
+   *  - `false` — at least one file still differed after one re-upload; see `liveMismatches`. The
+   *    push stopped there: no cleanup ran and no history entry was recorded (`historyRecorded` is
+   *    false), so a consumer that already reads that field fails the run.
+   * @lastreviewed null
+   */
+  liveVerified: boolean | null;
+  /**
+   * Draft-relative paths (`/`-separated, e.g. `.build/scripts/app.js`) whose live copy failed the
+   * read-back. Empty unless `liveVerified` is false.
+   * @lastreviewed null
+   */
+  liveMismatches: string[];
+}
+
+/**
+ * Outcome of {@link verifyLiveSnapshot}. Paths are draft-relative and `/`-separated.
+ * @lastreviewed null
+ */
+export interface LiveSnapshotCheck {
+  /**
+   * Files whose `snapshot/` copy still differs from local after one re-upload.
+   * @lastreviewed null
+   */
+  mismatches: string[];
+  /**
+   * Files the platform served without a SHA-512 ETag, so neither match nor mismatch can be said.
+   * @lastreviewed null
+   */
+  indeterminate: string[];
+}
+
+/**
+ * Post-publish read-back for a snapshot push: `HEAD`s the `snapshot/` copy of each file the push
+ * wrote and compares its ETag with the local SHA-512. The platform can accept a write (2xx) and
+ * still serve different bytes, e.g. an empty or cut-off file, so a clean upload alone doesn't prove
+ * the live version is right (ClickUp 86bbqnrtp).
+ *
+ * A mismatch re-sends that file's `snapshot/` copy once and checks again. A re-send the platform
+ * refuses leaves the file a mismatch. Files are checked one at a time, in the order given.
+ * @param files The files this push wrote to `snapshot/`
+ * @param ctx Where the retries are logged
+ * @returns The files still mismatched, and the ones that could not be compared
+ * @lastreviewed null
+ */
+export async function verifyLiveSnapshot(
+  files: ScriptFile[],
+  ctx: Pick<ScriptContext, "logger">
+): Promise<LiveSnapshotCheck> {
+  const check: LiveSnapshotCheck = { mismatches: [], indeterminate: [] };
+  for (const file of files) {
+    const snapshotUrl = ScriptFile.snapshotUrl(await file.upstairsUrl());
+    const relative = file.pathWithRespectToDraftRoot().split(path.sep).join("/");
+    let status = await file.currentIntegrityStatus({ upstairsOverride: snapshotUrl });
+    if (status === "mismatch") {
+      ctx.logger.warn(`Live copy of ${relative} doesn't match what was pushed; sending it again: ${snapshotUrl}`);
+      try {
+        await file.putTo(snapshotUrl);
+        status = await file.currentIntegrityStatus({ upstairsOverride: snapshotUrl });
+      } catch (e) {
+        ctx.logger.warn(`Re-sending ${relative} failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+    if (status === "mismatch") {
+      check.mismatches.push(relative);
+    } else if (status === "indeterminate") {
+      check.indeterminate.push(relative);
+    }
+  }
+  return check;
 }
 
 /**
@@ -98,6 +174,10 @@ export interface PushResult {
  *  - snapshot dual-write (draft + snapshot)
  *  - metadata `lastVerifiedHash` updates via touch()
  *  - rich error wrapping
+ *
+ * A snapshot push then reads the live copies back ({@link verifyLiveSnapshot}). If any is still
+ * wrong, the push stops before cleanup and history and returns `liveVerified: false`.
+ * @lastreviewed null
  */
 export async function executePush(opts: {
   ctx: ScriptContext;
@@ -113,7 +193,13 @@ export async function executePush(opts: {
   const draftUri = B6PUri.fromFsPath(draftPath);
   if (!(await fs.exists(draftUri))) {
     prompt.error(`Draft folder not found: ${draftPath}`);
-    return { pushed: false, historyRecorded: false, typeCheckDiagnostics: null };
+    return {
+      pushed: false,
+      historyRecorded: false,
+      typeCheckDiagnostics: null,
+      liveVerified: null,
+      liveMismatches: [],
+    };
   }
 
   // Build a parser from the target URL so the ScriptRoot can resolve
@@ -159,15 +245,19 @@ export async function executePush(opts: {
 
   if (allFiles.length === 0) {
     prompt.info("No files to push — draft folder is empty.");
-    return { pushed: false, historyRecorded: false, typeCheckDiagnostics };
+    return { pushed: false, historyRecorded: false, typeCheckDiagnostics, liveVerified: null, liveMismatches: [] };
   }
 
+  // Files upload() actually wrote (a resolved Response); skipped files resolve with undefined.
+  const written: ScriptFile[] = [];
   const uploadTasks: ProgressTask<void>[] = allFiles.map((filePath) => ({
     execute: async () => {
       const fileUri = B6PUri.fromFsPath(filePath);
       const file = factory.createFile(fileUri, scriptRoot);
       try {
-        await file.upload({ isSnapshot: snapshot });
+        if (await file.upload({ isSnapshot: snapshot })) {
+          written.push(file);
+        }
       } catch (e) {
         if (e instanceof Err.UserCancelledError) {
           // Surface cancellation to the progress runner so it can stop the batch.
@@ -185,6 +275,35 @@ export async function executePush(opts: {
     showItemCount: true,
     cleanupMessage: "Cleaning up...",
   });
+
+  // A snapshot push is only done when the runtime serves what was pushed. If a live copy is still
+  // wrong, stop: deleting platform files or recording a restore point would build on a broken publish.
+  let liveVerified: boolean | null = null;
+  if (snapshot) {
+    const live = await verifyLiveSnapshot(written, ctx);
+    if (live.indeterminate.length > 0) {
+      prompt.warn(
+        `Could not verify the live copy of ${live.indeterminate.length} file(s): the platform served them ` +
+          `without a content hash (ETag).\n\n${live.indeterminate.join("\n")}`
+      );
+    }
+    if (live.mismatches.length > 0) {
+      prompt.error(
+        `The live (snapshot/) copy of ${live.mismatches.length} file(s) does not match what was pushed, ` +
+          `even after sending it again. The live version may be broken or out of date:\n\n` +
+          `${live.mismatches.join("\n")}\n\n` +
+          `No cleanup ran and no snapshot history was recorded. Run the snapshot push again.`
+      );
+      return {
+        pushed: true,
+        historyRecorded: false,
+        typeCheckDiagnostics,
+        liveVerified: false,
+        liveMismatches: live.mismatches,
+      };
+    }
+    liveVerified = true;
+  }
 
   // Cleanup: delete unused upstairs paths.
   const gitignorePatterns = await readGitIgnorePatterns(rootPath, fs);
@@ -232,7 +351,7 @@ export async function executePush(opts: {
     prompt.info(snapshot ? "Snapshot complete!" : "Push complete!");
   }
 
-  return { pushed: true, historyRecorded, typeCheckDiagnostics };
+  return { pushed: true, historyRecorded, typeCheckDiagnostics, liveVerified, liveMismatches: [] };
 }
 
 /**

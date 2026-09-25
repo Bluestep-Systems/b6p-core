@@ -33,7 +33,7 @@
   "src/script/ScriptService.ts": 2,
   "src/script/SnapshotHistoryRecorder.ts": 2,
   "src/script/TsConfig.ts": 1,
-  "src/script/push.ts": 4,
+  "src/script/push.ts": 3,
   "src/session/SessionManager.ts": 11,
   "src/testing/MockFileSystem.ts": 1,
   "src/testing/TestableFactory.ts": 7,
