@@ -94,12 +94,15 @@ export interface PushResult {
    * Whether the live (`snapshot/`) copy of every file this push wrote reads back identical to the
    * local bytes (compared by ETag, the platform's SHA-512 of the content):
    *  - `null` — no read-back ran: a plain push, or a push that aborted before uploading.
-   *  - `true` — no written file differs. Files skipped as already in sync count as verified, since
-   *    the skip rule compared both copies. Files the platform served without a content hash are
-   *    warned about but don't make this false.
-   *  - `false` — at least one file still differed after one re-upload; see `liveMismatches`. The
-   *    push stopped there: no cleanup ran and no history entry was recorded (`historyRecorded` is
-   *    false), so a consumer that already reads that field fails the run.
+   *    Also `null` when no copy was wrong but at least one was served without a content hash
+   *    (ETag), so it could not be compared: those files are named in a warning, and cleanup and
+   *    history still run.
+   *  - `true` — every written file reads back identical. Files skipped as already in sync count as
+   *    verified, since the skip rule compared both copies.
+   *  - `false` — at least one file was still different, missing (`404`) or unreadable (another
+   *    non-2xx) after one re-upload; see `liveMismatches`. The push stopped there: no cleanup ran
+   *    and no history entry was recorded (`historyRecorded` is false), so a consumer that already
+   *    reads that field fails the run.
    * @lastreviewed null
    */
   liveVerified: boolean | null;
@@ -125,12 +128,14 @@ export interface PushResult {
  */
 export interface LiveSnapshotCheck {
   /**
-   * Files whose `snapshot/` copy still differs from local after one re-upload.
+   * Files whose `snapshot/` copy still differs from local, is missing (`404`) or can't be read
+   * (another non-2xx) after one re-upload.
    * @lastreviewed null
    */
   mismatches: string[];
   /**
-   * Files the platform served without a SHA-512 ETag, so neither match nor mismatch can be said.
+   * Files the platform served (2xx) without a SHA-512 ETag, so neither match nor mismatch can be
+   * said.
    * @lastreviewed null
    */
   indeterminate: string[];
@@ -226,13 +231,24 @@ export async function checkEmittedEntrypoint(opts: {
 }
 
 /**
+ * How the read-back retry warning describes each failed status.
+ * @lastreviewed null
+ */
+const READ_BACK_PROBLEMS = {
+  mismatch: "doesn't match what was pushed",
+  missing: "is missing (404)",
+  unreadable: "could not be read back",
+} as const;
+
+/**
  * Post-publish read-back for a snapshot push: `HEAD`s the `snapshot/` copy of each file the push
  * wrote and compares its ETag with the local SHA-512. The platform can accept a write (2xx) and
  * still serve different bytes, e.g. an empty or cut-off file, so a clean upload alone doesn't prove
  * the live version is right (ClickUp 86bbqnrtp).
  *
- * A mismatch re-sends that file's `snapshot/` copy once and checks again. A re-send the platform
- * refuses leaves the file a mismatch. Files are checked one at a time, in the order given.
+ * A copy that differs, is missing (`404`) or can't be read (another non-2xx) is re-sent once and
+ * checked again; a re-send the platform refuses leaves it a mismatch. Only a 2xx without a content
+ * hash is indeterminate. Files are checked one at a time, in the order given.
  * @param files The files this push wrote to `snapshot/`
  * @param ctx Where the retries are logged
  * @returns The files still mismatched, and the ones that could not be compared
@@ -246,20 +262,20 @@ export async function verifyLiveSnapshot(
   for (const file of files) {
     const snapshotUrl = ScriptFile.snapshotUrl(await file.upstairsUrl());
     const relative = file.pathWithRespectToDraftRoot().split(path.sep).join("/");
-    let status = await file.currentIntegrityStatus({ upstairsOverride: snapshotUrl });
-    if (status === "mismatch") {
-      ctx.logger.warn(`Live copy of ${relative} doesn't match what was pushed; sending it again: ${snapshotUrl}`);
+    let status = await file.readBackStatus(snapshotUrl);
+    if (status === "mismatch" || status === "missing" || status === "unreadable") {
+      ctx.logger.warn(`Live copy of ${relative} ${READ_BACK_PROBLEMS[status]}; sending it again: ${snapshotUrl}`);
       try {
         await file.putTo(snapshotUrl);
-        status = await file.currentIntegrityStatus({ upstairsOverride: snapshotUrl });
+        status = await file.readBackStatus(snapshotUrl);
       } catch (e) {
         ctx.logger.warn(`Re-sending ${relative} failed: ${e instanceof Error ? e.message : e}`);
       }
     }
-    if (status === "mismatch") {
-      check.mismatches.push(relative);
-    } else if (status === "indeterminate") {
+    if (status === "indeterminate") {
       check.indeterminate.push(relative);
+    } else if (status !== "match") {
+      check.mismatches.push(relative);
     }
   }
   return check;
@@ -543,7 +559,8 @@ export async function executePush(opts: {
     }
     if (live.mismatches.length > 0) {
       prompt.error(
-        `The live (snapshot/) copy of ${live.mismatches.length} file(s) does not match what was pushed, ` +
+        `The live (snapshot/) copy of ${live.mismatches.length} file(s) is missing, unreadable or does not ` +
+          `match what was pushed, ` +
           `even after sending it again. The live version may be broken or out of date:\n\n` +
           `${live.mismatches.join("\n")}\n\n` +
           `No cleanup ran and no snapshot history was recorded. Run the snapshot push again.`
@@ -557,7 +574,8 @@ export async function executePush(opts: {
         keptPlatformOnly: [],
       };
     }
-    liveVerified = true;
+    // Nothing was wrong, but a copy served without a content hash was never compared.
+    liveVerified = live.indeterminate.length > 0 ? null : true;
   }
 
   // Cleanup: delete unused upstairs paths.

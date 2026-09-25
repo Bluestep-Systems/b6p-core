@@ -149,6 +149,34 @@ export class ScriptFile extends ScriptNode {
     return status;
   }
 
+  /**
+   * Reads back one platform copy a push just wrote. Unlike {@link currentIntegrityStatus}, it keeps
+   * the HTTP answer: a copy the platform doesn't serve (`404`) or can't answer for (any other
+   * non-2xx) is a failed read-back, not an unknown one, so the caller can re-send it and fail if it
+   * stays that way (ClickUp 86bbqnrtp). `SessionManager.fetch` returns those answers instead of
+   * throwing, and they carry no ETag, so treating them as "no content hash" let a missing live copy
+   * pass as verified.
+   * @param target The copy's URL, e.g. the {@link snapshotUrl} of this file's draft URL
+   * @returns `"match"` or `"mismatch"` by hash, `"missing"` on `404`, `"unreadable"` on any other
+   *   non-2xx, and `"indeterminate"` on a 2xx whose ETag carries no content hash
+   * @lastreviewed null
+   */
+  public async readBackStatus(target: URL): Promise<"match" | "mismatch" | "missing" | "unreadable" | "indeterminate"> {
+    const response = await this.ctx.sessionManager.fetch(target, { method: Http.Methods.HEAD });
+    if (response.status === ResponseCodes.NOT_FOUND) {
+      return "missing";
+    }
+    if (!response.ok) {
+      this.ctx.logger.debug("read-back of", target.href, "answered", response.status);
+      return "unreadable";
+    }
+    const upstairsHash = this.hashFromEtag(response.headers.get(Http.Headers.ETAG));
+    if (upstairsHash === null) {
+      return "indeterminate";
+    }
+    return upstairsHash === (await this.getHash()) ? "match" : "mismatch";
+  }
+
   public async currentIntegrityMatches(ops?: { upstairsOverride?: URL }): Promise<boolean> {
     return (await this.currentIntegrityStatus(ops)) === "match";
   }

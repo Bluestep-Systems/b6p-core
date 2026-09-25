@@ -81,8 +81,8 @@ given). Read `pushed` first: `false` means nothing was uploaded.
 | `pushed` | The upload ran. `false` when the draft folder is missing or empty, or a snapshot's compiled `scripts/app.js` is missing or has no code (only comments and empty-module lines, as from a blank or types-only `app.ts`) |
 | `historyRecorded` | A snapshot's history entry was recorded. `false` also when the push stopped early |
 | `typeCheckDiagnostics` | Snapshot type-check: `0` clean, `> 0` published with diagnostics, `null` no check ran |
-| `liveVerified` | Every `snapshot/` copy the push wrote reads back identical (by ETag). `null` when no read-back ran; `false` stops the push before cleanup and history |
-| `liveMismatches` | Draft-relative paths whose live copy was still wrong after one re-send |
+| `liveVerified` | `true`: every `snapshot/` copy the push wrote reads back identical (by ETag). `false`: one is still different, missing or unreadable after one re-send, and the push stops before cleanup and history. `null`: not proven either way (a plain push, an early stop, or a copy served without a content hash, named in a warning) |
+| `liveMismatches` | Draft-relative paths whose live copy was still different, missing or unreadable after one re-send |
 | `keptPlatformOnly` | Platform-only files kept because deleting them was not confirmed |
 
 A snapshot push checks the compiled entrypoint before uploading, fails on a refused `snapshot/`

@@ -17,11 +17,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     a platform-side edit.
   - After a failed `snapshot/` write, a re-push uploaded nothing: the skip check compared `draft/`
     only, which already held the new bytes. A snapshot push now skips a file only when **both**
-    copies match local, so re-pushing repairs a stale snapshot.
+    copies match local, so re-pushing repairs a stale snapshot. `ScriptRoot.getPushableNodes(true)`
+    follows the same rule.
   - The platform can accept a write (2xx) and still serve different bytes (an empty or cut-off
     `app.js` went live with exit 0). A snapshot push now reads every `snapshot/` copy it wrote back
     by ETag, re-sends a mismatch once, and if one is still wrong stops before cleanup and history
-    with `liveVerified: false`.
+    with `liveVerified: false`. A copy that is missing (`404`) or can't be read back (another
+    non-2xx) counts as wrong, not as unknown.
   - A compile that left `<build>/scripts/app.js` missing, or with no code, was published anyway. A
     blank or types-only `app.ts` compiles to just a source-map comment (and `export {};`), which
     went live as an empty `200`. The push now stops before any upload with `pushed: false`.
@@ -58,17 +60,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **`PushResult.liveVerified: boolean | null`, `liveMismatches: string[]` and
   `keptPlatformOnly: string[]`.** `liveVerified` is `null` when no read-back ran (plain push, early
-  abort). `keptPlatformOnly` also lists files kept because the delete prompt threw with no answer
-  (end of input, a dismissed dialog); such a throw no longer counts as a failed cleanup. The fields are required, so a consumer that builds a `PushResult` itself (a test double)
-  must add them; code that only reads it is unaffected.
+  abort), and also when a copy was served without a content hash, so `true` always means every
+  copy was compared. `keptPlatformOnly` also lists files kept because the delete prompt threw with
+  no answer (end of input, a dismissed dialog); such a throw no longer counts as a failed cleanup.
+  The fields are required, so a consumer that builds a `PushResult` itself (a test double) must add
+  them; code that only reads it is unaffected.
 - **`ConfirmOptions { destructive?, safeOption? }`**, an optional third argument to
   `Prompt.confirm`. Existing `Prompt` implementations still compile.
 - **`overwrite?: string[]` on `ScriptService.push` / `pushCurrent` / `executePush`**: draft-relative
   paths whose overwrite the caller confirms up front, so the push doesn't ask about them (e.g. from a
   consumer's flag, after the user approved the `paths` a declined push listed).
 - **`Err.OverwriteDeclinedError`** with `paths`.
-- On `ScriptFile`: `platformChangeAtRisk()`, `putTo(url)`, `static snapshotUrl(draftUrl)`, and an
-  `overwriteConfirmed` option on `upload()`.
+- On `ScriptFile`: `platformChangeAtRisk()`, `putTo(url)`, `readBackStatus(url)`,
+  `static snapshotUrl(draftUrl)`, and an `overwriteConfirmed` option on `upload()`.
 - Push helpers, exported for consumers and tests: `verifyLiveSnapshot` / `LiveSnapshotCheck`,
   `checkEmittedEntrypoint` / `EmittedEntrypointCheck`, `collectOverwriteCandidates` /
   `confirmOverwrites` / `OverwriteCandidate`, `cleanupUnusedUpstairsPaths`.

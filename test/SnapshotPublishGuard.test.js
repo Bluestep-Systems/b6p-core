@@ -46,6 +46,7 @@ const path = require("path");
 const crypto = require("crypto");
 const assert = require("node:assert");
 const { ScriptFile } = require("../dist/script/ScriptFile.js");
+const { ScriptRoot } = require("../dist/script/ScriptRoot.js");
 const { B6PUri } = require("../dist/B6PUri.js");
 const { Err } = require("../dist/Err.js");
 const { checkEmittedEntrypoint, verifyLiveSnapshot } = require("../dist/script/push.js");
@@ -76,9 +77,11 @@ function sha512(content) {
  * @param opts.snapshotContent  bytes the platform's snapshot/ copy holds (default: stale "old");
  *                              `null` means the copy doesn't exist (404, no ETag)
  * @param opts.snapshotStores   what each accepted snapshot/ PUT keeps, in order, instead of the
- *                              bytes sent (an empty or cut-off write); once used up, it keeps the
- *                              bytes sent
+ *                              bytes sent (an empty or cut-off write; `null` keeps nothing, so
+ *                              the copy stays missing); once used up, it keeps the bytes sent
  * @param opts.snapshotHashless the snapshot/ HEAD answers with a numeric ETag (no content hash)
+ * @param opts.snapshotHeadFailures statuses the snapshot/ HEADs answer with, in order, before
+ *                              answering normally (e.g. `[500]`: the first read-back fails)
  */
 function makeScenario(opts) {
   const initial = (content) => (content === undefined ? "old" : content);
@@ -89,6 +92,7 @@ function makeScenario(opts) {
     metadata: { pushPullRecords: [{ downstairsPath: TARGET, lastVerifiedHash: sha512("old") }] },
   };
   const snapshotStores = [...(opts.snapshotStores || [])];
+  const snapshotHeadFailures = [...(opts.snapshotHeadFailures || [])];
   const noop = () => {};
   const logger = { debug: noop, info: noop, warn: noop, error: noop };
   const fs = {
@@ -108,6 +112,9 @@ function makeScenario(opts) {
       state.requests.push({ method, url: href });
       const copy = href.includes("/snapshot/") ? "snapshot" : "draft";
       if (method === "HEAD") {
+        if (copy === "snapshot" && snapshotHeadFailures.length > 0) {
+          return new Response(null, { status: snapshotHeadFailures.shift() });
+        }
         const held = state.platform[copy];
         if (held === null) {
           return new Response(null, { status: 404 });
@@ -215,6 +222,29 @@ test("snapshot push: draft/ matches but snapshot/ is stale → uploads (a re-pus
   assert.deepStrictEqual(puts(state), [DRAFT_URL.href, SNAPSHOT_URL]);
 });
 
+// Review of PR #18: ScriptRoot.getPushableNodes(snapshot) asked the skip rule without the snapshot
+// flag, so it dropped a file whose snapshot/ copy was stale. Called on a stand-in root whose draft
+// folder flattens to one real ScriptFile.
+function pushableNodes(file, snapshot) {
+  const noop = () => {};
+  const root = {
+    ctx: { logger: { debug: noop, info: noop, warn: noop, error: noop } },
+    getDraftFolder: () => ({ flatten: async () => [file] }),
+  };
+  return ScriptRoot.prototype.getPushableNodes.call(root, snapshot);
+}
+
+test("getPushableNodes(snapshot): draft/ matches but snapshot/ is stale → the file is pushable", async () => {
+  const { file } = makeScenario({ draftContent: LOCAL });
+  assert.deepStrictEqual(await pushableNodes(file, true), [file]);
+});
+
+test("getPushableNodes(plain): draft/ matches → excluded, snapshot/ not consulted", async () => {
+  const { file, state } = makeScenario({ draftContent: LOCAL });
+  assert.deepStrictEqual(await pushableNodes(file, false), []);
+  assert.deepStrictEqual(heads(state), [DRAFT_URL.href]);
+});
+
 test("snapshot push: draft/ matches and snapshot/ is missing → uploads", async () => {
   const { file, state } = makeScenario({
     draftStatus: 204,
@@ -290,6 +320,44 @@ test("read-back: no content hash on the live copy → indeterminate, not a misma
   const check = await verifyLiveSnapshot([file], ctx);
   assert.deepStrictEqual(check, { mismatches: [], indeterminate: ["scripts/app.ts"] });
   assert.deepStrictEqual(puts(state), []);
+});
+
+// THE BUG (review of PR #18): SessionManager.fetch returns a 404 or 500 instead of throwing, and
+// neither carries an ETag, so the read-back called them "no content hash" (indeterminate) and the
+// push reported `liveVerified: true` over a live copy that was missing or never read.
+test("read-back: a missing live copy (404) is re-sent once, and the retry fixes it", async () => {
+  const { file, state, ctx } = makeScenario({ snapshotStatus: 201, snapshotContent: null });
+  const check = await verifyLiveSnapshot([file], ctx);
+  assert.deepStrictEqual(check, { mismatches: [], indeterminate: [] });
+  assert.deepStrictEqual(heads(state), [SNAPSHOT_URL, SNAPSHOT_URL]);
+  assert.deepStrictEqual(puts(state), [SNAPSHOT_URL]);
+  assert.strictEqual(state.platform.snapshot, LOCAL);
+});
+
+test("read-back: still missing after the re-send → a mismatch, not indeterminate", async () => {
+  const { file, state, ctx } = makeScenario({ snapshotStatus: 201, snapshotContent: null, snapshotStores: [null] });
+  const check = await verifyLiveSnapshot([file], ctx);
+  assert.deepStrictEqual(check, { mismatches: ["scripts/app.ts"], indeterminate: [] });
+  assert.deepStrictEqual(puts(state), [SNAPSHOT_URL]);
+});
+
+test("read-back: a read-back that fails (500) twice → re-sent once, then a mismatch", async () => {
+  const { file, state, ctx } = makeScenario({
+    snapshotStatus: 201,
+    snapshotContent: LOCAL,
+    snapshotHeadFailures: [500, 500],
+  });
+  const check = await verifyLiveSnapshot([file], ctx);
+  assert.deepStrictEqual(check, { mismatches: ["scripts/app.ts"], indeterminate: [] });
+  assert.deepStrictEqual(heads(state), [SNAPSHOT_URL, SNAPSHOT_URL]);
+  assert.deepStrictEqual(puts(state), [SNAPSHOT_URL]);
+});
+
+test("read-back: a read-back that fails (500) once → re-sent, and the second read matches", async () => {
+  const { file, state, ctx } = makeScenario({ snapshotStatus: 201, snapshotContent: LOCAL, snapshotHeadFailures: [500] });
+  const check = await verifyLiveSnapshot([file], ctx);
+  assert.deepStrictEqual(check, { mismatches: [], indeterminate: [] });
+  assert.deepStrictEqual(puts(state), [SNAPSHOT_URL]);
 });
 
 test("upload + read-back: the platform keeps an empty snapshot/ write (204) → caught and repaired", async () => {
