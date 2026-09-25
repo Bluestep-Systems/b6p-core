@@ -71,6 +71,49 @@ between the local filesystem and the platform over WebDAV:
 See [`src/index.ts`](src/index.ts) for the full set of exported classes, provider interfaces, data
 utilities, constants, and types.
 
+### Push results
+
+`push` / `pushCurrent` resolve to a [`PushResult`](src/script/push.ts) (or `null` when no target was
+given). Read `pushed` first: `false` means nothing was uploaded.
+
+| Field | Meaning |
+| --- | --- |
+| `pushed` | The upload ran. `false` when the draft folder is missing or empty, or a snapshot's compiled `scripts/app.js` is missing or has no code (only comments and empty-module lines, as from a blank or types-only `app.ts`) |
+| `historyRecorded` | A snapshot's history entry was recorded. `false` also when the push stopped early |
+| `typeCheckDiagnostics` | Snapshot type-check: `0` clean, `> 0` published with diagnostics, `null` no check ran |
+| `liveVerified` | `true`: every `snapshot/` copy the push wrote reads back identical (by ETag). `false`: one is still different, missing or unreadable after one re-send, and the push stops before cleanup and history. `null`: not proven either way (a plain push, an early stop, or a copy served without a content hash, named in a warning) |
+| `liveMismatches` | Draft-relative paths whose live copy was still different, missing or unreadable after one re-send |
+| `keptPlatformOnly` | Platform-only files kept because deleting them was not confirmed |
+
+A snapshot push checks the compiled entrypoint before uploading, fails on a refused `snapshot/`
+write, re-uploads a file whose `snapshot/` copy is stale even when `draft/` matches, and reads the
+live copies back afterwards.
+
+### Overwrites and destructive prompts
+
+Before uploading, a push asks **once** about every file whose upload would overwrite a platform
+version nobody here has seen: the platform has a `draft/` copy that differs from local and from the
+last push or pull here, or that was never synced here. New files and files already in sync never
+ask. Declining throws `Err.OverwriteDeclinedError` (a `UserCancelledError`) with the files in
+`paths`, before anything is written. To confirm without a prompt, pass their draft-relative paths:
+
+```typescript
+await core.script.push({ rootPath, overwrite: ["scripts/app.ts"] });
+```
+
+Every prompt that overwrites or deletes puts its **safe option first** and marks itself with the
+optional third argument of `Prompt.confirm`:
+
+```typescript
+confirm(message: string, options: string[], opts?: ConfirmOptions): Promise<string | undefined>;
+// ConfirmOptions { destructive?: boolean; safeOption?: string } — on a destructive prompt,
+// safeOption === options[0]
+```
+
+So a `Prompt` that answers `options[0]` without asking (an empty answer, an auto-confirm mode)
+declines. Core's messages say what was kept and why. How to confirm (a flag, a button, piped
+input) is the consumer's to explain.
+
 ## Development
 
 ```bash

@@ -487,7 +487,8 @@ export class ScriptRoot {
     const flattenedDraft = await this.getDraftFolder().flatten();
     const pushableNodes: ScriptNode[] = [];
     for (const f of flattenedDraft) {
-      const reason = await f.getReasonToNotPush();
+      // A snapshot push skips a file only when its snapshot/ copy matches too (ClickUp 86bbqnrtp).
+      const reason = await f.getReasonToNotPush({ isSnapshot: snapshot });
       if (reason) {
         this.ctx.logger.info(`Excluding draft file from push: ${f.path()} (${reason})`);
         continue;

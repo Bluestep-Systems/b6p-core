@@ -118,11 +118,20 @@ export class ScriptService {
 
   // ── Push / Pull ───────────────────────────────────────────────────
 
+  /**
+   * Pushes the script at `rootPath` to its target (asked for when `targetUrl` is missing).
+   * @param opts.overwrite Draft-relative paths whose overwrite the caller confirms up front, so
+   *   the push doesn't ask about them; see {@link executePush}
+   * @returns The push's outcome, or `null` when no target was given
+   * @throws an {@link Err.OverwriteDeclinedError} when an overwrite is not confirmed
+   * @lastreviewed null
+   */
   async push(opts: {
     targetUrl?: string;
     rootPath: string;
     snapshot?: boolean;
     message?: string;
+    overwrite?: string[];
   }): Promise<PushResult | null> {
     const targetUrl = opts.targetUrl ?? (await this.ctx.prompt.inputBox({ prompt: "Paste in the target formula URI" }));
     if (targetUrl === undefined) {
@@ -136,10 +145,16 @@ export class ScriptService {
       rootPath: opts.rootPath,
       snapshot: opts.snapshot ?? false,
       message: opts.message,
+      overwrite: opts.overwrite,
     });
   }
 
-  async pushCurrent(opts: { filePath: string; snapshot?: boolean; message?: string }): Promise<PushResult | null> {
+  async pushCurrent(opts: {
+    filePath: string;
+    snapshot?: boolean;
+    message?: string;
+    overwrite?: string[];
+  }): Promise<PushResult | null> {
     this.ctx.logger.info(`Push current for file: ${opts.filePath}`);
     const baseUrl = await this.deriveBaseUrl(opts.filePath);
     if (!baseUrl) {
@@ -156,6 +171,7 @@ export class ScriptService {
         rootPath: parser.getShavedName(),
         snapshot: opts.snapshot,
         message: opts.message,
+        overwrite: opts.overwrite,
       });
     }
     const parser = new DownstairsPathParser(opts.filePath);
@@ -164,6 +180,7 @@ export class ScriptService {
       rootPath: parser.getShavedName(),
       snapshot: opts.snapshot,
       message: opts.message,
+      overwrite: opts.overwrite,
     });
   }
 
@@ -394,13 +411,15 @@ export class ScriptService {
     // (the CLI's --yes), and this prompt authorizes overwriting locally-edited
     // files. An auto-supplied answer is not a human decision, so the default
     // must be the safe branch; syncing requires typing "Sync" (or clicking it).
+    // The ConfirmOptions say the same to implementations that read them.
     const SYNC = "Sync";
     const CANCEL = "Cancel";
     const response = await this.ctx.prompt.confirm(
       `Detected ${result.changedFiles.length} file(s) with differences:\n\n${result.changedFiles.join("\n")}\n\n` +
         `Sync local copy with the server? Locally-edited files in this list will be OVERWRITTEN ` +
         `with the platform copy.`,
-      [CANCEL, SYNC]
+      [CANCEL, SYNC],
+      { destructive: true, safeOption: CANCEL }
     );
 
     if (response !== SYNC) {

@@ -5,6 +5,78 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-25
+
+### Fixed
+
+- **A snapshot push no longer reports success while the previous version stays live.** Four gaps,
+  each measured on a test org (ClickUp 86bbqnrtp, 86bb94f3j):
+  - `ScriptFile.upload()` checked the `draft/` PUT but ignored the `snapshot/` PUT — the copy the
+    runtime serves. A refused snapshot write now throws `Err.FileSendError` naming the URL. The sync
+    record is written as soon as `draft/` lands, so the next push doesn't mistake that failure for
+    a platform-side edit.
+  - After a failed `snapshot/` write, a re-push uploaded nothing: the skip check compared `draft/`
+    only, which already held the new bytes. A snapshot push now skips a file only when **both**
+    copies match local, so re-pushing repairs a stale snapshot. `ScriptRoot.getPushableNodes(true)`
+    follows the same rule.
+  - The platform can accept a write (2xx) and still serve different bytes (an empty or cut-off
+    `app.js` went live with exit 0). A snapshot push now reads every `snapshot/` copy it wrote back
+    by ETag, re-sends a mismatch once, and if one is still wrong stops before cleanup and history
+    with `liveVerified: false`. A copy that is missing (`404`) or can't be read back (another
+    non-2xx) counts as wrong, not as unknown.
+  - A compile that left `<build>/scripts/app.js` missing, or with no code, was published anyway. A
+    blank or types-only `app.ts` compiles to just a source-map comment (and `export {};`), which
+    went live as an empty `200`. The push now stops before any upload with `pushed: false`.
+- **Declining an overwrite no longer leaves a push half done** (ClickUp 86bbjennm). The overwrite
+  prompt came per file, mid-upload, so the files before the declined one were already written. The
+  push now checks every file first and asks once, listing them all, before anything is uploaded.
+- **The overwrite prompt no longer fires when nothing is at risk.** A missing sync record counted as
+  a platform change on its own, so every new file, and every file never synced from this machine,
+  asked "the upstairs file has changed". It now asks only when the platform has a `draft/` copy that
+  differs from local and from the last sync here (or was never synced here). Files the push won't
+  upload (ignored, declarations, already in sync) are never asked about.
+
+### Changed
+
+- **Prompts that overwrite or delete now put the safe option first — an empty answer or the CLI's
+  `--yes` declines them** (ClickUp 86bc2h3ef). Implementations answer `options[0]` without a human
+  choice, and two prompts put the destructive option there, so `--yes` overwrote platform edits and
+  deleted platform-only files. Now: overwrite `[Cancel, Overwrite all]`, delete `[No, Yes]`
+  (audit-pull already had `[Cancel, Sync]`). **Behaviour change:** a caller that relied on `--yes`
+  or Enter to overwrite or delete now gets a declined push; overwriting takes an explicit answer or
+  the new `overwrite` option.
+- **Declines say what was kept and why, not how to go on.** A declined overwrite throws
+  `Err.OverwriteDeclinedError` (a `UserCancelledError`) naming the files, instead of
+  `User cancelled push due to upstairs file change`. Kept platform-only files are listed in a
+  `prompt.warn` (was `info`, which machine-readable modes hide). How to confirm is the consumer's to
+  say, so core's text names no flag or answer.
+- **Request cost.** The up-front overwrite check adds one `HEAD` per uploaded file and saves one
+  per file already in sync; a snapshot push adds one more per file (the `snapshot/` skip check or
+  the read-back). For 3 changed and 7 unchanged files: a plain push makes 16 `HEAD`s (0.7.0: 20), a
+  snapshot push 26 (0.7.0: 20). They run one at a time: `SessionManager` shares no login between
+  concurrent requests, and each response re-saves the session to disk.
+
+### Added
+
+- **`PushResult.liveVerified: boolean | null`, `liveMismatches: string[]` and
+  `keptPlatformOnly: string[]`.** `liveVerified` is `null` when no read-back ran (plain push, early
+  abort), and also when a copy was served without a content hash, so `true` always means every
+  copy was compared. `keptPlatformOnly` also lists files kept because the delete prompt threw with
+  no answer (end of input, a dismissed dialog); such a throw no longer counts as a failed cleanup.
+  The fields are required, so a consumer that builds a `PushResult` itself (a test double) must add
+  them; code that only reads it is unaffected.
+- **`ConfirmOptions { destructive?, safeOption? }`**, an optional third argument to
+  `Prompt.confirm`. Existing `Prompt` implementations still compile.
+- **`overwrite?: string[]` on `ScriptService.push` / `pushCurrent` / `executePush`**: draft-relative
+  paths whose overwrite the caller confirms up front, so the push doesn't ask about them (e.g. from a
+  consumer's flag, after the user approved the `paths` a declined push listed).
+- **`Err.OverwriteDeclinedError`** with `paths`.
+- On `ScriptFile`: `platformChangeAtRisk()`, `putTo(url)`, `readBackStatus(url)`,
+  `static snapshotUrl(draftUrl)`, and an `overwriteConfirmed` option on `upload()`.
+- Push helpers, exported for consumers and tests: `verifyLiveSnapshot` / `LiveSnapshotCheck`,
+  `checkEmittedEntrypoint` / `EmittedEntrypointCheck`, `collectOverwriteCandidates` /
+  `confirmOverwrites` / `OverwriteCandidate`, `cleanupUnusedUpstairsPaths`.
+
 ## [0.7.0] - 2026-08-24
 
 ### Fixed

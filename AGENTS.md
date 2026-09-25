@@ -51,6 +51,22 @@ are load-bearing rather than stylistic — each records something this repo undi
 - **The bearer token is a bootstrap, not a per-request credential.** `SessionManager.login()` is the
   only caller of `AuthProvider.authHeaderValue()`: it sends the bearer once to `LOOKUP_TEST`, then
   harvests the `JSESSIONID`/`INGRESSCOOKIE` cookies that carry every later request.
+- **A prompt that overwrites or deletes puts its safe option first and passes
+  `{ destructive: true, safeOption }`.** Prompt implementations answer `options[0]` on an empty
+  answer and under auto-confirm (the CLI's `--yes`); with the destructive option first, `--yes`
+  overwrote platform edits and deleted platform-only files (ClickUp `86bc2h3ef`). Ask only when
+  something is really at risk, too: a prompt that fires for safe cases becomes a wall once its
+  default declines.
+- **Core's messages say what happened and why, never how to respond.** No flag names, no option
+  labels to type, no stdin tricks: core doesn't know whether a CLI, an agent or VS Code is asking.
+  The consumer adds the "how"; give it structured data (e.g. `OverwriteDeclinedError.paths`,
+  `PushResult.keptPlatformOnly`) to build it from.
+- **Requests through `SessionManager` stay sequential.** `fetch()` shares no in-flight `login()`,
+  so N concurrent requests on an expired session log in N times. And every response re-saves the
+  session through `Persistence.setSecret()`: `SharedFilePersistence` re-encrypts `secrets.enc` and
+  atomically renames it into place each time, so a parallel burst is the write-then-rename pattern
+  `atomicWrite` documents as tripping Windows ransomware protection. Share one login per origin and
+  coalesce `save()` before parallelizing anything.
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,

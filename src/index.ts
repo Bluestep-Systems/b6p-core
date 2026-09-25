@@ -3,14 +3,22 @@ export { B6PCore } from "./B6PCore";
 export type { ReportResult } from "./B6PCore";
 export { B6PUri } from "./B6PUri";
 export { Err } from "./Err";
-export { executePush } from "./script/push";
-export type { PushResult } from "./script/push";
+export {
+  checkEmittedEntrypoint,
+  cleanupUnusedUpstairsPaths,
+  collectOverwriteCandidates,
+  confirmOverwrites,
+  executePush,
+  verifyLiveSnapshot,
+} from "./script/push";
+export type { EmittedEntrypointCheck, LiveSnapshotCheck, OverwriteCandidate, PushResult } from "./script/push";
 export type { PlatformContext } from "./PlatformContext";
 
 // ─── Provider interfaces ─────────────────────────────────────────────
 export type {
   AuthProvider,
   B6PProviders,
+  ConfirmOptions,
   FileStat,
   FileSystem,
   LockDiagnoser,

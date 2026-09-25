@@ -772,6 +772,26 @@ export namespace Err {
   }
 
   /**
+   * Thrown when a push stops because overwriting a platform-side change was not confirmed,
+   * including when it was declined without a human answer (an empty answer, or the CLI's `--yes`,
+   * which take the safe default). A {@link UserCancelledError}, so existing handlers still match.
+   * @lastreviewed null
+   */
+  export class OverwriteDeclinedError extends UserCancelledError {
+    /**
+     * Draft-relative, `/`-separated paths of the files that were not overwritten, for a consumer
+     * that reports them in machine-readable output.
+     * @lastreviewed null
+     */
+    readonly paths: string[];
+    constructor(message: string, paths: string[]) {
+      super(message);
+      this.name = "OverwriteDeclinedError";
+      this.paths = paths;
+    }
+  }
+
+  /**
    * Error thrown when BlueHq helper endpoint has any sort of problem.
    */
   export class BlueHqHelperEndpointError extends Error {

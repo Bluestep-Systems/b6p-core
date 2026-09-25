@@ -60,6 +60,30 @@ export interface Persistence {
 
 // ── User Interaction ────────────────────────────────────────────────
 
+/**
+ * What a {@link Prompt.confirm} call is about, beyond its text, so an implementation can treat a
+ * prompt that destroys data differently from one that doesn't, e.g. refuse to auto-answer it.
+ * Every member is optional: an implementation that ignores this argument still behaves safely,
+ * because of the ordering contract below.
+ * @lastreviewed null
+ */
+export interface ConfirmOptions {
+  /**
+   * `true` when an option overwrites or deletes something the user may not get back: a file on
+   * the platform, or a local edit. Core then always puts the safe option FIRST and names it in
+   * {@link safeOption}. Implementations answer with `options[0]` on an empty answer and under
+   * auto-confirm (the CLI's `--yes`), so the default declines. An auto-supplied answer is not a
+   * human decision to destroy data (ClickUp 86bc2h3ef).
+   * @lastreviewed null
+   */
+  destructive?: boolean;
+  /**
+   * The option that leaves everything as it is. On a destructive prompt it is always `options[0]`.
+   * @lastreviewed null
+   */
+  safeOption?: string;
+}
+
 export interface Prompt {
   /** Show an input box and return the entered string, or undefined if cancelled. */
   inputBox(options: { prompt: string; password?: boolean; value?: string }): Promise<string | undefined>;
@@ -67,8 +91,16 @@ export interface Prompt {
   /**
    * Prompt the user with a message and a set of options.
    * Returns the exact string of the selected option, or undefined if dismissed.
+   *
+   * Contract: `options[0]` is the default. For a prompt that overwrites or deletes, core puts the
+   * safe option there and passes `{ destructive: true, safeOption }` in `opts`, so answering
+   * `options[0]` without asking can never destroy data.
+   * @param message The question
+   * @param options The answers to offer, default first
+   * @param opts What the prompt is about; see {@link ConfirmOptions}
+   * @lastreviewed null
    */
-  confirm(message: string, options: string[]): Promise<string | undefined>;
+  confirm(message: string, options: string[], opts?: ConfirmOptions): Promise<string | undefined>;
 
   /** Informational message (non-blocking). */
   info(message: string): void;
