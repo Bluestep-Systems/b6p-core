@@ -1,6 +1,6 @@
 import * as path from "path";
 import { XMLParser } from "fast-xml-parser";
-import { FolderNames, Http, SpecialFiles } from "../constants";
+import { FileExtensions, FolderNames, Http, SpecialFiles } from "../constants";
 import { B6PUri } from "../B6PUri";
 import { GlobMatcher } from "../data/GlobMatcher";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
@@ -10,6 +10,7 @@ import type { ScriptContext } from "./ScriptContext";
 import type { FileSystem, ProgressTask } from "../providers";
 import { Err } from "../Err";
 import { ScriptFile } from "./ScriptFile";
+import { TsConfig } from "./TsConfig";
 
 /**
  * Recursively collect all files under a directory.
@@ -60,7 +61,8 @@ async function readGitIgnorePatterns(rootPath: string, fs: FileSystem): Promise<
 export interface PushResult {
   /**
    * True when the upload actually ran. False when the push aborted before
-   * uploading anything (draft folder missing, or empty) — a state a machine
+   * uploading anything (draft folder missing, or empty; or, on a snapshot push,
+   * the compiled `scripts/app.js` missing or blank) — a state a machine
    * consumer must not read as success.
    * @lastreviewed null
    */
@@ -123,6 +125,61 @@ export interface LiveSnapshotCheck {
    * @lastreviewed null
    */
   indeterminate: string[];
+}
+
+/**
+ * Outcome of {@link checkEmittedEntrypoint}.
+ * @lastreviewed null
+ */
+export interface EmittedEntrypointCheck {
+  /**
+   * - `"no-source"` — the draft has no `scripts/app.ts` (a JS-only draft): nothing to check.
+   * - `"ok"` — the compiled entrypoint exists and has content.
+   * - `"missing"` — `scripts/app.ts` exists but the compile wrote no `scripts/app.js`.
+   * - `"empty"` — the compiled entrypoint is blank, e.g. an `app.ts` holding only types.
+   * @lastreviewed null
+   */
+  status: "no-source" | "ok" | "missing" | "empty";
+  /**
+   * Absolute path of the compiled entrypoint the check looked for.
+   * @lastreviewed null
+   */
+  emittedPath: string;
+}
+
+/**
+ * Pre-publish check for a snapshot push: after the compile, the entrypoint the platform runtime
+ * loads must be there. The runtime resolves `scripts/app` to `<build folder>/scripts/app.js`; if
+ * that file is missing or blank, publishing it breaks the live version (a missing one fails with
+ * `NoSuchFileException .../scripts/app`), so the push must stop before any upload (ClickUp
+ * 86bbqnrtp).
+ *
+ * Only the entrypoint is checked. A helper module may legitimately compile to almost nothing, so
+ * checking every emitted file would stop good pushes. The transpiler sets `rootDir` to the
+ * tsconfig's folder, which is why `scripts/app.ts` always maps to `<build folder>/scripts/app.js`.
+ * @param opts.draftPath The draft folder
+ * @param opts.buildFolderPath The draft-root tsconfig's build folder ({@link ScriptRoot.getDraftBuildFolder})
+ * @param opts.fs The file system to read
+ * @returns What was found, and the path it looked at
+ * @lastreviewed null
+ */
+export async function checkEmittedEntrypoint(opts: {
+  draftPath: string;
+  buildFolderPath: string;
+  fs: FileSystem;
+}): Promise<EmittedEntrypointCheck> {
+  const { draftPath, buildFolderPath, fs } = opts;
+  const emittedPath = path.join(buildFolderPath, FolderNames.SCRIPTS, "app" + FileExtensions.JAVASCRIPT);
+  const sourceUri = B6PUri.fromFsPath(path.join(draftPath, FolderNames.SCRIPTS, "app" + FileExtensions.TYPESCRIPT));
+  if (!(await fs.exists(sourceUri))) {
+    return { status: "no-source", emittedPath };
+  }
+  const emittedUri = B6PUri.fromFsPath(emittedPath);
+  if (!(await fs.exists(emittedUri))) {
+    return { status: "missing", emittedPath };
+  }
+  const text = Buffer.from(await fs.readFile(emittedUri)).toString("utf-8");
+  return { status: text.trim().length === 0 ? "empty" : "ok", emittedPath };
 }
 
 /**
@@ -224,6 +281,17 @@ export async function executePush(opts: {
     const compileOutcome = await scriptRoot.compileDraftFolder();
     typeCheckDiagnostics = compileOutcome.diagnosticCount;
     typeCheckDetail = compileOutcome.diagnosticText;
+
+    const buildFolderPath = (await scriptRoot.getDraftBuildFolder()).uri().fsPath;
+    const entrypoint = await checkEmittedEntrypoint({ draftPath, buildFolderPath, fs });
+    if (entrypoint.status === "missing" || entrypoint.status === "empty") {
+      prompt.error(
+        `Snapshot not published: the compiled entrypoint ${entrypoint.emittedPath} is ${entrypoint.status} ` +
+          `after compiling scripts/app.ts. The platform runs that file, so publishing it would break the ` +
+          `live version. Nothing was uploaded. Check the compile output and the draft ${TsConfig.NAME}.`
+      );
+      return { pushed: false, historyRecorded: false, typeCheckDiagnostics, liveVerified: null, liveMismatches: [] };
+    }
   }
 
   // Push does NOT transpile client bundles (e.g. a MergeReport `static/script.ts`
