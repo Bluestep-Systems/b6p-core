@@ -336,14 +336,17 @@ export class ScriptFile extends ScriptNode {
     return newUrl;
   }
 
-  public async getReasonToNotPush(ops?: { upstairsOverride?: URL }): Promise<string | null> {
+  public async getReasonToNotPush(ops?: { upstairsOverride?: URL; isSnapshot?: boolean }): Promise<string | null> {
+    // The answer is cached for the life of this instance and ignores later `ops`. That is safe
+    // because executePush() builds one ScriptFile per file per push, so a draft-only answer from a
+    // plain push can never be served to a snapshot push, which also needs the snapshot/ check.
     if (this._reasonToNotPush !== undefined) {
       return this._reasonToNotPush;
     }
     return await this.setReasonToNotPush(ops);
   }
 
-  private async setReasonToNotPush(ops?: { upstairsOverride?: URL }): Promise<string | null> {
+  private async setReasonToNotPush(ops?: { upstairsOverride?: URL; isSnapshot?: boolean }): Promise<string | null> {
     if (this.parser.type === "root") {
       this._reasonToNotPush = "Node is the root folder";
     } else if (this.isInDeclarations()) {
@@ -352,12 +355,37 @@ export class ScriptFile extends ScriptNode {
       this._reasonToNotPush = "Node is in .git folder";
     } else if (await this.isInGitIgnore()) {
       this._reasonToNotPush = "Node is ignored by .gitignore";
-    } else if ((await this.isFile()) && (await this.currentIntegrityMatches(ops))) {
+    } else if ((await this.isFile()) && (await this.platformCopiesMatch(ops))) {
       this._reasonToNotPush = "File integrity matches";
     } else if (!this._reasonToNotPush) {
       this._reasonToNotPush = null;
     }
     return this._reasonToNotPush;
+  }
+
+  /**
+   * Whether the platform already holds this file's local bytes, so a push may skip it. A plain push
+   * checks the `draft/` copy. A snapshot push also checks the `snapshot/` copy the runtime serves,
+   * with one extra `HEAD` made only when `draft/` already matches.
+   *
+   * Checking `draft/` alone left a snapshot stuck: after a failed `snapshot/` write, `draft/` holds
+   * the new bytes, so every later snapshot push skipped the file and the old version stayed live
+   * (ClickUp 86bbqnrtp). An indeterminate `snapshot/` hash (a copy that doesn't exist yet answers
+   * with no ETag) counts as not matching, so the file is uploaded.
+   * @param ops.upstairsOverride The file's `draft/` URL, when it differs from {@link upstairsUrl}
+   * @param ops.isSnapshot Whether the push also publishes to `snapshot/`
+   * @returns `true` only when every copy the push would write already matches local
+   * @lastreviewed null
+   */
+  private async platformCopiesMatch(ops?: { upstairsOverride?: URL; isSnapshot?: boolean }): Promise<boolean> {
+    const draftUrl = ops?.upstairsOverride ?? (await this.upstairsUrl());
+    if (!(await this.currentIntegrityMatches({ upstairsOverride: draftUrl }))) {
+      return false;
+    }
+    if (!ops?.isSnapshot) {
+      return true;
+    }
+    return await this.currentIntegrityMatches({ upstairsOverride: ScriptFile.snapshotUrl(draftUrl) });
   }
 
   private isInGitFolder(): boolean {
@@ -420,7 +448,7 @@ export class ScriptFile extends ScriptNode {
         );
       }
     }
-    const reason = await this.getReasonToNotPush({ upstairsOverride });
+    const reason = await this.getReasonToNotPush({ upstairsOverride, isSnapshot: arg?.isSnapshot });
 
     if (reason) {
       this.ctx.logger.info(`${reason}; not pushing file:`, this.uri().fsPath);

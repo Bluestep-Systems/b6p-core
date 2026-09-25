@@ -12,11 +12,19 @@
 // oldIntegrityMatches() compares it with the draft/ ETag, so recording it late would make a
 // failed snapshot write look like a platform-side edit on the next push.
 //
+// THE BUG (task 2): getReasonToNotPush() skipped a file as "File integrity matches" when the draft/
+// copy matched, even on a snapshot push. After a failed snapshot/ write, draft/ already holds the
+// new bytes, so every later snapshot push skipped the file: zero PUTs, exit 0, and the old version
+// stayed live (the "stuck" case in the same validation file).
+//
+// THE FIX: on a snapshot push a file is skipped only when both draft/ and snapshot/ match local.
+// The snapshot/ HEAD is made only when draft/ already matches. Plain pushes stay draft-only.
+//
 // b6p-core has no test framework; this is a minimal, dependency-free node script (run via
 // `npm test`). It exercises the COMPILED classes from dist/ with a fake ScriptContext, so no
-// network or real filesystem is touched. The predicates this task does not change (build-folder
-// membership, the old-integrity prompt check, the skip reason) are stubbed per instance so each
-// test measures only the write order and the status checks.
+// network or real filesystem is touched. The fake session answers HEAD with the ETag of whatever
+// bytes each copy holds. The predicates these tasks do not change (build-folder membership, the
+// old-integrity prompt check) are stubbed per instance.
 
 const path = require("path");
 const crypto = require("crypto");
@@ -45,8 +53,11 @@ function sha512(content) {
 /**
  * Build a ScriptFile over an in-memory file map and a fake session that records every request.
  *
- * @param opts.draftStatus    status the draft/ PUT answers with
- * @param opts.snapshotStatus status the snapshot/ PUT answers with
+ * @param opts.draftStatus      status the draft/ PUT answers with
+ * @param opts.snapshotStatus   status the snapshot/ PUT answers with
+ * @param opts.draftContent     bytes the platform's draft/ copy holds (default: stale "old")
+ * @param opts.snapshotContent  bytes the platform's snapshot/ copy holds (default: stale "old");
+ *                              `null` means the copy doesn't exist (404, no ETag)
  */
 function makeScenario(opts) {
   const state = {
@@ -69,8 +80,16 @@ function makeScenario(opts) {
   const sessionManager = {
     fetch: async (url, init) => {
       const href = new URL(url).href;
-      state.requests.push({ method: init && init.method, url: href });
+      const method = init && init.method;
+      state.requests.push({ method, url: href });
       const isSnapshot = href.includes("/snapshot/");
+      if (method === "HEAD") {
+        const content = isSnapshot ? opts.snapshotContent : opts.draftContent;
+        const held = content === undefined ? "old" : content;
+        return held === null
+          ? new Response(null, { status: 404 })
+          : new Response(null, { status: 200, headers: { ETag: `"${sha512(held)}"` } });
+      }
       const status = isSnapshot ? opts.snapshotStatus : opts.draftStatus;
       return new Response(status >= 400 ? "platform said no" : null, { status });
     },
@@ -103,12 +122,12 @@ function makeScenario(opts) {
   file.upstairsUrl = async () => new URL(DRAFT_URL);
   file.isInItsRespectiveBuildFolder = async () => false;
   file.oldIntegrityMatches = async () => true;
-  file.getReasonToNotPush = async () => null;
   return { file, state };
 }
 
 const recordedHash = (state) => state.metadata.pushPullRecords[0].lastVerifiedHash;
 const puts = (state) => state.requests.filter((r) => r.method === "PUT").map((r) => r.url);
+const heads = (state) => state.requests.filter((r) => r.method === "HEAD").map((r) => r.url);
 
 test("snapshotUrl swaps the draft segment and leaves the input untouched", () => {
   const draft = new URL("https://target.bluestep.net/files/7/draft/.build/scripts/app.js?x=1");
@@ -156,6 +175,53 @@ test("a failed draft/ PUT throws, never reaches snapshot/, and leaves the sync r
   );
   assert.deepStrictEqual(puts(state), [DRAFT_URL.href]);
   assert.strictEqual(recordedHash(state), sha512("old"));
+});
+
+test("snapshot push: draft/ matches but snapshot/ is stale → uploads (a re-push repairs a stuck snapshot)", async () => {
+  const { file, state } = makeScenario({ draftStatus: 204, snapshotStatus: 201, draftContent: LOCAL });
+  const resp = await file.upload({ isSnapshot: true });
+  assert.strictEqual(resp.status, 201);
+  assert.deepStrictEqual(heads(state), [DRAFT_URL.href, SNAPSHOT_URL]);
+  assert.deepStrictEqual(puts(state), [DRAFT_URL.href, SNAPSHOT_URL]);
+});
+
+test("snapshot push: draft/ matches and snapshot/ is missing → uploads", async () => {
+  const { file, state } = makeScenario({
+    draftStatus: 204,
+    snapshotStatus: 201,
+    draftContent: LOCAL,
+    snapshotContent: null,
+  });
+  await file.upload({ isSnapshot: true });
+  assert.deepStrictEqual(puts(state), [DRAFT_URL.href, SNAPSHOT_URL]);
+});
+
+test("snapshot push: both copies match → skipped, no PUT", async () => {
+  const { file, state } = makeScenario({
+    draftStatus: 500,
+    snapshotStatus: 500,
+    draftContent: LOCAL,
+    snapshotContent: LOCAL,
+  });
+  const resp = await file.upload({ isSnapshot: true });
+  assert.strictEqual(resp, undefined);
+  assert.deepStrictEqual(heads(state), [DRAFT_URL.href, SNAPSHOT_URL]);
+  assert.deepStrictEqual(puts(state), []);
+});
+
+test("snapshot push: draft/ differs → uploads without the extra snapshot/ HEAD", async () => {
+  const { file, state } = makeScenario({ draftStatus: 204, snapshotStatus: 201, snapshotContent: LOCAL });
+  await file.upload({ isSnapshot: true });
+  assert.deepStrictEqual(heads(state), [DRAFT_URL.href]);
+  assert.deepStrictEqual(puts(state), [DRAFT_URL.href, SNAPSHOT_URL]);
+});
+
+test("plain push: draft/ matches → skipped without looking at snapshot/", async () => {
+  const { file, state } = makeScenario({ draftStatus: 500, snapshotStatus: 500, draftContent: LOCAL });
+  const resp = await file.upload({ isSnapshot: false });
+  assert.strictEqual(resp, undefined);
+  assert.deepStrictEqual(heads(state), [DRAFT_URL.href]);
+  assert.deepStrictEqual(puts(state), []);
 });
 
 (async () => {
