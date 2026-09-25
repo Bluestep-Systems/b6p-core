@@ -1,0 +1,176 @@
+// Regression tests for the snapshot publish guard (ClickUp 86bbqnrtp, closed together with
+// 86bb94f3j) — `b6p push --snapshot` reported success while the live version was missing,
+// empty, or stale.
+//
+// THE BUG (task 1): ScriptFile.upload() checked the draft/ PUT but never the snapshot/ PUT, so
+// a failed snapshot write — the copy the platform runtime actually reads — was reported as a
+// clean push while the previous version stayed live. Reproduced 2026-09-25 on bkplayground with
+// an injected 500 (`.claude/specs/close-wave-2026-09/validation-2026-09-25.md`, local).
+//
+// THE FIX: the snapshot/ PUT is checked like the draft/ one and throws FileSendError. The sync
+// record (touch) is written right after the draft/ PUT, because it describes the draft/ copy:
+// oldIntegrityMatches() compares it with the draft/ ETag, so recording it late would make a
+// failed snapshot write look like a platform-side edit on the next push.
+//
+// b6p-core has no test framework; this is a minimal, dependency-free node script (run via
+// `npm test`). It exercises the COMPILED classes from dist/ with a fake ScriptContext, so no
+// network or real filesystem is touched. The predicates this task does not change (build-folder
+// membership, the old-integrity prompt check, the skip reason) are stubbed per instance so each
+// test measures only the write order and the status checks.
+
+const path = require("path");
+const crypto = require("crypto");
+const assert = require("node:assert");
+const { ScriptFile } = require("../dist/script/ScriptFile.js");
+const { B6PUri } = require("../dist/B6PUri.js");
+const { Err } = require("../dist/Err.js");
+
+let failures = 0;
+const tests = [];
+function test(name, fn) {
+  tests.push({ name, fn });
+}
+
+const ROOT_PATH = path.join(path.parse(process.cwd()).root, "ws", "U100001", "MyScript");
+const FILE_PATH = path.join(ROOT_PATH, "draft", "scripts", "app.ts");
+const TARGET = B6PUri.fromFsPath(FILE_PATH).fsPath;
+const DRAFT_URL = new URL("https://org.bluestep.net/files/100001/draft/scripts/app.ts");
+const SNAPSHOT_URL = "https://org.bluestep.net/files/100001/snapshot/scripts/app.ts";
+const LOCAL = "export const version = 'new';\n";
+
+function sha512(content) {
+  return crypto.createHash("sha512").update(Buffer.from(content, "utf8")).digest("hex");
+}
+
+/**
+ * Build a ScriptFile over an in-memory file map and a fake session that records every request.
+ *
+ * @param opts.draftStatus    status the draft/ PUT answers with
+ * @param opts.snapshotStatus status the snapshot/ PUT answers with
+ */
+function makeScenario(opts) {
+  const state = {
+    files: { [TARGET]: Buffer.from(LOCAL, "utf8") },
+    requests: [],
+    metadata: { pushPullRecords: [{ downstairsPath: TARGET, lastVerifiedHash: sha512("old") }] },
+  };
+  const noop = () => {};
+  const logger = { debug: noop, info: noop, warn: noop, error: noop };
+  const fs = {
+    stat: async (uri) => {
+      const bytes = state.files[uri.fsPath];
+      if (bytes === undefined) {
+        throw new Error("ENOENT");
+      }
+      return { type: "file", mtime: 0, ctime: 0, size: bytes.length };
+    },
+    readFile: async (uri) => new Uint8Array(state.files[uri.fsPath]),
+  };
+  const sessionManager = {
+    fetch: async (url, init) => {
+      const href = new URL(url).href;
+      state.requests.push({ method: init && init.method, url: href });
+      const isSnapshot = href.includes("/snapshot/");
+      const status = isSnapshot ? opts.snapshotStatus : opts.draftStatus;
+      return new Response(status >= 400 ? "platform said no" : null, { status });
+    },
+  };
+  const prompt = {
+    confirm: async () => {
+      throw new Error("upload() must not prompt in these scenarios");
+    },
+    warn: noop,
+    info: noop,
+    error: noop,
+    popup: async () => {},
+  };
+  const ctx = { fs, sessionManager, logger, prompt, isDebugMode: () => false };
+  const scriptRoot = {
+    ctx,
+    factory: {},
+    getGitIgnore: async () => [],
+    getRootUri: () => B6PUri.fromFsPath(ROOT_PATH),
+    getBaseWebDavUrl: async () => new URL("https://org.bluestep.net/files/100001/"),
+    getMetaData: async () => state.metadata,
+    modifyMetaData: async (fn) => {
+      fn(state.metadata);
+      return state.metadata;
+    },
+    withParser: () => scriptRoot,
+  };
+  const file = new ScriptFile(B6PUri.fromFsPath(FILE_PATH), scriptRoot);
+  // Not under test here — see the header.
+  file.upstairsUrl = async () => new URL(DRAFT_URL);
+  file.isInItsRespectiveBuildFolder = async () => false;
+  file.oldIntegrityMatches = async () => true;
+  file.getReasonToNotPush = async () => null;
+  return { file, state };
+}
+
+const recordedHash = (state) => state.metadata.pushPullRecords[0].lastVerifiedHash;
+const puts = (state) => state.requests.filter((r) => r.method === "PUT").map((r) => r.url);
+
+test("snapshotUrl swaps the draft segment and leaves the input untouched", () => {
+  const draft = new URL("https://target.bluestep.net/files/7/draft/.build/scripts/app.js?x=1");
+  const snapshot = ScriptFile.snapshotUrl(draft);
+  assert.strictEqual(snapshot.href, "https://target.bluestep.net/files/7/snapshot/.build/scripts/app.js?x=1");
+  assert.strictEqual(draft.href, "https://target.bluestep.net/files/7/draft/.build/scripts/app.js?x=1");
+});
+
+test("snapshot push: a failed snapshot/ PUT throws FileSendError (it used to be reported as success)", async () => {
+  const { file, state } = makeScenario({ draftStatus: 204, snapshotStatus: 500 });
+  await assert.rejects(
+    () => file.upload({ isSnapshot: true }),
+    (e) => e instanceof Err.FileSendError && e.message.includes(SNAPSHOT_URL) && e.message.includes("500")
+  );
+  assert.deepStrictEqual(puts(state), [DRAFT_URL.href, SNAPSHOT_URL]);
+});
+
+test("snapshot push: the sync record is written once draft/ lands, even when snapshot/ then fails", async () => {
+  const { file, state } = makeScenario({ draftStatus: 204, snapshotStatus: 500 });
+  await assert.rejects(() => file.upload({ isSnapshot: true }), Err.FileSendError);
+  assert.strictEqual(recordedHash(state), sha512(LOCAL));
+});
+
+test("snapshot push: both writes succeed → resolves with the snapshot/ response and records the sync", async () => {
+  const { file, state } = makeScenario({ draftStatus: 204, snapshotStatus: 201 });
+  const resp = await file.upload({ isSnapshot: true });
+  assert.strictEqual(resp.status, 201);
+  assert.deepStrictEqual(puts(state), [DRAFT_URL.href, SNAPSHOT_URL]);
+  assert.strictEqual(recordedHash(state), sha512(LOCAL));
+});
+
+test("plain push: writes draft/ only", async () => {
+  const { file, state } = makeScenario({ draftStatus: 204, snapshotStatus: 500 });
+  const resp = await file.upload({ isSnapshot: false });
+  assert.strictEqual(resp.status, 204);
+  assert.deepStrictEqual(puts(state), [DRAFT_URL.href]);
+  assert.strictEqual(recordedHash(state), sha512(LOCAL));
+});
+
+test("a failed draft/ PUT throws, never reaches snapshot/, and leaves the sync record alone", async () => {
+  const { file, state } = makeScenario({ draftStatus: 500, snapshotStatus: 201 });
+  await assert.rejects(
+    () => file.upload({ isSnapshot: true }),
+    (e) => e instanceof Err.FileSendError && e.message.includes(DRAFT_URL.href)
+  );
+  assert.deepStrictEqual(puts(state), [DRAFT_URL.href]);
+  assert.strictEqual(recordedHash(state), sha512("old"));
+});
+
+(async () => {
+  for (const { name, fn } of tests) {
+    try {
+      await fn();
+      console.log("ok   -", name);
+    } catch (e) {
+      failures++;
+      console.error("FAIL -", name, "\n     ", e.message);
+    }
+  }
+  if (failures > 0) {
+    console.error(`\n${failures} test(s) failed.`);
+    process.exit(1);
+  }
+  console.log("\nAll SnapshotPublishGuard tests passed.");
+})();

@@ -382,6 +382,21 @@ export class ScriptFile extends ScriptNode {
     return !this.isTypescript();
   }
 
+  /**
+   * The `snapshot/` twin of a `draft/` WebDAV URL: where a snapshot push writes the same bytes, and
+   * what the platform runtime reads. Swaps the first `draft` in the pathname for `snapshot`, the
+   * same rule `upload()` has always used. The host (a deploy target override included) and the
+   * input URL are left untouched.
+   * @param draftUrl The file's `draft/` URL
+   * @returns A new URL for the file's `snapshot/` copy
+   * @lastreviewed null
+   */
+  public static snapshotUrl(draftUrl: URL): URL {
+    const snapshotUrl = new URL(draftUrl);
+    snapshotUrl.pathname = snapshotUrl.pathname.replace(new RegExp(FolderNames.DRAFT), FolderNames.SNAPSHOT);
+    return snapshotUrl;
+  }
+
   async upload(arg?: { upstairsUrlOverrideString?: string; isSnapshot?: boolean }): Promise<Response | void> {
     if (await this.isFolder()) {
       throw new Err.ScriptOperationError("somehow a folder got created to upload with this method. ");
@@ -412,6 +427,11 @@ export class ScriptFile extends ScriptNode {
       return;
     }
     this.ctx.logger.info("Destination:", upstairsOverride.toString());
+    if (arg?.isSnapshot && this.parser.type !== FolderNames.DRAFT) {
+      throw new Err.ScriptOperationError(
+        "This should never happen, this is here as a safetycheck and should be removed when we're confident."
+      );
+    }
 
     const fileContents = await this.ctx.fs.readFile(B6PUri.fromFsPath(this.uri().fsPath));
     const requestOptions = {
@@ -421,32 +441,32 @@ export class ScriptFile extends ScriptNode {
       },
       body: fileContents,
     };
-    let resp = await this.ctx.sessionManager.fetch(upstairsOverride, requestOptions);
-    if (!resp.ok) {
-      const details = await getDetails(resp);
-      throw new Err.FileSendError(details);
+    const draftResp = await this.ctx.sessionManager.fetch(upstairsOverride, requestOptions);
+    if (!draftResp.ok) {
+      throw new Err.FileSendError(await getDetails(draftResp, upstairsOverride));
     }
-    if (arg?.isSnapshot) {
-      if (this.parser.type !== FolderNames.DRAFT) {
-        throw new Err.ScriptOperationError(
-          "This should never happen, this is here as a safetycheck and should be removed when we're confident."
-        );
-      }
-      const snapshotOverride = new URL(upstairsOverride);
-      snapshotOverride.pathname = snapshotOverride.pathname.replace(
-        new RegExp(FolderNames.DRAFT),
-        FolderNames.SNAPSHOT
-      );
-
-      resp = await this.ctx.sessionManager.fetch(snapshotOverride, requestOptions);
-    }
+    // The sync record describes the draft/ copy (oldIntegrityMatches compares it with the draft/
+    // ETag), so it is written as soon as that copy lands. Writing it only after the snapshot/ PUT
+    // would make a failed snapshot write look like a platform-side edit on the next push.
     await this.touch();
+    if (!arg?.isSnapshot) {
+      this.ctx.logger.info("File sent successfully:", this.uri().fsPath);
+      return draftResp;
+    }
+    // A failed snapshot/ write leaves the previous version live, so it fails the push exactly like
+    // a failed draft/ write. It used to be ignored and reported as success (ClickUp 86bbqnrtp).
+    const snapshotUrl = ScriptFile.snapshotUrl(upstairsOverride);
+    const snapshotResp = await this.ctx.sessionManager.fetch(snapshotUrl, requestOptions);
+    if (!snapshotResp.ok) {
+      throw new Err.FileSendError(await getDetails(snapshotResp, snapshotUrl));
+    }
     this.ctx.logger.info("File sent successfully:", this.uri().fsPath);
-    return resp;
-    async function getDetails(resp: Response) {
+    return snapshotResp;
+    async function getDetails(resp: Response, target: URL) {
       return `
   ========
   ========
+  url: ${target}
   status: ${resp.status}
   statusText: ${resp.statusText}
   ========
