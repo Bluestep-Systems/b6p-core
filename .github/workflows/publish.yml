@@ -3,7 +3,8 @@
 # ============================================================================
 # Purpose: On a version tag (v*.*.*), validate then publish
 #          @bluestep-systems/b6p-core to the public npm registry with
-#          provenance.
+#          provenance, then create the tag's GitHub Release from its
+#          CHANGELOG.md block.
 #
 # Requires: an NPM_TOKEN repo secret (npm automation token with publish
 #           rights to the @bluestep-systems scope). Provenance additionally
@@ -86,3 +87,52 @@ jobs:
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # Up to v0.5.0 each Release was made by hand, which also created the tag. Later tags were pushed
+  # straight from git: npm got 0.6.0-0.7.0 while the Releases page stayed at v0.5.0 as "Latest".
+  release:
+    name: Create the GitHub Release
+    needs: publish  # Only for a version that is actually on npm.
+    runs-on: ubuntu-latest
+    # The only job that may write to the repo, and it installs nothing: the publish job keeps
+    # read-only contents while third-party install scripts run.
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Create the Release from the CHANGELOG block
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # A Release made by hand (e.g. `gh release create`, which also creates the tag) is kept.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG already exists; leaving it as is."
+            exit 0
+          fi
+          VERSION="${TAG#v}"
+          awk -v v="$VERSION" 'index($0, "## [" v "]") == 1 { on = 1; next } on && /^## \[/ { exit } on { print }' \
+            CHANGELOG.md | sed '/./,$!d' > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' block"
+            exit 1
+          fi
+          # Title: the first line of an annotated tag's message ("v0.8.0 — summary"); a lightweight
+          # tag has none, so it gets the bare tag name.
+          TITLE=""
+          if [ "$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" -q .object.type)" = "tag" ]; then
+            TAG_SHA="$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" -q .object.sha)"
+            TITLE="$(gh api "repos/$GH_REPO/git/tags/$TAG_SHA" -q .message | head -n 1)"
+          fi
+          [ -n "$TITLE" ] || TITLE="$TAG"
+          PRERELEASE=()
+          case "$VERSION" in *-*) PRERELEASE=(--prerelease) ;; esac
+          gh release create "$TAG" --verify-tag --title "$TITLE" --notes-file release-notes.md "${PRERELEASE[@]}"
+        shell: bash
