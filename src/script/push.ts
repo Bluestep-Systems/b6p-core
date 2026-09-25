@@ -231,6 +231,115 @@ export async function verifyLiveSnapshot(
 }
 
 /**
+ * A file whose upload would overwrite a platform version nobody here has seen.
+ * @lastreviewed null
+ */
+export interface OverwriteCandidate {
+  /**
+   * The file to upload.
+   * @lastreviewed null
+   */
+  file: ScriptFile;
+  /**
+   * Draft-relative, `/`-separated path, e.g. `scripts/app.ts`.
+   * @lastreviewed null
+   */
+  path: string;
+  /**
+   * Why it is at risk; see {@link ScriptFile.platformChangeAtRisk}.
+   * @lastreviewed null
+   */
+  risk: "changed" | "unsynced";
+}
+
+/**
+ * Finds the files of a push whose upload would overwrite a platform version nobody here has seen,
+ * by the rule in {@link ScriptFile.platformChangeAtRisk}. Files the push won't upload anyway
+ * (ignored, declarations, already in sync) are left out, so they are never asked about.
+ *
+ * Reads the platform one file at a time. The skip check it runs is cached on each file, so the
+ * upload that follows doesn't repeat it.
+ * @param files The push's files, the same instances the upload will use
+ * @param opts.isSnapshot Whether the push also publishes to `snapshot/`
+ * @returns The files at risk, in the order given
+ * @lastreviewed null
+ */
+export async function collectOverwriteCandidates(
+  files: ScriptFile[],
+  opts: { isSnapshot: boolean }
+): Promise<OverwriteCandidate[]> {
+  const candidates: OverwriteCandidate[] = [];
+  for (const file of files) {
+    if (await file.getReasonToNotPush({ isSnapshot: opts.isSnapshot })) {
+      continue;
+    }
+    const risk = await file.platformChangeAtRisk();
+    if (risk) {
+      candidates.push({ file, path: file.pathWithRespectToDraftRoot().split(path.sep).join("/"), risk });
+    }
+  }
+  return candidates;
+}
+
+/**
+ * The push's one overwrite confirmation (ClickUp 86bbjennm). Before anything is uploaded, it finds
+ * every file at risk ({@link collectOverwriteCandidates}) and asks once for all of them, so an
+ * answer, or the lack of one, can no longer leave a push half done. Files the caller already
+ * confirmed in `preConfirmed` are not asked about: that is how a consumer confirms without a
+ * prompt, e.g. from a flag.
+ * @param opts.files The push's files, the same instances the upload will use
+ * @param opts.ctx Where the prompt goes
+ * @param opts.isSnapshot Whether the push also publishes to `snapshot/`
+ * @param opts.preConfirmed Draft-relative paths (`/`- or `\`-separated) the caller confirms up front
+ * @returns The files whose overwrite is confirmed; `upload()` skips its own prompt for them
+ * @throws an {@link Err.OverwriteDeclinedError} listing the files, when the answer is anything but
+ *   "Overwrite all". Nothing has been uploaded at that point.
+ * @lastreviewed null
+ */
+export async function confirmOverwrites(opts: {
+  files: ScriptFile[];
+  ctx: Pick<ScriptContext, "prompt">;
+  isSnapshot: boolean;
+  preConfirmed?: string[];
+}): Promise<Set<ScriptFile>> {
+  const { prompt } = opts.ctx;
+  const preConfirmed = new Set((opts.preConfirmed ?? []).map((p) => p.replace(/\\/g, "/").replace(/^\.\//, "")));
+  const candidates = await collectOverwriteCandidates(opts.files, { isSnapshot: opts.isSnapshot });
+  const confirmed = new Set(candidates.filter((c) => preConfirmed.has(c.path)).map((c) => c.file));
+  const toAsk = candidates.filter((c) => !preConfirmed.has(c.path));
+  if (toAsk.length === 0) {
+    return confirmed;
+  }
+  const why = (c: OverwriteCandidate) =>
+    c.risk === "changed"
+      ? "changed on the platform since the last push or pull from here"
+      : "the platform has a different copy, never pulled or pushed from this machine";
+  const list = toAsk.map((c) => `${c.path} (${why(c)})`).join("\n");
+  // "Cancel" is FIRST: an empty answer and the CLI's --yes both take options[0] (ClickUp 86bc2h3ef).
+  const CANCEL = "Cancel";
+  const OVERWRITE_ALL = "Overwrite all";
+  const answer = await prompt.confirm(
+    `${toAsk.length} file(s) would overwrite a platform version nobody here has seen:\n\n${list}\n\n` +
+      `Nothing has been uploaded yet. Overwrite all of them with your local files?`,
+    [CANCEL, OVERWRITE_ALL],
+    { destructive: true, safeOption: CANCEL }
+  );
+  if (answer !== OVERWRITE_ALL) {
+    const kind = opts.isSnapshot ? "Snapshot push" : "Push";
+    await prompt.popup(`${kind} cancelled: nothing was uploaded.`);
+    // What was kept and why; how to confirm is the consumer's to say (it gets `paths`).
+    throw new Err.OverwriteDeclinedError(
+      `${kind} stopped before uploading anything: ${toAsk.length} file(s) were not overwritten, because ` +
+        `each would overwrite a platform version nobody here has seen:\n\n${list}\n\n` +
+        `Pull or audit them to see the platform versions before overwriting them.`,
+      toAsk.map((c) => c.path)
+    );
+  }
+  toAsk.forEach((c) => confirmed.add(c.file));
+  return confirmed;
+}
+
+/**
  * Core push implementation.
  *
  * Delegates the per-file work to {@link ScriptFile.upload}, which handles:
@@ -240,8 +349,14 @@ export async function verifyLiveSnapshot(
  *  - metadata `lastVerifiedHash` updates via touch()
  *  - rich error wrapping
  *
+ * Before any upload, one confirmation covers every file that would overwrite a platform version
+ * nobody here has seen ({@link confirmOverwrites}); declining stops the push with nothing written.
  * A snapshot push then reads the live copies back ({@link verifyLiveSnapshot}). If any is still
  * wrong, the push stops before cleanup and history and returns `liveVerified: false`.
+ * @param opts.overwrite Draft-relative paths whose overwrite the caller confirms up front, so the
+ *   push doesn't ask about them (e.g. a consumer's flag, after the user approved the files a
+ *   declined push listed). Other at-risk files still ask.
+ * @throws an {@link Err.OverwriteDeclinedError} when an overwrite is not confirmed
  * @lastreviewed null
  */
 export async function executePush(opts: {
@@ -250,8 +365,9 @@ export async function executePush(opts: {
   rootPath: string;
   snapshot: boolean;
   message?: string;
+  overwrite?: string[];
 }): Promise<PushResult> {
-  const { ctx, targetUrl, rootPath, snapshot, message } = opts;
+  const { ctx, targetUrl, rootPath, snapshot, message, overwrite } = opts;
   const { fs, prompt, logger, sessionManager, progress } = ctx;
   const draftPath = path.join(rootPath, FolderNames.DRAFT);
 
@@ -339,14 +455,25 @@ export async function executePush(opts: {
     };
   }
 
+  // One ScriptFile per file for the whole push: the confirmation pass and the upload share them,
+  // and with them each file's cached skip check.
+  const entries = allFiles.map((filePath) => ({
+    filePath,
+    file: factory.createFile(B6PUri.fromFsPath(filePath), scriptRoot),
+  }));
+  const confirmed = await confirmOverwrites({
+    files: entries.map((e) => e.file),
+    ctx,
+    isSnapshot: snapshot,
+    preConfirmed: overwrite,
+  });
+
   // Files upload() actually wrote (a resolved Response); skipped files resolve with undefined.
   const written: ScriptFile[] = [];
-  const uploadTasks: ProgressTask<void>[] = allFiles.map((filePath) => ({
+  const uploadTasks: ProgressTask<void>[] = entries.map(({ filePath, file }) => ({
     execute: async () => {
-      const fileUri = B6PUri.fromFsPath(filePath);
-      const file = factory.createFile(fileUri, scriptRoot);
       try {
-        if (await file.upload({ isSnapshot: snapshot })) {
+        if (await file.upload({ isSnapshot: snapshot, overwriteConfirmed: confirmed.has(file) })) {
           written.push(file);
         }
       } catch (e) {

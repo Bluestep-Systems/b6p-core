@@ -21,6 +21,7 @@ export class ScriptFolder extends ScriptNode {
   public override async upload(_arg?: {
     upstairsUrlOverrideString?: string;
     isSnapshot?: boolean;
+    overwriteConfirmed?: boolean;
   }): Promise<Response | void> {
     this.ctx.logger.info(`ScriptFolder.upload() called on ${this.path()}; no action taken.`);
     return;

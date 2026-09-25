@@ -477,6 +477,8 @@ export class ScriptFile extends ScriptNode {
    * changed on the platform since the last push or pull.
    * @param arg.upstairsUrlOverrideString A URL whose host replaces the file's own (deploy targets)
    * @param arg.isSnapshot Whether to publish to `snapshot/` as well
+   * @param arg.overwriteConfirmed The overwrite was already confirmed for this file (the push's one
+   *   up-front confirmation, or the caller's own list), so don't ask again
    * @returns `undefined` when the file was skipped; otherwise the response of the last write. A
    *   resolved `Response` means every copy the push targets was written and accepted: any refused
    *   write throws. `executePush` reads it to pick the files the read-back verifies.
@@ -484,7 +486,11 @@ export class ScriptFile extends ScriptNode {
    * @throws an {@link Err.UserCancelledError} when the user declines the overwrite
    * @lastreviewed null
    */
-  async upload(arg?: { upstairsUrlOverrideString?: string; isSnapshot?: boolean }): Promise<Response | void> {
+  async upload(arg?: {
+    upstairsUrlOverrideString?: string;
+    isSnapshot?: boolean;
+    overwriteConfirmed?: boolean;
+  }): Promise<Response | void> {
     if (await this.isFolder()) {
       throw new Err.ScriptOperationError("somehow a folder got created to upload with this method. ");
     }
@@ -493,7 +499,17 @@ export class ScriptFile extends ScriptNode {
     const upstairsOverride = new URL(arg?.upstairsUrlOverrideString || (await this.upstairsUrl()).toString());
     const thisUpstairs = await this.upstairsUrl();
     upstairsOverride.pathname = thisUpstairs.pathname;
-    const risk = await this.platformChangeAtRisk(upstairsOverride);
+    // Skip check first: a file that won't be uploaded (ignored, declarations, already in sync) is
+    // never asked about.
+    const reason = await this.getReasonToNotPush({ upstairsOverride, isSnapshot: arg?.isSnapshot });
+
+    if (reason) {
+      this.ctx.logger.info(`${reason}; not pushing file:`, this.uri().fsPath);
+      return;
+    }
+    // Without a prior confirmation this is the fallback: a file that became at risk after the
+    // push's up-front check (a platform edit landing mid-push) still asks here.
+    const risk = arg?.overwriteConfirmed ? null : await this.platformChangeAtRisk(upstairsOverride);
     if (risk) {
       // "Cancel" is FIRST: an empty answer and the CLI's --yes both take options[0], and this
       // prompt authorizes overwriting someone's edit on the platform (ClickUp 86bc2h3ef).
@@ -521,12 +537,6 @@ export class ScriptFile extends ScriptNode {
           [relative]
         );
       }
-    }
-    const reason = await this.getReasonToNotPush({ upstairsOverride, isSnapshot: arg?.isSnapshot });
-
-    if (reason) {
-      this.ctx.logger.info(`${reason}; not pushing file:`, this.uri().fsPath);
-      return;
     }
     this.ctx.logger.info("Destination:", upstairsOverride.toString());
     if (arg?.isSnapshot && this.parser.type !== FolderNames.DRAFT) {

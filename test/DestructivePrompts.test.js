@@ -21,6 +21,11 @@
 //    returned list (PushResult.keptPlatformOnly). HOW to confirm (a flag, a button, piped input)
 //    depends on the consumer, so core's text never says it; the tests assert that.
 //
+// One confirmation (ClickUp 86bbjennm): the overwrite prompt used to come per file, mid-upload, so
+// with two drifted files and one answer the first file was already written when the second prompt
+// found no input: a half push. confirmOverwrites() now asks once for every at-risk file before any
+// upload, and takes paths the caller confirms up front (how a consumer confirms without a prompt).
+//
 // b6p-core has no test framework; this is a minimal, dependency-free node script (run via
 // `npm test`). It exercises the COMPILED code from dist/ with plain-object fakes, so no network or
 // real filesystem is touched.
@@ -30,7 +35,7 @@ const crypto = require("crypto");
 const assert = require("node:assert");
 const { ScriptFile } = require("../dist/script/ScriptFile.js");
 const { ScriptService } = require("../dist/script/ScriptService.js");
-const { cleanupUnusedUpstairsPaths } = require("../dist/script/push.js");
+const { cleanupUnusedUpstairsPaths, collectOverwriteCandidates, confirmOverwrites } = require("../dist/script/push.js");
 const { GlobMatcher } = require("../dist/data/GlobMatcher.js");
 const { B6PUri } = require("../dist/B6PUri.js");
 const { Err } = require("../dist/Err.js");
@@ -311,6 +316,155 @@ test("audit-pull prompt: an explicit Sync still pulls the confirmed files", asyn
   await service.auditPull({ filePath: FILE_PATH, workspacePath: ROOT_PATH });
   assert.strictEqual(pulls.length, 1);
   assert.deepStrictEqual(pulls[0].overwriteLocalPaths, ["scripts/app.ts"]);
+});
+
+// ── One overwrite confirmation (confirmOverwrites) ────────────────────
+
+const DRAFT_BASE = "https://org.bluestep.net/files/100001/draft/";
+
+/**
+ * Several ScriptFiles over one fake platform. `spec` maps a draft-relative path to
+ * `{ platform, record }` as in overwriteScenario; every local file holds LOCAL.
+ */
+function pushScenario(prompt, spec) {
+  const requests = [];
+  const metadata = { pushPullRecords: [] };
+  const localPath = (rel) => B6PUri.fromFsPath(path.join(ROOT_PATH, "draft", ...rel.split("/"))).fsPath;
+  for (const [rel, { record }] of Object.entries(spec)) {
+    if (record !== null) {
+      metadata.pushPullRecords.push({ downstairsPath: localPath(rel), lastVerifiedHash: sha512(record) });
+    }
+  }
+  const fs = {
+    stat: async () => ({ type: "file", mtime: 0, ctime: 0, size: LOCAL.length }),
+    readFile: async () => new Uint8Array(Buffer.from(LOCAL, "utf8")),
+  };
+  const sessionManager = {
+    fetch: async (url, init) => {
+      const method = init && init.method;
+      const href = new URL(url).href;
+      requests.push({ method, url: href });
+      if (method !== "HEAD") {
+        return new Response(null, { status: 204 });
+      }
+      const held = spec[href.slice(DRAFT_BASE.length)].platform;
+      return held === null
+        ? new Response(null, { status: 404 })
+        : new Response(null, { status: 200, headers: { ETag: `"${sha512(held)}"` } });
+    },
+  };
+  const ctx = { fs, sessionManager, logger, prompt, isDebugMode: () => false };
+  const scriptRoot = {
+    ctx,
+    factory: {},
+    getGitIgnore: async () => [],
+    getRootUri: () => B6PUri.fromFsPath(ROOT_PATH),
+    getMetaData: async () => metadata,
+    modifyMetaData: async (fn) => {
+      fn(metadata);
+      return metadata;
+    },
+    withParser: () => scriptRoot,
+  };
+  const files = Object.keys(spec).map((rel) => {
+    const file = new ScriptFile(B6PUri.fromFsPath(localPath(rel)), scriptRoot);
+    file.upstairsUrl = async () => new URL(DRAFT_BASE + rel);
+    file.isInItsRespectiveBuildFolder = async () => false;
+    return file;
+  });
+  const puts = () => requests.filter((r) => r.method === "PUT").map((r) => r.url.slice(DRAFT_BASE.length));
+  return { files, ctx, puts };
+}
+
+/** Two drifted files and three that are safe to write, one of each kind. */
+const MIXED = {
+  "scripts/app.ts": { platform: "theirs", record: "base" }, // changed on the platform
+  "scripts/util.ts": { platform: "other", record: null }, // never synced here, platform differs
+  "scripts/new.ts": { platform: null, record: null }, // new locally
+  "scripts/edit.ts": { platform: "base", record: "base" }, // a normal local edit
+  "scripts/same.ts": { platform: LOCAL, record: "base" }, // already equal
+};
+
+test("candidates: only files that would overwrite an unseen platform version", async () => {
+  const { files } = pushScenario(recordingPrompt(firstOption), MIXED);
+  const found = await collectOverwriteCandidates(files, { isSnapshot: false });
+  assert.deepStrictEqual(
+    found.map((c) => [c.path, c.risk]),
+    [
+      ["scripts/app.ts", "changed"],
+      ["scripts/util.ts", "unsynced"],
+    ]
+  );
+});
+
+test("one confirmation: several drifted files → ONE prompt listing all, safe option first", async () => {
+  const prompt = recordingPrompt(pick("Overwrite all"));
+  const { files, ctx } = pushScenario(prompt, MIXED);
+  const confirmed = await confirmOverwrites({ files, ctx, isSnapshot: false });
+  assert.strictEqual(prompt.calls.length, 1);
+  assertSafeFirst(prompt.calls[0], "Cancel", "Overwrite all");
+  assert.ok(prompt.calls[0].message.includes("scripts/app.ts") && prompt.calls[0].message.includes("scripts/util.ts"));
+  assert.ok(!prompt.calls[0].message.includes("scripts/new.ts"), "a new file must not be listed");
+  assert.deepStrictEqual(
+    [...confirmed].map((f) => f.pathWithRespectToDraftRoot().split(path.sep).join("/")),
+    ["scripts/app.ts", "scripts/util.ts"]
+  );
+});
+
+test("one confirmation: --yes declines before any upload, naming every file", async () => {
+  const prompt = recordingPrompt(firstOption);
+  const { files, ctx, puts } = pushScenario(prompt, MIXED);
+  await assert.rejects(
+    () => confirmOverwrites({ files, ctx, isSnapshot: false }),
+    (e) =>
+      e instanceof Err.OverwriteDeclinedError &&
+      e.message.includes("before uploading anything") &&
+      !/answer|--yes|flag/i.test(e.message) &&
+      JSON.stringify(e.paths) === JSON.stringify(["scripts/app.ts", "scripts/util.ts"])
+  );
+  assert.deepStrictEqual(puts(), []);
+});
+
+test("one confirmation: confirmed files upload without asking again; the rest still upload", async () => {
+  const prompt = recordingPrompt(pick("Overwrite all"));
+  const { files, ctx, puts } = pushScenario(prompt, MIXED);
+  const confirmed = await confirmOverwrites({ files, ctx, isSnapshot: false });
+  for (const file of files) {
+    await file.upload({ isSnapshot: false, overwriteConfirmed: confirmed.has(file) });
+  }
+  assert.strictEqual(prompt.calls.length, 1, "upload() must not prompt for a confirmed file");
+  assert.deepStrictEqual(puts(), ["scripts/app.ts", "scripts/util.ts", "scripts/new.ts", "scripts/edit.ts"]);
+});
+
+test("caller-confirmed paths: not asked about; the other drifted file still is", async () => {
+  const prompt = recordingPrompt(pick("Overwrite all"));
+  const { files, ctx } = pushScenario(prompt, MIXED);
+  const confirmed = await confirmOverwrites({ files, ctx, isSnapshot: false, preConfirmed: ["scripts\\app.ts"] });
+  assert.strictEqual(prompt.calls.length, 1);
+  assert.ok(!prompt.calls[0].message.includes("scripts/app.ts"), "a confirmed file must not be asked about");
+  assert.ok(prompt.calls[0].message.includes("scripts/util.ts"));
+  assert.strictEqual(confirmed.size, 2);
+});
+
+test("caller-confirmed paths: covering every drifted file → no prompt at all", async () => {
+  const prompt = recordingPrompt(firstOption);
+  const { files, ctx } = pushScenario(prompt, MIXED);
+  const confirmed = await confirmOverwrites({
+    files,
+    ctx,
+    isSnapshot: false,
+    preConfirmed: ["scripts/app.ts", "./scripts/util.ts"],
+  });
+  assert.strictEqual(prompt.calls.length, 0);
+  assert.strictEqual(confirmed.size, 2);
+});
+
+test("fallback: a file not confirmed up front that is at risk at upload time still asks", async () => {
+  const prompt = recordingPrompt(firstOption);
+  const { files, puts } = pushScenario(prompt, { "scripts/app.ts": { platform: "theirs", record: "base" } });
+  await assert.rejects(() => files[0].upload({ isSnapshot: false }), Err.OverwriteDeclinedError);
+  assert.strictEqual(prompt.calls.length, 1);
+  assert.deepStrictEqual(puts(), []);
 });
 
 (async () => {

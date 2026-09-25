@@ -264,7 +264,11 @@ export abstract class ScriptNode implements ScriptPathElement {
     return path.relative(closestTsConfigFolderUri.fsPath, this.uri().fsPath);
   }
 
-  abstract upload(arg?: { upstairsUrlOverrideString?: string; isSnapshot?: boolean }): Promise<Response | void>;
+  abstract upload(arg?: {
+    upstairsUrlOverrideString?: string;
+    isSnapshot?: boolean;
+    overwriteConfirmed?: boolean;
+  }): Promise<Response | void>;
 
   abstract download(): Promise<Response>;
 
