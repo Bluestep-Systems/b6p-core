@@ -1,3 +1,5 @@
+import type { BuildState } from "./component/ComponentService";
+
 /**
  * Centralized error namespace containing all custom error types used throughout the application.
  * All error classes extend {@link Error} and have descriptive names that indicate why the error was thrown.
@@ -880,7 +882,7 @@ export namespace Err {
       public readonly repoName: string,
       public readonly sha: string,
       public readonly buildId: string,
-      public readonly lastState: string,
+      public readonly lastState: BuildState,
       public readonly timeoutMs: number
     ) {
       super(
@@ -892,9 +894,13 @@ export namespace Err {
   }
 
   /**
-   * Error thrown when a component GraphQL operation answers errors. Carries the
-   * platform's own messages — a publish refusal, for example, says exactly what
-   * gate failed and what to run.
+   * Error thrown when a component GraphQL operation does not produce a result.
+   * For a platform refusal, `messages` carries the platform's own GraphQL error
+   * messages verbatim — a publish refusal, for example, says exactly what gate
+   * failed and what to run. For a malformed answer (a non-JSON body, a non-object
+   * envelope, `data: null`, a missing root field) the message is this client's
+   * own diagnosis — so a consumer must not present every message as
+   * server-provided text.
    * @lastreviewed null
    */
   export class ComponentOperationError extends ComponentError {

@@ -209,22 +209,36 @@ export class ComponentService {
    * service instance. An unknown name throws naming the names that do exist,
    * since the caller most likely holds a clone whose component was renamed or
    * deleted.
+   * @throws Err.ComponentUrlError when `ref.origin` is not an https origin
    * @lastreviewed null
    */
   async resolveComponentId(ref: ComponentRef): Promise<string> {
+    // This is a public entry point that takes the ref directly, so the https
+    // guarantee parseRepoUrl gives the other operations must be re-established
+    // here: a plaintext origin would carry the bearer token in the clear.
+    if (!/^https:\/\//.test(ref.origin)) {
+      throw new Err.ComponentUrlError(
+        `Not a component origin: ${ref.origin} (expected https://<host>; the session token is never sent over a non-https origin)`
+      );
+    }
     const cacheKey = `${ref.origin}|${ref.repoName}`;
     const cached = this.idCache.get(cacheKey);
     if (cached) {
       return cached;
     }
-    const data = await this.gql<{ customComponents: CatalogEntry[] }>(
-      ref.origin,
-      `query Catalog { customComponents { topId repoName } }`,
-      {}
+    const catalog = ComponentService.requireResult(
+      "customComponents",
+      (
+        await this.gql<{ customComponents: CatalogEntry[] }>(
+          ref.origin,
+          `query Catalog { customComponents { topId repoName } }`,
+          {}
+        )
+      ).customComponents
     );
-    const hit = data.customComponents.find((c) => c.repoName === ref.repoName);
+    const hit = catalog.find((c) => c.repoName === ref.repoName);
     if (!hit) {
-      const known = data.customComponents.map((c) => c.repoName).filter((n): n is string => n !== null);
+      const known = catalog.map((c) => c.repoName).filter((n): n is string => n !== null);
       throw new Err.ComponentNotFoundError(ref.repoName, known);
     }
     this.idCache.set(cacheKey, hit.topId);
@@ -290,6 +304,11 @@ export class ComponentService {
       `query Status($id: String!, $sha: String) { customComponentBuild(id: $id, sha: $sha) { ${BUILD_STATUS_FIELDS} } }`,
       { id, sha }
     );
+    // This root field is nullable, so null is an answer ("never built") — but a
+    // MISSING field is a malformed envelope and must not read as never-built.
+    if (!("customComponentBuild" in data)) {
+      throw new Err.ComponentOperationError(["The platform answered without a customComponentBuild result"]);
+    }
     return data.customComponentBuild;
   }
 
@@ -317,6 +336,11 @@ export class ComponentService {
     } catch {
       // A 200 that isn't JSON is a proxy or login page, not a GraphQL answer.
       throw new Err.ComponentOperationError(["The platform answered 200 with a body that is not JSON"]);
+    }
+    // `null` and primitives parse as valid JSON; reading .errors off them would
+    // throw a raw TypeError instead of the ComponentError this method promises.
+    if (json === null || typeof json !== "object") {
+      throw new Err.ComponentOperationError(["The platform answered 200 with a body that is not a GraphQL envelope"]);
     }
     if (json.errors?.length) {
       throw new Err.ComponentOperationError(json.errors.map((e) => e.message));

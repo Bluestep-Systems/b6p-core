@@ -165,6 +165,42 @@ test("resolveComponentId does not cache a miss", async () => {
   assert.strictEqual(calls.length, 2);
 });
 
+test("resolveComponentId refuses a non-https origin before any request", async () => {
+  // Public entry point that takes the ref directly: the https guarantee
+  // parseRepoUrl gives the other operations must hold here too, or the bearer
+  // token goes over plaintext.
+  const { service, calls } = makeService([CATALOG]);
+  await assert.rejects(
+    service.resolveComponentId({ origin: "http://config.example.net", repoName: "revenue-tile" }),
+    Err.ComponentUrlError
+  );
+  assert.strictEqual(calls.length, 0, "nothing may be sent to a non-https origin");
+});
+
+test("a catalog answer missing its root field throws, never a raw TypeError", async () => {
+  const { service } = makeService([{ data: {} }]);
+  await assert.rejects(
+    service.resolveComponentId({ origin: "https://config.example.net", repoName: "revenue-tile" }),
+    (e) => e instanceof Err.ComponentOperationError && /customComponents/.test(e.message)
+  );
+});
+
+test("a status answer missing its root field throws rather than reading as never-built", async () => {
+  const { service } = makeService([CATALOG, { data: {} }]);
+  await assert.rejects(
+    service.status({ repoUrl: REPO_URL }),
+    (e) => e instanceof Err.ComponentOperationError && /customComponentBuild/.test(e.message)
+  );
+});
+
+test("a 200 whose body is the JSON literal null throws ComponentOperationError", async () => {
+  const { service } = makeService([CATALOG, { __rawBody: "null" }]);
+  await assert.rejects(
+    service.status({ repoUrl: REPO_URL }),
+    (e) => e instanceof Err.ComponentOperationError && /not a GraphQL envelope/.test(e.message)
+  );
+});
+
 test("resolveComponentId names the known components when the name misses", async () => {
   const { service } = makeService([CATALOG]);
   await assert.rejects(
