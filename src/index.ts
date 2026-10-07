@@ -58,6 +58,10 @@ export { ScriptService } from "./script/ScriptService";
 export type { AuditResult, DeployConfig, PullResult } from "./script/ScriptService";
 export { TsLibResolver } from "./script/TsLibResolver";
 
+// ─── Components ──────────────────────────────────────────────────────
+export { ComponentService } from "./component/ComponentService";
+export type { BuildDiagnostic, BuildState, ComponentBuildStatus, ComponentRef } from "./component/ComponentService";
+
 // ─── Constants ───────────────────────────────────────────────────────
 export {
   ApiEndpoints,

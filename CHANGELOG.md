@@ -5,6 +5,21 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`core.component` (`ComponentService`): build, status and publish for BlueStep One custom
+  components** (ClickUp 86bcd80mx). A component is addressed by its git repo URL
+  (`https://<host>/git/component/<name>.git`); the repo name is resolved to the catalog id through
+  the `customComponents` GraphQL query and cached per service instance. `build()` submits
+  `buildCustomComponent` (optionally waiting on `customComponentBuild` until a terminal state),
+  `status()` reads the newest build (of an exact sha when given), `publish()` runs
+  `publishCustomComponent` — the platform owns every gate; a refusal surfaces as
+  `Err.ComponentOperationError` carrying the platform's own messages. New errors:
+  `ComponentError`, `ComponentUrlError`, `ComponentNotFoundError` (carries the catalog's known
+  names), `ComponentBuildTimeoutError`, `ComponentOperationError`.
+
 ## [0.8.0] - 2026-09-25
 
 ### Fixed

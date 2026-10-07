@@ -5,6 +5,7 @@ import type { AuthParams } from "./types";
 import { ScriptMetaDataStore } from "./cache/ScriptMetaDataStore";
 import { OrgCache, type OrgCacheSettings } from "./cache/OrgCache";
 import type { PlatformContext } from "./PlatformContext";
+import { ComponentService } from "./component/ComponentService";
 import { ScriptService } from "./script/ScriptService";
 import { UpdateService } from "./update/UpdateService";
 
@@ -70,6 +71,13 @@ export class B6PCore {
    */
   readonly script: ScriptService;
 
+  /**
+   * Custom-component build and publish: submit a build, read its state,
+   * publish the current draft.
+   * @lastreviewed null
+   */
+  readonly component: ComponentService;
+
   private readonly _isDebugMode: () => boolean;
 
   constructor(providers: B6PProviders) {
@@ -119,6 +127,10 @@ export class B6PCore {
       orgCache: this.orgCache,
       typescriptLibDirs: providers.typescriptLibDirs,
     });
+
+    // Components read no files and keep no store, so the shared half is the
+    // whole bundle.
+    this.component = new ComponentService(platform);
 
     // Initialize update service if configuration is provided
     if (providers.updateServiceConfig) {

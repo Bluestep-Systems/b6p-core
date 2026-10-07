@@ -70,7 +70,8 @@ are load-bearing rather than stylistic — each records something this repo undi
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
-snapshot history), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
+snapshot history), `component/` (`ComponentService` — custom-component build/status/publish over
+GraphQL), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
 parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles).
 
 ## Commands
