@@ -824,4 +824,82 @@ export namespace Err {
       this.name = "ScriptUrlParserError";
     }
   }
+
+  // Component Errors
+
+  /**
+   * Base class for custom-component operation failures (build, status, publish).
+   * @lastreviewed null
+   */
+  export class ComponentError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = "ComponentError";
+    }
+  }
+
+  /**
+   * Error thrown when a string is not a component git repo URL
+   * (`https://<host>/git/component/<name>.git`).
+   * @lastreviewed null
+   */
+  export class ComponentUrlError extends ComponentError {
+    constructor(message: string) {
+      super(message);
+      this.name = "ComponentUrlError";
+    }
+  }
+
+  /**
+   * Error thrown when a repo name resolves to no row of the tenant's
+   * custom-component catalog. Carries the names that do exist so the consumer
+   * can show them.
+   * @lastreviewed null
+   */
+  export class ComponentNotFoundError extends ComponentError {
+    constructor(
+      public readonly repoName: string,
+      public readonly knownNames: string[]
+    ) {
+      super(
+        `No custom component named "${repoName}" in this tenant's catalog` +
+          (knownNames.length ? ` (it has: ${knownNames.join(", ")})` : " (its catalog is empty)")
+      );
+      this.name = "ComponentNotFoundError";
+    }
+  }
+
+  /**
+   * Error thrown when a waited-on build reaches the wait budget without
+   * reporting a terminal state. The build keeps running on the platform — only
+   * the wait ends.
+   * @lastreviewed null
+   */
+  export class ComponentBuildTimeoutError extends ComponentError {
+    constructor(
+      public readonly repoName: string,
+      public readonly sha: string,
+      public readonly lastState: string,
+      public readonly timeoutMs: number
+    ) {
+      super(
+        `Build of ${repoName}@${sha} still ${lastState} after ${Math.round(timeoutMs / 1_000)}s — ` +
+          `the build continues on the platform; only this wait ended`
+      );
+      this.name = "ComponentBuildTimeoutError";
+    }
+  }
+
+  /**
+   * Error thrown when a component GraphQL operation answers errors. Carries the
+   * platform's own messages — a publish refusal, for example, says exactly what
+   * gate failed and what to run.
+   * @lastreviewed null
+   */
+  export class ComponentOperationError extends ComponentError {
+    constructor(public readonly messages: string[]) {
+      super(messages.join("\n"));
+      this.name = "ComponentOperationError";
+    }
+  }
 }

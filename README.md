@@ -58,6 +58,19 @@ between the local filesystem and the platform over WebDAV:
 | `deriveWorkspacePath` | Recover the workspace folder from a path inside a script root |
 | `getFactory` | The `ScriptFactory` for entering the script tree from a bare path |
 
+`core.component` ([`ComponentService`](src/component/ComponentService.ts)) — build and publish for
+BlueStep One custom components, addressed by their git repo URL
+(`https://<host>/git/component/<name>.git`). The platform owns every gate; this service sends the
+GraphQL operation and reports the answer:
+
+| Method | Purpose |
+| --- | --- |
+| `build` | Submit a build of a ref (platform default: `draft`); optionally wait for a terminal state |
+| `status` | The newest build, or the newest build of an exact sha; `null` if never built |
+| `publish` | Publish the current draft (requires a `SUCCEEDED` build of exactly that commit) |
+| `resolveComponentId` | Repo name → catalog id via the `customComponents` query (cached) |
+| `ComponentService.parseRepoUrl` | Static: repo URL → `{ origin, repoName }` |
+
 `core` itself — cross-cutting state that is not specific to any one subsystem:
 
 | Method | Purpose |
