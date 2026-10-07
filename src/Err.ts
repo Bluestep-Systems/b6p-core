@@ -879,11 +879,12 @@ export namespace Err {
     constructor(
       public readonly repoName: string,
       public readonly sha: string,
+      public readonly buildId: string,
       public readonly lastState: string,
       public readonly timeoutMs: number
     ) {
       super(
-        `Build of ${repoName}@${sha} still ${lastState} after ${Math.round(timeoutMs / 1_000)}s — ` +
+        `Build ${buildId} of ${repoName}@${sha} still ${lastState} after ${Math.round(timeoutMs / 1_000)}s — ` +
           `the build continues on the platform; only this wait ended`
       );
       this.name = "ComponentBuildTimeoutError";

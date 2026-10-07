@@ -39,6 +39,9 @@ function makeService(bodies) {
         if (body.__httpStatus) {
           return new Response(body.__text ?? "server error", { status: body.__httpStatus });
         }
+        if (body.__rawBody !== undefined) {
+          return new Response(body.__rawBody, { status: 200 });
+        }
         return new Response(JSON.stringify(body), { status: 200 });
       },
     },
@@ -101,6 +104,28 @@ test("parseRepoUrl refuses a nested path under the component route", () => {
   );
 });
 
+test("parseRepoUrl refuses non-https schemes with ComponentUrlError", () => {
+  // http would send the session token in the clear; ssh/git/file URLs have
+  // origin "null" and used to surface later as a raw TypeError on new URL().
+  for (const bad of [
+    "http://config.example.net/git/component/x.git",
+    "ssh://git@config.example.net/git/component/x.git",
+    "git://config.example.net/git/component/x.git",
+    "file:///git/component/x.git",
+  ]) {
+    assert.throws(() => ComponentService.parseRepoUrl(bad), Err.ComponentUrlError, bad);
+  }
+});
+
+test("parseRepoUrl accepts a trailing slash", () => {
+  const ref = ComponentService.parseRepoUrl("https://config.example.net/git/component/revenue-tile.git/");
+  assert.strictEqual(ref.repoName, "revenue-tile");
+});
+
+test("parseRepoUrl refuses an empty repo name spelled as .git", () => {
+  assert.throws(() => ComponentService.parseRepoUrl("https://config.example.net/git/component/.git"), Err.ComponentUrlError);
+});
+
 // ── resolveComponentId ───────────────────────────────────────────────
 
 test("resolveComponentId finds the catalog row by repoName", async () => {
@@ -118,6 +143,26 @@ test("resolveComponentId caches per origin+name", async () => {
   await service.resolveComponentId(ref);
   await service.resolveComponentId(ref);
   assert.strictEqual(calls.length, 1, "second resolution must not refetch the catalog");
+});
+
+test("resolveComponentId keys the cache by origin, not by name alone", async () => {
+  const otherCatalog = { data: { customComponents: [{ topId: "999___1", repoName: "revenue-tile" }] } };
+  const { service, calls } = makeService([CATALOG, otherCatalog]);
+  const idA = await service.resolveComponentId({ origin: "https://a.example.net", repoName: "revenue-tile" });
+  const idB = await service.resolveComponentId({ origin: "https://b.example.net", repoName: "revenue-tile" });
+  assert.strictEqual(calls.length, 2, "a second origin must fetch its own catalog");
+  assert.strictEqual(idA, "120190___4");
+  assert.strictEqual(idB, "999___1");
+});
+
+test("resolveComponentId does not cache a miss", async () => {
+  const empty = { data: { customComponents: [] } };
+  const { service, calls } = makeService([empty, CATALOG]);
+  const ref = { origin: "https://config.example.net", repoName: "revenue-tile" };
+  await assert.rejects(service.resolveComponentId(ref), Err.ComponentNotFoundError);
+  const id = await service.resolveComponentId(ref);
+  assert.strictEqual(id, "120190___4", "a component created after the first fetch must be found");
+  assert.strictEqual(calls.length, 2);
 });
 
 test("resolveComponentId names the known components when the name misses", async () => {
@@ -138,7 +183,7 @@ test("build submits the mutation with the resolved id and the given ref", async 
   assert.deepStrictEqual(calls[1].variables, { id: "120190___4", ref: "draft" });
 });
 
-test("build omits ref as null so the platform defaults it to draft", async () => {
+test("build sends ref: null when none is given, so the platform defaults it to draft", async () => {
   const { service, calls } = makeService([CATALOG, { data: { buildCustomComponent: buildStatus() } }]);
   await service.build({ repoUrl: REPO_URL });
   assert.strictEqual(calls[1].variables.ref, null);
@@ -190,10 +235,27 @@ test("build with wait throws ComponentBuildTimeoutError when the budget elapses"
     { data: { buildCustomComponent: buildStatus({ state: "QUEUED" }) } },
     { data: { customComponentBuild: buildStatus({ state: "RUNNING" }) } },
   ]);
+  // A positive budget so the loop actually polls: the error must carry the
+  // last state the polls observed, not the submit answer's.
   await assert.rejects(
-    service.build({ repoUrl: REPO_URL, wait: true, pollIntervalMs: 0, timeoutMs: 0 }),
-    (e) => e instanceof Err.ComponentBuildTimeoutError && e.lastState === "QUEUED"
+    service.build({ repoUrl: REPO_URL, wait: true, pollIntervalMs: 0, timeoutMs: 50 }),
+    (e) => e instanceof Err.ComponentBuildTimeoutError && e.lastState === "RUNNING" && e.buildId === "b-1"
   );
+});
+
+test("build with wait skips a stale terminal build of the same sha", async () => {
+  // A resubmit after FAILED creates a new build; a poll racing the new record
+  // can serve the old FAILED one. It must be skipped, not returned.
+  const stale = buildStatus({ buildId: "b-old", state: "FAILED" });
+  const { service } = makeService([
+    CATALOG,
+    { data: { buildCustomComponent: buildStatus({ buildId: "b-new", state: "QUEUED" }) } },
+    { data: { customComponentBuild: stale } },
+    { data: { customComponentBuild: buildStatus({ buildId: "b-new", state: "SUCCEEDED" }) } },
+  ]);
+  const result = await service.build({ repoUrl: REPO_URL, wait: true, pollIntervalMs: 0, timeoutMs: 5_000 });
+  assert.strictEqual(result.buildId, "b-new");
+  assert.strictEqual(result.state, "SUCCEEDED");
 });
 
 test("build with wait keeps polling through a null status read", async () => {
@@ -242,9 +304,42 @@ test("publish surfaces the platform's refusal text verbatim", async () => {
   );
 });
 
-test("an HTTP failure throws with the status code", async () => {
+test("an HTTP failure throws HttpResponseError with the status code", async () => {
   const { service } = makeService([CATALOG, { __httpStatus: 502, __text: "bad gateway" }]);
-  await assert.rejects(service.status({ repoUrl: REPO_URL }), /502/);
+  await assert.rejects(service.status({ repoUrl: REPO_URL }), (e) => e instanceof Err.HttpResponseError && /502/.test(e.message));
+});
+
+// ── Malformed answers ────────────────────────────────────────────────
+
+test("a 200 that is not JSON throws ComponentOperationError, not a raw SyntaxError", async () => {
+  const { service } = makeService([CATALOG, { __rawBody: "<html>proxy login page</html>" }]);
+  await assert.rejects(service.status({ repoUrl: REPO_URL }), (e) => e instanceof Err.ComponentOperationError && /not JSON/.test(e.message));
+});
+
+test("data: null with no errors throws ComponentOperationError", async () => {
+  const { service } = makeService([CATALOG, { data: null }]);
+  await assert.rejects(service.status({ repoUrl: REPO_URL }), Err.ComponentOperationError);
+});
+
+test("a data object missing the mutation's root field throws, never returns undefined", async () => {
+  const { service } = makeService([CATALOG, { data: {} }]);
+  await assert.rejects(service.build({ repoUrl: REPO_URL }), (e) => e instanceof Err.ComponentOperationError && /buildCustomComponent/.test(e.message));
+  const { service: pub } = makeService([CATALOG, { data: {} }]);
+  await assert.rejects(pub.publish({ repoUrl: REPO_URL }), (e) => e instanceof Err.ComponentOperationError && /publishCustomComponent/.test(e.message));
+});
+
+test("a platform refusal evicts the cached id so a recreated component heals", async () => {
+  const { service, calls } = makeService([
+    CATALOG,
+    { errors: [{ message: "unknown component id" }] },
+    { data: { customComponents: [{ topId: "120190___9", repoName: "revenue-tile" }] } },
+    { data: { customComponentBuild: null } },
+  ]);
+  await assert.rejects(service.status({ repoUrl: REPO_URL }), Err.ComponentOperationError);
+  const result = await service.status({ repoUrl: REPO_URL });
+  assert.strictEqual(result, null);
+  assert.match(calls[2].query, /customComponents/, "the second call after a refusal must re-resolve the id");
+  assert.strictEqual(calls[3].variables.id, "120190___9", "the recreated component's new id must be used");
 });
 
 // ── Runner ───────────────────────────────────────────────────────────

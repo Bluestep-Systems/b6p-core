@@ -94,9 +94,10 @@ export class ComponentService {
   /**
    * Parse a component git repo URL into its {@link ComponentRef}.
    *
-   * Accepts `https://<host>/git/component/<name>.git` (the `.git` suffix is
-   * optional) and nothing else — in particular a script repo URL
-   * (`/git/script/...`) or a bare origin is refused, naming what was expected.
+   * Accepts `https://<host>/git/component/<name>.git` (the `.git` suffix and a
+   * trailing slash are optional) and nothing else — a non-https scheme, a
+   * script repo URL (`/git/script/...`) or a bare origin is refused, naming
+   * what was expected.
    * @throws Err.ComponentUrlError when the URL is not a component repo URL
    * @lastreviewed null
    */
@@ -109,8 +110,16 @@ export class ComponentService {
         `Not a component repo URL: "${repoUrl}" is not a URL (expected https://<host>/git/component/<name>.git)`
       );
     }
-    const match = /^\/git\/component\/([^/]+?)(\.git)?$/.exec(url.pathname);
-    if (!match) {
+    // Only https gives a usable origin: ssh/git/file URLs have origin "null",
+    // and http would carry the session token in the clear.
+    if (url.protocol !== "https:") {
+      throw new Err.ComponentUrlError(
+        `Not a component repo URL: ${repoUrl} uses ${url.protocol.replace(/:$/, "")} ` +
+          `(expected https://<host>/git/component/<name>.git)`
+      );
+    }
+    const match = /^\/git\/component\/([^/]+?)(\.git)?\/?$/.exec(url.pathname);
+    if (!match || match[1] === ".git") {
       throw new Err.ComponentUrlError(
         `Not a component repo URL: ${repoUrl} (expected https://<host>/git/component/<name>.git)`
       );
@@ -137,18 +146,24 @@ export class ComponentService {
     /** Overall wait budget; elapsed throws rather than polling forever @lastreviewed null */
     timeoutMs?: number;
   }): Promise<ComponentBuildStatus> {
-    const ref = ComponentService.parseRepoUrl(opts.repoUrl);
-    const id = await this.resolveComponentId(ref);
-    const submitted = await this.gql<{ buildCustomComponent: ComponentBuildStatus }>(
-      ref.origin,
-      `mutation Build($id: String!, $ref: String) { buildCustomComponent(id: $id, ref: $ref) { ${BUILD_STATUS_FIELDS} } }`,
-      { id, ref: opts.ref ?? null }
-    ).then((d) => d.buildCustomComponent);
-
-    if (!opts.wait || submitted.state === "SUCCEEDED" || submitted.state === "FAILED") {
-      return submitted;
-    }
-    return this.waitForBuild(ref, id, submitted, opts.pollIntervalMs, opts.timeoutMs);
+    const component = ComponentService.parseRepoUrl(opts.repoUrl);
+    const id = await this.resolveComponentId(component);
+    return this.evictingOnRefusal(component, async () => {
+      const submitted = ComponentService.requireResult(
+        "buildCustomComponent",
+        (
+          await this.gql<{ buildCustomComponent: ComponentBuildStatus }>(
+            component.origin,
+            `mutation Build($id: String!, $ref: String) { buildCustomComponent(id: $id, ref: $ref) { ${BUILD_STATUS_FIELDS} } }`,
+            { id, ref: opts.ref ?? null }
+          )
+        ).buildCustomComponent
+      );
+      if (!opts.wait || submitted.state === "SUCCEEDED" || submitted.state === "FAILED") {
+        return submitted;
+      }
+      return this.waitForBuild(component, id, submitted, opts.pollIntervalMs, opts.timeoutMs);
+    });
   }
 
   /**
@@ -158,9 +173,9 @@ export class ComponentService {
    * @lastreviewed null
    */
   async status(opts: { repoUrl: string; sha?: string }): Promise<ComponentBuildStatus | null> {
-    const ref = ComponentService.parseRepoUrl(opts.repoUrl);
-    const id = await this.resolveComponentId(ref);
-    return this.fetchStatus(ref.origin, id, opts.sha ?? null);
+    const component = ComponentService.parseRepoUrl(opts.repoUrl);
+    const id = await this.resolveComponentId(component);
+    return this.evictingOnRefusal(component, () => this.fetchStatus(component.origin, id, opts.sha ?? null));
   }
 
   /**
@@ -172,13 +187,20 @@ export class ComponentService {
    * @lastreviewed null
    */
   async publish(opts: { repoUrl: string }): Promise<ComponentBuildStatus> {
-    const ref = ComponentService.parseRepoUrl(opts.repoUrl);
-    const id = await this.resolveComponentId(ref);
-    return this.gql<{ publishCustomComponent: ComponentBuildStatus }>(
-      ref.origin,
-      `mutation Publish($id: String!) { publishCustomComponent(id: $id) { ${BUILD_STATUS_FIELDS} } }`,
-      { id }
-    ).then((d) => d.publishCustomComponent);
+    const component = ComponentService.parseRepoUrl(opts.repoUrl);
+    const id = await this.resolveComponentId(component);
+    return this.evictingOnRefusal(component, async () =>
+      ComponentService.requireResult(
+        "publishCustomComponent",
+        (
+          await this.gql<{ publishCustomComponent: ComponentBuildStatus }>(
+            component.origin,
+            `mutation Publish($id: String!) { publishCustomComponent(id: $id) { ${BUILD_STATUS_FIELDS} } }`,
+            { id }
+          )
+        ).publishCustomComponent
+      )
+    );
   }
 
   /**
@@ -216,29 +238,45 @@ export class ComponentService {
    * @lastreviewed null
    */
   private async waitForBuild(
-    ref: ComponentRef,
+    component: ComponentRef,
     id: string,
     submitted: ComponentBuildStatus,
     pollIntervalMs = ComponentService.DEFAULT_POLL_INTERVAL_MS,
     timeoutMs = ComponentService.DEFAULT_BUILD_TIMEOUT_MS
   ): Promise<ComponentBuildStatus> {
-    const deadline = Date.now() + timeoutMs;
+    // A NaN or infinite budget would otherwise never reach the deadline.
+    const budget = Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : ComponentService.DEFAULT_BUILD_TIMEOUT_MS;
+    const interval =
+      Number.isFinite(pollIntervalMs) && pollIntervalMs >= 0
+        ? pollIntervalMs
+        : ComponentService.DEFAULT_POLL_INTERVAL_MS;
+    const deadline = Date.now() + budget;
     let lastState: BuildState = submitted.state;
-    this.ctx.logger.info(`Build ${submitted.buildId} of ${ref.repoName}@${submitted.sha}: ${lastState}`);
+    this.ctx.logger.info(`Build ${submitted.buildId} of ${component.repoName}@${submitted.sha}: ${lastState}`);
     for (;;) {
-      if (Date.now() >= deadline) {
-        throw new Err.ComponentBuildTimeoutError(ref.repoName, submitted.sha, lastState, timeoutMs);
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Err.ComponentBuildTimeoutError(
+          component.repoName,
+          submitted.sha,
+          submitted.buildId,
+          lastState,
+          budget
+        );
       }
-      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-      const current = await this.fetchStatus(ref.origin, id, submitted.sha);
-      if (!current) {
-        // The build existed a moment ago; a null now means the read raced the
-        // record. Keep polling rather than inventing a state.
+      // Clamped so the last sleep ends at the deadline and is followed by one
+      // final poll rather than overshooting by a whole interval.
+      await new Promise((resolve) => setTimeout(resolve, Math.min(interval, remaining)));
+      const current = await this.fetchStatus(component.origin, id, submitted.sha);
+      if (!current || current.buildId !== submitted.buildId) {
+        // null: the read raced the new record. A different buildId: an older
+        // build of the same sha (a resubmit after FAILED creates a new one).
+        // Either way, keep polling for the build that was submitted.
         continue;
       }
       if (current.state !== lastState) {
         lastState = current.state;
-        this.ctx.logger.info(`Build ${current.buildId} of ${ref.repoName}@${current.sha}: ${lastState}`);
+        this.ctx.logger.info(`Build ${current.buildId} of ${component.repoName}@${current.sha}: ${lastState}`);
       }
       if (current.state === "SUCCEEDED" || current.state === "FAILED") {
         return current;
@@ -271,16 +309,52 @@ export class ComponentService {
     });
     if (!response.ok) {
       const text = await response.text();
-      throw new Err.HttpResponseError(`Component operation failed: ${response.status} ${text}`);
+      throw new Err.HttpResponseError(`Component operation failed: ${response.status} ${text.slice(0, 1_000)}`);
     }
-    const json = (await response.json()) as GqlEnvelope<T>;
+    let json: GqlEnvelope<T>;
+    try {
+      json = (await response.json()) as GqlEnvelope<T>;
+    } catch {
+      // A 200 that isn't JSON is a proxy or login page, not a GraphQL answer.
+      throw new Err.ComponentOperationError(["The platform answered 200 with a body that is not JSON"]);
+    }
     if (json.errors?.length) {
       throw new Err.ComponentOperationError(json.errors.map((e) => e.message));
     }
-    if (json.data === undefined) {
+    if (json.data == null) {
       throw new Err.ComponentOperationError(["The platform answered neither data nor errors"]);
     }
     return json.data;
+  }
+
+  /**
+   * The non-null answer a GraphQL root field declared `!` must carry; a missing
+   * or null one is a malformed envelope, not a result.
+   * @lastreviewed null
+   */
+  private static requireResult<T>(field: string, value: T | null | undefined): T {
+    if (value == null) {
+      throw new Err.ComponentOperationError([`The platform answered without a ${field} result`]);
+    }
+    return value;
+  }
+
+  /**
+   * Run `op`, and when the platform refuses it, evict the component's cached
+   * catalog id first — a component deleted and recreated under the same repo
+   * name gets a new id, and a stale entry would otherwise refuse forever in a
+   * long-lived service (the VS Code extension holds one for the whole session).
+   * @lastreviewed null
+   */
+  private async evictingOnRefusal<T>(component: ComponentRef, op: () => Promise<T>): Promise<T> {
+    try {
+      return await op();
+    } catch (e) {
+      if (e instanceof Err.ComponentOperationError) {
+        this.idCache.delete(`${component.origin}|${component.repoName}`);
+      }
+      throw e;
+    }
   }
 
   /** Poll spacing while waiting on a build. @lastreviewed null */
