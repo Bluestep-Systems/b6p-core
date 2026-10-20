@@ -142,9 +142,14 @@ number to make the check pass** — tag the JSDoc instead.
   npm, then creates the GitHub Release from that CHANGELOG block, titled with the tag message's
   first line. A Release made by hand first is left as is. Pushing tags without a Release step is
   how the Releases page stopped at v0.5.0 while npm reached 0.7.0.
-- **Feedback-pipeline lifecycle**: when a fix has actually shipped, comment on the reporting ClickUp
-  task and move it to **"check on 20"**. **Never close tasks directly** — a pass closes via the
-  resolution-note email flow, a fail returns on the "rejected fix" lane with the failing check cited.
+- **Feedback-pipeline lifecycle**: once a fix has shipped (see below) and you have checked it against
+  the published release, close the reporting ClickUp task, in this order: post a task comment with
+  the versions, PRs and what you verified (and what you could not); set `resolution` to `shipped` and
+  write the `resolution-note` for the reporter (plain words: what was wrong, what changed, which
+  version has it, how to get it — no paths, ids or hashes); only then set the status to `Closed`,
+  because the close webhook emails the note verbatim. Then close the linked GitHub issue as
+  completed. **Don't use "check on 20"** — that status is only for tasks waiting on an eb release. A
+  fix that fails its check goes to "rejected fix" with the failing check cited.
 - **Shipping chain**: this library reaches users only through its consumers. A core fix is shipped
   once a b6p-core release lands **and** a consumer release (b6p-cli, vscode-extension) bundles it —
   not when the PR merges here.
