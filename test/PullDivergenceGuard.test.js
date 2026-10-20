@@ -255,6 +255,109 @@ test("failed ETag integrity check throws BEFORE anything is written", async () =
   assert.strictEqual(Object.keys(state.files).length, 1, "no temp file may be written before integrity passes");
 });
 
+// ─── ETag shapes (b6p-cli#35) ────────────────────────────────────────────────
+// download() checks the bytes against a SHA-512 ETag (strong or weak), skips the check for a
+// numeric or complex one, and throws EtagParsingError on anything else. The platform sends files
+// last saved before about May 2026 with a WEAK numeric ETag, which matched none of the patterns,
+// so the pull stopped at the first such file.
+
+const WEAK_NUMERIC_ETAG = 'W/"1775493039859-123320___3785956"';
+
+test("weak numeric ETag (b6p-cli#35) → downloads with no integrity check and records the file", async () => {
+  const { file, state } = makeScenario({
+    localContent: null,
+    remoteContent: PLATFORM,
+    lastVerifiedHash: null,
+    etagOverride: WEAK_NUMERIC_ETAG,
+  });
+  await file.download();
+  assert.strictEqual(targetContent(state), PLATFORM);
+  assert.deepStrictEqual(state.metadata.pushPullRecords, [
+    { downstairsPath: TARGET, lastVerifiedHash: sha512(PLATFORM) },
+  ]);
+});
+
+test("weak numeric ETag keeps the file's sync record and moves it to the new bytes", async () => {
+  // The .gitignore workaround in the issue dropped this record; the fix must not.
+  const { file, state } = makeScenario({
+    localContent: ORIGINAL,
+    remoteContent: PLATFORM,
+    lastVerifiedHash: sha512(ORIGINAL),
+    etagOverride: WEAK_NUMERIC_ETAG,
+  });
+  await file.download();
+  assert.strictEqual(targetContent(state), PLATFORM);
+  assert.deepStrictEqual(state.metadata.pushPullRecords, [
+    { downstairsPath: TARGET, lastVerifiedHash: sha512(PLATFORM) },
+  ]);
+});
+
+test("strong numeric ETag → still downloads with no integrity check", async () => {
+  const { file, state } = makeScenario({
+    localContent: null,
+    remoteContent: PLATFORM,
+    lastVerifiedHash: null,
+    etagOverride: '"1700000000000-123_456"',
+  });
+  await file.download();
+  assert.strictEqual(targetContent(state), PLATFORM);
+});
+
+test("complex memory-document ETag → still downloads with no integrity check", async () => {
+  const { file, state } = makeScenario({
+    localContent: null,
+    remoteContent: PLATFORM,
+    lastVerifiedHash: null,
+    etagOverride: '"1700000000000-{"class": "myassn.document.LibraryServletMemoryDocumentKey", "classId": 42}"',
+  });
+  await file.download();
+  assert.strictEqual(targetContent(state), PLATFORM);
+});
+
+test("weak SHA-512 ETag, matching bytes → still downloads", async () => {
+  const { file, state } = makeScenario({
+    localContent: null,
+    remoteContent: PLATFORM,
+    lastVerifiedHash: null,
+    etagOverride: 'W/"' + sha512(PLATFORM) + '"',
+  });
+  await file.download();
+  assert.strictEqual(targetContent(state), PLATFORM);
+});
+
+test("weak SHA-512 ETag, different bytes → still FileIntegrityError before anything is written", async () => {
+  const { file, state } = makeScenario({
+    localContent: ORIGINAL,
+    remoteContent: PLATFORM,
+    lastVerifiedHash: sha512(ORIGINAL),
+    etagOverride: 'W/"' + "a".repeat(128) + '"',
+  });
+  await assert.rejects(() => file.download(), Err.FileIntegrityError);
+  assert.strictEqual(targetContent(state), ORIGINAL);
+  assert.strictEqual(state.directTargetWrites + state.renamesToTarget, 0);
+});
+
+test("unrecognised ETag → still EtagParsingError before anything is written", async () => {
+  const garbage = [
+    '"not-an-etag"',
+    'W/"not-an-etag"',
+    'W/"' + "a".repeat(64) + '"', // a hash, but not SHA-512 length
+    'W/"177549303-123320"', // numeric, but 9 digits: not a millisecond timestamp
+    'W/"1775493039859-123320___3785956x"',
+  ];
+  for (const etag of garbage) {
+    const { file, state } = makeScenario({
+      localContent: ORIGINAL,
+      remoteContent: PLATFORM,
+      lastVerifiedHash: sha512(ORIGINAL),
+      etagOverride: etag,
+    });
+    await assert.rejects(() => file.download(), Err.EtagParsingError, `expected EtagParsingError for ${etag}`);
+    assert.strictEqual(targetContent(state), ORIGINAL);
+    assert.strictEqual(state.directTargetWrites + state.renamesToTarget, 0);
+  }
+});
+
 (async () => {
   for (const { name, fn } of tests) {
     try {

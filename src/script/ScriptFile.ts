@@ -15,7 +15,9 @@ import { B6PUri } from "../B6PUri";
 export class ScriptFile extends ScriptNode {
   private static ComplexEtagPattern =
     /^"?\d{10,13}-\{.*?"class":\s*"myassn\.document\.(Proxy|LibraryServlet)MemoryDocumentKey".*?"classId":\s*\d+.*?\}"?$/;
-  private static NumericEtagPattern = /^"?\d{10,13}-[\d_]+"?$/;
+  // Strong or weak: files last saved before about May 2026 come back as `W/"<ms>-<id>"`, and like
+  // the strong form it carries no content hash (b6p-cli#35).
+  private static NumericEtagPattern = /^(?:W\/)?"?\d{10,13}-[\d_]+"?$/;
   private static EtagPattern = /^"[a-f0-9]{128}"$/;
   private static WeakEtagPattern = /^W\/"[a-f0-9]{128}"$/;
 
@@ -83,7 +85,8 @@ export class ScriptFile extends ScriptNode {
 
   /**
    * The SHA-512 content hash an ETag header carries, strong (`"<sha512>"`) or weak
-   * (`W/"<sha512>"`), lowercased. Numeric and other ETags carry no content hash.
+   * (`W/"<sha512>"`), lowercased. Numeric ETags (`"<ms>-<id>"` or weak `W/"<ms>-<id>"`) and other
+   * ETags carry no content hash.
    * @param etagHeader The raw `ETag` header, if any
    * @returns The hex hash, or `null` when the header has none
    * @lastreviewed null
@@ -245,7 +248,8 @@ export class ScriptFile extends ScriptNode {
    * Performs integrity verification using ETag headers (SHA-512 hashes only) and records the
    * file's `lastVerifiedHash` via {@link touch}.
    * Skips download if the file is in .gitignore and removes it from metadata instead.
-   * Skips integrity verification for numeric and complex ETags (no hash available).
+   * Skips integrity verification for numeric ETags (strong or weak) and complex ETags (no hash
+   * available); the rest of the download, divergence guard and {@link touch} included, runs as usual.
    *
    * Both the integrity check and the local-divergence guard run against the
    * downloaded bytes BEFORE anything is written, so a failed integrity check or
