@@ -5,6 +5,20 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A pull no longer stops at a file served with a weak numeric ETag**
+  ([b6p-cli#35](https://github.com/Bluestep-Systems/b6p-cli/issues/35), ClickUp 86bcn314g). The
+  platform sends files last saved before about May 2026 with `W/"<ms>-<id>"`, which matched none of
+  the ETag patterns, so `ScriptFile.download()` threw `Err.EtagParsingError` (`Could not parse
+  upstairs etag`) and the pull ended there, before `declarations/` was refreshed. A weak numeric
+  ETag is now handled like a strong one: it carries no content hash, so the integrity check is
+  skipped (logged at debug), the file is written and its sync record kept. `getUpstairsHash()`
+  already returned `null` for it and still does; audit and push read it as indeterminate, as before.
+  SHA-512 ETags are checked exactly as before, and an ETag of any other shape still throws.
+
 ## [0.8.0] - 2026-09-25
 
 ### Fixed

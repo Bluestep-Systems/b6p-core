@@ -35,11 +35,13 @@ const FILE_PATH = path.join(path.parse(process.cwd()).root, "ws", "U100001", "My
 
 // Build a ScriptFile backed by a fake ScriptContext: stubbed fs (returns the given
 // local content) and a stubbed sessionManager whose HEAD response carries `etagValue`
-// (pass null to omit the ETag header entirely).
-function makeFile(localContent, etagValue) {
+// (pass null to omit the ETag header entirely). Pass `debugCalls` (an array) to collect
+// the arguments of every logger.debug call, which is where the ETag class is named.
+function makeFile(localContent, etagValue, debugCalls) {
   const bytes = Buffer.from(localContent, "utf8");
   const noop = () => {};
-  const logger = { debug: noop, info: noop, warn: noop, error: noop };
+  const debug = debugCalls ? (...args) => debugCalls.push(args) : noop;
+  const logger = { debug, info: noop, warn: noop, error: noop };
   const fs = {
     stat: async () => ({ type: "file", mtime: 0, ctime: 0, size: bytes.length }),
     readFile: async () => new Uint8Array(bytes),
@@ -66,6 +68,11 @@ const differingEtag = '"' + "a".repeat(128) + '"';
 const numericEtag = '"1700000000000-123_456"';
 const complexEtag =
   '"1700000000000-{"class": "myassn.document.LibraryServletMemoryDocumentKey", "classId": 42}"';
+// Weak SHA-512 ETags: the same content hash behind a `W/` prefix.
+const weakMatchingEtag = "W/" + matchingEtag;
+const weakDifferingEtag = "W/" + differingEtag;
+// The weak numeric ETag from b6p-cli#35, sent for files last saved before about May 2026.
+const weakNumericEtag = 'W/"1775493039859-123320___3785956"';
 
 // ─── currentIntegrityStatus: the tri-state at the heart of the fix ───────────
 
@@ -87,6 +94,35 @@ test("status: numeric ETag (no content hash) → indeterminate, NOT mismatch", a
 test("status: complex memory-document ETag → indeterminate (the issue #4 case)", async () => {
   const file = makeFile(CONTENT, complexEtag);
   assert.strictEqual(await file.currentIntegrityStatus(OPS), "indeterminate");
+});
+
+test("status: weak SHA-512 ETag, equal hash → match", async () => {
+  const file = makeFile(CONTENT, weakMatchingEtag);
+  assert.strictEqual(await file.currentIntegrityStatus(OPS), "match");
+});
+
+test("status: weak SHA-512 ETag, differing hash → mismatch", async () => {
+  const file = makeFile(CONTENT, weakDifferingEtag);
+  assert.strictEqual(await file.currentIntegrityStatus(OPS), "mismatch");
+});
+
+// Before the fix this ETag already came back null here, but only because it fell through to the
+// "complex" branch; download() has no such fallback and threw EtagParsingError. Checking the
+// logged class pins it to the numeric branch both paths share.
+test("status: weak numeric ETag (b6p-cli#35) → indeterminate, classed as numeric", async () => {
+  const debugCalls = [];
+  const file = makeFile(CONTENT, weakNumericEtag, debugCalls);
+  assert.strictEqual(await file.currentIntegrityStatus(OPS), "indeterminate");
+  assert.ok(
+    debugCalls.some(([label, value]) => label === "numeric etagHeader:" && value === weakNumericEtag),
+    "expected a `numeric etagHeader:` debug line for " + weakNumericEtag
+  );
+});
+
+test("status: strong numeric ETag is still classed as numeric", async () => {
+  const debugCalls = [];
+  await makeFile(CONTENT, numericEtag, debugCalls).currentIntegrityStatus(OPS);
+  assert.ok(debugCalls.some(([label, value]) => label === "numeric etagHeader:" && value === numericEtag));
 });
 
 test("status: missing ETag header → indeterminate", async () => {
