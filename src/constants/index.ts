@@ -13,6 +13,7 @@ export { CryptoAlgorithms } from "./CryptoAlgorithms";
 export { ExtensionConfig } from "./ExtensionConfig";
 export { FileExtensions } from "./FileExtensions";
 export { FolderNames } from "./FolderNames";
+export { Gateway } from "./Gateway";
 export { GitHubUrls } from "./GitHubUrls";
 export { Http } from "./Http";
 export { MimeTypes } from "./MimeTypes";

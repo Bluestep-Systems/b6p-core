@@ -5,6 +5,24 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`core.gateway`: a client for web-global's gateway** (`gateway.bluestep.net`), the origin for
+  knowledge bases and marketplace repos (ClickUp 86bczwmwa). `GatewayService` holds a
+  `GatewayClient` that sends the `b6pt_` token `BearerAuthProvider` already stores as
+  `Authorization: Bearer` on every request, with no session bootstrap, one request at a time. The
+  origin comes from the `gatewayUrl` config value (default `https://gateway.bluestep.net`; plain
+  http only on loopback). Failures are typed `Err.Gateway*` errors (auth, scope, not permitted, not
+  found, non-fast-forward, too large, unavailable, unexpected, config), also available to a git
+  layer through `gatewayErrorFor`. `authHeadersFor(url)` hands the header to a git client, for
+  gateway URLs only. The token never appears in an error message or a log line.
+- **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
+  reads instead of `authHeaderValue()`.
+- **`FakeGateway`** (testing): an in-process gateway on `127.0.0.1` answering the contract's REST
+  shapes and error codes, with hooks for git routes.
+
 ## [0.8.1] - 2026-10-20
 
 ### Fixed

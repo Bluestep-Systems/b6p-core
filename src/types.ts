@@ -691,3 +691,110 @@ export type GqlParentNameResp = {
     }[];
   };
 };
+
+// ── Gateway (web-global, gateway.bluestep.net) ──────────────────────────
+
+/**
+ * The `error` codes the gateway puts in an error body, per the b6p gateway contract. A body may
+ * carry a code outside this list; {@link Err.GatewayError.code} keeps whatever arrived.
+ * @lastreviewed null
+ */
+export type GatewayErrorCode =
+  | "token-missing"
+  | "token-invalid"
+  | "scope-missing"
+  | "not-permitted"
+  | "not-found"
+  | "non-fast-forward"
+  | "too-large"
+  | "forge-unavailable";
+
+/**
+ * The JSON body of a gateway error response. On git routes the body is best-effort, so every
+ * member may be absent.
+ * @lastreviewed null
+ */
+export interface GatewayErrorBody {
+  /**
+   * One of {@link GatewayErrorCode}, or an unknown code.
+   * @lastreviewed null
+   */
+  error?: string;
+  /**
+   * What happened, in the gateway's words.
+   * @lastreviewed null
+   */
+  message?: string;
+  /**
+   * The scope the token lacks; present with `scope-missing`.
+   * @lastreviewed null
+   */
+  scope?: string;
+}
+
+/**
+ * One knowledge base the caller may read, as `GET /api/v1/knowledge-bases` lists it.
+ * @lastreviewed null
+ */
+export interface GatewayKnowledgeBase {
+  /**
+   * The CLI address: `global/<name>` or `tenant/<U…>/<name>`.
+   * @lastreviewed null
+   */
+  ref: string;
+  scope: "global" | "tenant";
+  /**
+   * The tenant key (`U<seqnum>`) for a tenant KB, `null` for a global one.
+   * @lastreviewed null
+   */
+  tenant: string | null;
+  name: string;
+  /**
+   * Falls back to the name when the tenant side has no title.
+   * @lastreviewed null
+   */
+  title: string;
+  liveBranch: string;
+  /**
+   * Whether the caller may push to this knowledge base.
+   * @lastreviewed null
+   */
+  canPush: boolean;
+  /**
+   * Absolute smart-HTTP URL. The server owns the layout; the client never builds one.
+   * @lastreviewed null
+   */
+  gitUrl: string;
+}
+
+/**
+ * Body of `GET /api/v1/knowledge-bases`.
+ * @lastreviewed null
+ */
+export interface GatewayKnowledgeBaseList {
+  knowledgeBases: GatewayKnowledgeBase[];
+}
+
+/**
+ * One marketplace repo, as `GET /api/v1/registry/repos` lists it.
+ * @lastreviewed null
+ */
+export interface GatewayMarketplaceRepo {
+  name: string;
+  description: string;
+  defaultBranch: string;
+  tags: string[];
+  /**
+   * Absolute smart-HTTP URL. The server owns the layout; the client never builds one.
+   * @lastreviewed null
+   */
+  gitUrl: string;
+}
+
+/**
+ * Body of `GET /api/v1/registry/repos`.
+ * @lastreviewed null
+ */
+export interface GatewayMarketplaceRepoList {
+  repos: GatewayMarketplaceRepo[];
+}
