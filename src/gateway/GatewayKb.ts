@@ -334,7 +334,8 @@ export class GatewayKb {
    * before anything is sent.
    *
    * @throws {Err.GatewayKnowledgeBasePushNotPermittedError} the listing says this user cannot push there
-   * @throws {Err.GatewayKnowledgeBaseError} `not-a-kb`: the clone's remote is not a knowledge base this user can see
+   * @throws {Err.GatewayKnowledgeBaseError} `not-a-kb`: the clone's remote is not a knowledge base this user can see;
+   *   `wrong-branch`: the clone is not on the live branch (or is detached), refused before any git request
    * @throws {Err.GatewayConflictError} the gateway's branch has moved on (not a fast-forward)
    * @throws {Err.GatewayWorkingCopyError} `not-a-clone`, `detached` or `no-upstream`
    * @throws {Err.GatewayError} a subclass for any other gateway failure
@@ -355,6 +356,18 @@ export class GatewayKb {
       throw new Err.GatewayKnowledgeBasePushNotPermittedError(
         `This user may read knowledge base ${kb.ref} but not push to it.`,
         kb.ref
+      );
+    }
+    const { branch } = await this.git.status(dir);
+    if (branch !== kb.liveBranch) {
+      throw new Err.GatewayKnowledgeBaseError(
+        branch === null
+          ? `${dir} is on a detached head, but knowledge base ${kb.ref} takes pushes only on its live branch ${kb.liveBranch}.`
+          : `${dir} is on branch ${branch}, but knowledge base ${kb.ref} takes pushes only on its live branch ${kb.liveBranch}.`,
+        "wrong-branch",
+        kb.ref,
+        [],
+        { branch, liveBranch: kb.liveBranch }
       );
     }
     const pushed = await this.git.push(dir);

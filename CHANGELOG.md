@@ -35,7 +35,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   of another repository is `GatewayWorkingCopyError` `wrong-repository`; local changes in the way are
   `GatewayDirtyWorkingTreeError`; it never prompts and never discards local changes); `push(dir)`
   requires `canPush` from a fresh listing (else `GatewayKnowledgeBasePushNotPermittedError` with the
-  `ref`, before anything is sent) and returns `{ pushed, commit, ref }`. `GatewayGit.originUrl(dir)`
+  `ref`, before anything is sent; a clone off the live branch or detached is `GatewayKnowledgeBaseError`
+  `wrong-branch` with `branch` and `liveBranch`) and returns `{ pushed, commit, ref }`. `GatewayGit.originUrl(dir)`
   is added for finding a clone's remote.
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.

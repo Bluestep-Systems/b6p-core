@@ -203,7 +203,7 @@ const pushed = await core.gateway.kb.push(pulled.dir); // { pushed, commit, ref 
   has no way to discard local changes.
 - `push` finds the KB from the clone's remote in a fresh listing and refuses a KB with
   `canPush: false` before sending anything, with `GatewayKnowledgeBasePushNotPermittedError` (`ref`).
-  A gateway branch that moved on is `GatewayConflictError`.
+  A clone not on the KB's live branch (or detached) is refused the same way with `GatewayKnowledgeBaseError` (`wrong-branch`, `branch`, `liveBranch`). A gateway branch that moved on is `GatewayConflictError`.
 
 For specs, [`FakeGateway`](src/testing/FakeGateway.ts) is an in-process gateway on `127.0.0.1` that
 answers the contract's REST routes and error codes, with `grantToken`, `failNext` and `route` (for

@@ -1031,7 +1031,8 @@ export namespace Err {
    * `<U…>/<name>`), `not-found` (no knowledge base the caller may read has that address; the
    * gateway does not say whether it exists), `ambiguous` (the listing holds more than one match;
    * `candidates` are their refs), `unsafe-name` (the listed name cannot be a folder name) or
-   * `not-a-kb` (a clone's remote is not a knowledge base the caller can see).
+   * `not-a-kb` (a clone's remote is not a knowledge base the caller can see) or `wrong-branch` (a push
+   * from a clone that is not on the knowledge base's live branch, or on a detached head).
    * @lastreviewed null
    */
   export class GatewayKnowledgeBaseError extends GatewayError {
@@ -1039,7 +1040,7 @@ export namespace Err {
      * Which of the situations it was.
      * @lastreviewed null
      */
-    readonly reason: "bad-ref" | "not-found" | "ambiguous" | "unsafe-name" | "not-a-kb";
+    readonly reason: "bad-ref" | "not-found" | "ambiguous" | "unsafe-name" | "not-a-kb" | "wrong-branch";
     /**
      * The address that was asked for, or `null` when none applies (`not-a-kb`).
      * @lastreviewed null
@@ -1050,17 +1051,30 @@ export namespace Err {
      * @lastreviewed null
      */
     readonly candidates: string[];
+    /**
+     * For `wrong-branch`: the clone's current branch, `null` on a detached head. Otherwise `null`.
+     * @lastreviewed null
+     */
+    readonly branch: string | null;
+    /**
+     * For `wrong-branch`: the knowledge base's live branch. Otherwise `null`.
+     * @lastreviewed null
+     */
+    readonly liveBranch: string | null;
     constructor(
       message: string,
-      reason: "bad-ref" | "not-found" | "ambiguous" | "unsafe-name" | "not-a-kb",
+      reason: "bad-ref" | "not-found" | "ambiguous" | "unsafe-name" | "not-a-kb" | "wrong-branch",
       ref: string | null,
-      candidates: string[] = []
+      candidates: string[] = [],
+      branches: { branch: string | null; liveBranch: string } | null = null
     ) {
       super(message, null, reason);
       this.name = "GatewayKnowledgeBaseError";
       this.reason = reason;
       this.ref = ref;
       this.candidates = candidates;
+      this.branch = branches?.branch ?? null;
+      this.liveBranch = branches?.liveBranch ?? null;
     }
   }
 

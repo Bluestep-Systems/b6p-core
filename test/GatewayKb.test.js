@@ -388,6 +388,31 @@ test("push consults a fresh listing: a permission withdrawn since the pull is ho
   });
 });
 
+test("push from a clone not on the live branch, or detached, is refused early with ref and branches", async () => {
+  await withKb(async ({ fake, kb }) => {
+    const cwd = tmp();
+    const { dir } = await kb.pull("demo", { cwd });
+    git(dir, "checkout", "-q", "-b", "side");
+    fs.writeFileSync(path.join(dir, "s.txt"), "s\n");
+    git(dir, "add", "-A");
+    git(dir, "commit", "-m", "side");
+    let before = fake.requests.length;
+    let error = await rejectsWith(kb.push(dir), Err.GatewayKnowledgeBaseError);
+    assert.strictEqual(error.reason, "wrong-branch");
+    assert.strictEqual(error.ref, "global/demo");
+    assert.strictEqual(error.branch, "side");
+    assert.strictEqual(error.liveBranch, "master");
+    assert.deepStrictEqual(fake.requests.slice(before).map((r) => r.path), ["/api/v1/knowledge-bases"]);
+
+    git(dir, "checkout", "-q", "--detach");
+    before = fake.requests.length;
+    error = await rejectsWith(kb.push(dir), Err.GatewayKnowledgeBaseError);
+    assert.strictEqual(error.reason, "wrong-branch");
+    assert.strictEqual(error.branch, null);
+    assert.deepStrictEqual(fake.requests.slice(before).map((r) => r.path), ["/api/v1/knowledge-bases"]);
+  });
+});
+
 test("push of a non-fast-forward is a GatewayConflictError", async () => {
   await withKb(async ({ kb, demo }) => {
     const cwd = tmp();
