@@ -90,6 +90,9 @@ async function withMarket(fn) {
   }
 }
 
+/** Pull into `dir` (absolute in these specs) with the consumer's cwd. */
+const pullAt = (market, name, dir, options = {}) => market.pull(name, { cwd: os.tmpdir(), dir, ...options });
+
 const read = (...p) => fs.readFileSync(path.join(...p), "utf8");
 
 // ── list / get ──────────────────────────────────────────────────────────
@@ -108,23 +111,31 @@ test("list returns typed repos with their tags", async () => {
   });
 });
 
-test("a listing of the wrong shape is GatewayUnexpectedResponseError", async () => {
-  const goodUrl = "https://gateway.invalid/x.git";
-  const bads = [
-    [{ name: "ok", description: "", defaultBranch: "master", tags: [1], gitUrl: goodUrl }],
-    [{ name: "ok", description: "", defaultBranch: "", tags: [], gitUrl: goodUrl }],
-    [{ name: "ok", description: "", defaultBranch: "master", tags: [], gitUrl: 7 }],
-    [{ name: "ok", defaultBranch: "master", tags: [], gitUrl: goodUrl }],
-    [{ name: "../escape", description: "", defaultBranch: "master", tags: [], gitUrl: goodUrl }],
-    [{ name: "a/b", description: "", defaultBranch: "master", tags: [], gitUrl: goodUrl }],
-    ["not an object"],
-  ];
-  for (const repos of bads) {
-    await withMarket(async ({ market, fake }) => {
-      fake.repos = repos;
-      await rejectsWith(market.list(), Err.GatewayUnexpectedResponseError);
-    });
-  }
+test("a malformed entry is skipped: it does not break list, get or pull for the others", async () => {
+  await withMarket(async ({ market, fake }) => {
+    const good = fake.repos[0];
+    fake.repos = [
+      { name: "nodesc", defaultBranch: "master", tags: [], gitUrl: good.gitUrl },
+      "not an object",
+      { ...good, name: "badtags", tags: [1] },
+      { ...good, name: "nourl", gitUrl: 7 },
+      { ...good, name: "emptybranch", defaultBranch: "" },
+      good,
+    ];
+    assert.deepStrictEqual(
+      (await market.list()).map((r) => r.name),
+      ["core"]
+    );
+    assert.strictEqual((await market.get("core")).name, "core");
+    const error = await rejectsWith(market.get("nodesc"), Err.GatewayUnexpectedResponseError);
+    assert.ok(!/gateway\.invalid/.test(error.message));
+    await rejectsWith(market.get("absent"), Err.GatewayNotFoundError);
+    const dir = path.join(tmp(), "c");
+    assert.strictEqual((await pullAt(market, "core", dir)).action, "cloned");
+  });
+});
+
+test("a body that is not a listing is GatewayUnexpectedResponseError", async () => {
   await withMarket(async ({ market, fake }) => {
     fake.route({
       method: "GET",
@@ -138,6 +149,54 @@ test("a listing of the wrong shape is GatewayUnexpectedResponseError", async () 
   });
 });
 
+test("an unsafe repo name blocks only a pull that would use it as a folder", async () => {
+  const names = [
+    "..",
+    ".",
+    "a/b",
+    "a\\b",
+    "C:",
+    "a:b",
+    "a*",
+    "a?",
+    'a"',
+    "a<",
+    "a>",
+    "a|",
+    " pad",
+    "pad ",
+    "dot.",
+    "CON",
+    "nul",
+    "COM1",
+    "lpt9",
+    "con.txt",
+    "",
+  ];
+  for (const name of names) {
+    await withMarket(async ({ market, fake }) => {
+      fake.repos = [{ ...fake.repos[0], name }];
+      const listed = await market.list();
+      assert.strictEqual(listed.length, 1, `list keeps ${JSON.stringify(name)}`);
+      const base = tmp();
+      await rejectsWith(market.pull(name, { cwd: base }), Err.GatewayUnexpectedResponseError);
+      assert.deepStrictEqual(fs.readdirSync(base), [], `nothing created for ${JSON.stringify(name)}`);
+    });
+  }
+  // an explicit dir needs no safe name
+  await withMarket(async ({ market, fake }) => {
+    fake.repos = [{ ...fake.repos[0], name: "CON" }];
+    const dir = path.join(tmp(), "ok");
+    assert.strictEqual((await pullAt(market, "CON", dir)).action, "cloned");
+  });
+  // ordinary names pass
+  await withMarket(async ({ market, fake }) => {
+    fake.repos = [{ ...fake.repos[0], name: "my-repo_2.x" }];
+    const base = tmp();
+    assert.strictEqual((await market.pull("my-repo_2.x", { cwd: base })).action, "cloned");
+  });
+});
+
 test("get finds a repo by name, and a missing name is GatewayNotFoundError", async () => {
   await withMarket(async ({ market }) => {
     assert.strictEqual((await market.get("extras")).name, "extras");
@@ -148,24 +207,21 @@ test("get finds a repo by name, and a missing name is GatewayNotFoundError", asy
 
 // ── pull ────────────────────────────────────────────────────────────────
 
-test("pull clones the default branch into ./<name> when no folder is given", async () => {
+test("pull with no dir clones into <cwd>/<name>; a relative dir resolves against cwd", async () => {
   await withMarket(async ({ market, core }) => {
-    const cwd = process.cwd();
     const base = tmp();
-    process.chdir(base);
-    try {
-      const result = await market.pull("core");
-      const dir = path.resolve(base, "core");
-      assert.strictEqual(fs.realpathSync(result.dir), fs.realpathSync(dir));
-      assert.strictEqual(result.action, "cloned");
-      assert.strictEqual(result.ref, "master");
-      assert.strictEqual(result.branch, "master");
-      assert.strictEqual(result.head, git(core, "rev-parse", "master"));
-      assert.strictEqual(read(dir, "a.txt"), "alpha two\n");
-      assert.strictEqual(git(dir, "status", "--porcelain"), "");
-    } finally {
-      process.chdir(cwd);
-    }
+    const before = process.cwd();
+    const result = await market.pull("core", { cwd: base });
+    assert.strictEqual(process.cwd(), before);
+    assert.strictEqual(result.dir, path.join(base, "core"));
+    assert.strictEqual(result.action, "cloned");
+    assert.strictEqual(result.ref, "master");
+    assert.strictEqual(result.branch, "master");
+    assert.strictEqual(result.head, git(core, "rev-parse", "master"));
+    assert.strictEqual(read(base, "core", "a.txt"), "alpha two\n");
+    const rel = await market.pull("extras", { cwd: base, dir: path.join("sub", "x") });
+    assert.strictEqual(rel.dir, path.join(base, "sub", "x"));
+    assert.strictEqual(read(base, "sub", "x", "x.txt"), "x\n");
   });
 });
 
@@ -173,18 +229,18 @@ test("pull clones a named branch and a tag (lightweight and annotated)", async (
   await withMarket(async ({ market, core }) => {
     commitToRemote(core, "dev", { "dev.txt": "dev\n" });
     const onDev = path.join(tmp(), "dev");
-    const dev = await market.pull("core", onDev, { ref: "dev" });
+    const dev = await pullAt(market, "core", onDev, { ref: "dev" });
     assert.strictEqual(dev.branch, "dev");
     assert.strictEqual(read(onDev, "dev.txt"), "dev\n");
 
     const onV1 = path.join(tmp(), "v1");
-    const v1 = await market.pull("core", onV1, { ref: "v1" });
+    const v1 = await pullAt(market, "core", onV1, { ref: "v1" });
     assert.strictEqual(v1.branch, null);
     assert.strictEqual(v1.head, git(core, "rev-parse", "v1"));
     assert.strictEqual(read(onV1, "a.txt"), "alpha\n");
 
     const onV2 = path.join(tmp(), "v2");
-    const v2 = await market.pull("core", onV2, { ref: "v2" });
+    const v2 = await pullAt(market, "core", onV2, { ref: "v2" });
     assert.strictEqual(v2.branch, null);
     assert.strictEqual(v2.head, git(core, "rev-parse", "v2^{commit}"));
   });
@@ -193,7 +249,7 @@ test("pull clones a named branch and a tag (lightweight and annotated)", async (
 test("an unknown ref is GatewayWorkingCopyError ref-not-found and leaves no folder", async () => {
   await withMarket(async ({ market }) => {
     const dir = path.join(tmp(), "none");
-    const error = await rejectsWith(market.pull("core", dir, { ref: "nope" }), Err.GatewayWorkingCopyError);
+    const error = await rejectsWith(pullAt(market, "core", dir, { ref: "nope" }), Err.GatewayWorkingCopyError);
     assert.strictEqual(error.reason, "ref-not-found");
     assert.ok(!fs.existsSync(dir));
   });
@@ -202,7 +258,7 @@ test("an unknown ref is GatewayWorkingCopyError ref-not-found and leaves no fold
 test("pull of a missing repo is GatewayNotFoundError and creates nothing", async () => {
   await withMarket(async ({ market }) => {
     const dir = path.join(tmp(), "none");
-    await rejectsWith(market.pull("nope", dir), Err.GatewayNotFoundError);
+    await rejectsWith(pullAt(market, "nope", dir), Err.GatewayNotFoundError);
     assert.ok(!fs.existsSync(dir));
   });
 });
@@ -210,15 +266,15 @@ test("pull of a missing repo is GatewayNotFoundError and creates nothing", async
 test("pull fast-forwards an existing clone, then reports up to date", async () => {
   await withMarket(async ({ market, core }) => {
     const dir = path.join(tmp(), "core");
-    await market.pull("core", dir);
+    await pullAt(market, "core", dir);
     const before = git(dir, "rev-parse", "HEAD");
     const next = commitToRemote(core, "master", { "new.txt": "new\n" }, "third");
-    const ff = await market.pull("core", dir);
+    const ff = await pullAt(market, "core", dir);
     assert.strictEqual(ff.action, "fast-forwarded");
     assert.strictEqual(ff.from, before);
     assert.strictEqual(ff.head, next);
     assert.strictEqual(read(dir, "new.txt"), "new\n");
-    const again = await market.pull("core", dir);
+    const again = await pullAt(market, "core", dir);
     assert.strictEqual(again.action, "up-to-date");
     assert.strictEqual(again.head, next);
   });
@@ -227,22 +283,46 @@ test("pull fast-forwards an existing clone, then reports up to date", async () =
 test("an existing tag checkout is already up to date, even when the branch moves on", async () => {
   await withMarket(async ({ market, core }) => {
     const dir = path.join(tmp(), "core");
-    await market.pull("core", dir, { ref: "v2" });
+    await pullAt(market, "core", dir, { ref: "v2" });
     commitToRemote(core, "master", { "new.txt": "new\n" }, "third");
-    const result = await market.pull("core", dir, { ref: "v2" });
+    const result = await pullAt(market, "core", dir, { ref: "v2" });
     assert.strictEqual(result.action, "up-to-date");
     assert.strictEqual(result.branch, null);
     assert.ok(!fs.existsSync(path.join(dir, "new.txt")));
   });
 });
 
+test("a tag that moved or was deleted on the gateway is GatewayCloneMismatchError tag-moved", async () => {
+  await withMarket(async ({ market, core }) => {
+    const dir = path.join(tmp(), "core");
+    await pullAt(market, "core", dir, { ref: "v1" });
+    const head = git(dir, "rev-parse", "HEAD");
+    assert.strictEqual((await pullAt(market, "core", dir, { ref: "v1" })).action, "up-to-date");
+    git(core, "tag", "-f", "v1", "master");
+    let error = await rejectsWith(pullAt(market, "core", dir, { ref: "v1" }), Err.GatewayCloneMismatchError);
+    assert.strictEqual(error.reason, "tag-moved");
+    assert.strictEqual(git(dir, "rev-parse", "HEAD"), head);
+    git(core, "tag", "-d", "v1");
+    error = await rejectsWith(pullAt(market, "core", dir, { ref: "v1" }), Err.GatewayCloneMismatchError);
+    assert.strictEqual(error.reason, "tag-moved");
+  });
+});
+
+test("an annotated tag that has not moved is up to date", async () => {
+  await withMarket(async ({ market }) => {
+    const dir = path.join(tmp(), "core");
+    await pullAt(market, "core", dir, { ref: "v2" });
+    assert.strictEqual((await pullAt(market, "core", dir, { ref: "v2" })).action, "up-to-date");
+  });
+});
+
 test("a clone with its own commits reports ahead and keeps them", async () => {
   await withMarket(async ({ market }) => {
     const dir = path.join(tmp(), "core");
-    await market.pull("core", dir);
+    await pullAt(market, "core", dir);
     git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "mine");
     const head = git(dir, "rev-parse", "HEAD");
-    const result = await market.pull("core", dir);
+    const result = await pullAt(market, "core", dir);
     assert.strictEqual(result.action, "ahead");
     assert.strictEqual(git(dir, "rev-parse", "HEAD"), head);
   });
@@ -251,9 +331,9 @@ test("a clone with its own commits reports ahead and keeps them", async () => {
 test("a folder holding another repo's clone is refused and left untouched", async () => {
   await withMarket(async ({ market }) => {
     const dir = path.join(tmp(), "folder");
-    await market.pull("extras", dir);
+    await pullAt(market, "extras", dir);
     const before = git(dir, "rev-parse", "HEAD");
-    const error = await rejectsWith(market.pull("core", dir), Err.GatewayCloneMismatchError);
+    const error = await rejectsWith(pullAt(market, "core", dir), Err.GatewayCloneMismatchError);
     assert.strictEqual(error.reason, "different-repo");
     assert.strictEqual(error.repo, "core");
     assert.strictEqual(git(dir, "rev-parse", "HEAD"), before);
@@ -265,18 +345,18 @@ test("a clone on another ref than the one asked for is refused and left untouche
   await withMarket(async ({ market, core }) => {
     commitToRemote(core, "dev", { "dev.txt": "dev\n" });
     const dir = path.join(tmp(), "core");
-    await market.pull("core", dir);
+    await pullAt(market, "core", dir);
     const before = git(dir, "rev-parse", "HEAD");
-    let error = await rejectsWith(market.pull("core", dir, { ref: "dev" }), Err.GatewayCloneMismatchError);
+    let error = await rejectsWith(pullAt(market, "core", dir, { ref: "dev" }), Err.GatewayCloneMismatchError);
     assert.strictEqual(error.reason, "different-ref");
-    error = await rejectsWith(market.pull("core", dir, { ref: "v1" }), Err.GatewayCloneMismatchError);
+    error = await rejectsWith(pullAt(market, "core", dir, { ref: "v1" }), Err.GatewayCloneMismatchError);
     assert.strictEqual(error.reason, "different-ref");
 
     const onTag = path.join(tmp(), "tag");
-    await market.pull("core", onTag, { ref: "v1" });
-    error = await rejectsWith(market.pull("core", onTag, { ref: "v2" }), Err.GatewayCloneMismatchError);
+    await pullAt(market, "core", onTag, { ref: "v1" });
+    error = await rejectsWith(pullAt(market, "core", onTag, { ref: "v2" }), Err.GatewayCloneMismatchError);
     assert.strictEqual(error.reason, "different-ref");
-    error = await rejectsWith(market.pull("core", onTag), Err.GatewayCloneMismatchError);
+    error = await rejectsWith(pullAt(market, "core", onTag), Err.GatewayCloneMismatchError);
     assert.strictEqual(error.reason, "different-ref");
     assert.strictEqual(git(dir, "rev-parse", "HEAD"), before);
   });
@@ -286,7 +366,7 @@ test("a non-empty folder that is not a clone is GatewayWorkingCopyError not-empt
   await withMarket(async ({ market }) => {
     const dir = tmp();
     fs.writeFileSync(path.join(dir, "mine.txt"), "mine\n");
-    const error = await rejectsWith(market.pull("core", dir), Err.GatewayWorkingCopyError);
+    const error = await rejectsWith(pullAt(market, "core", dir), Err.GatewayWorkingCopyError);
     assert.strictEqual(error.reason, "not-empty");
     assert.strictEqual(read(dir, "mine.txt"), "mine\n");
   });
@@ -295,10 +375,10 @@ test("a non-empty folder that is not a clone is GatewayWorkingCopyError not-empt
 test("a pull that would overwrite local changes is refused with the paths", async () => {
   await withMarket(async ({ market, core }) => {
     const dir = path.join(tmp(), "core");
-    await market.pull("core", dir);
+    await pullAt(market, "core", dir);
     commitToRemote(core, "master", { "a.txt": "remote\n" }, "third");
     fs.writeFileSync(path.join(dir, "a.txt"), "local edit\n");
-    const error = await rejectsWith(market.pull("core", dir), Err.GatewayDirtyWorkingTreeError);
+    const error = await rejectsWith(pullAt(market, "core", dir), Err.GatewayDirtyWorkingTreeError);
     assert.deepStrictEqual(error.paths, ["a.txt"]);
     assert.strictEqual(read(dir, "a.txt"), "local edit\n");
   });
@@ -307,7 +387,7 @@ test("a pull that would overwrite local changes is refused with the paths", asyn
 test("the marketplace has no push surface, and every request carried the token", async () => {
   await withMarket(async ({ market, fake }) => {
     assert.strictEqual(market.push, undefined);
-    await market.pull("core", path.join(tmp(), "core"));
+    await pullAt(market, "core", path.join(tmp(), "core"));
     assert.ok(fake.requests.length >= 2);
     for (const r of fake.requests) {
       assert.strictEqual(r.authorization, `Bearer ${TOKEN}`);
@@ -333,7 +413,9 @@ test("the marketplace has no push surface, and every request carried the token",
     failures++;
     console.error(`  ✗ the token never appears in a thrown message or log line\n    ${leaks.join("\n    ")}`);
   } else {
-    console.log(`  ✓ the token never appears in a thrown message or log line (${thrownMessages.length} errors, ${logLines.length} log lines)`);
+    console.log(
+      `  ✓ the token never appears in a thrown message or log line (${thrownMessages.length} errors, ${logLines.length} log lines)`
+    );
   }
 
   for (const dir of scratch) {

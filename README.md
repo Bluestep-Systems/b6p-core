@@ -188,14 +188,18 @@ no push (the gateway refuses it for the marketplace).
 ```typescript
 const repos = await core.gateway.marketplace.list();
 const repo = await core.gateway.marketplace.get("core"); // GatewayNotFoundError if absent
-await core.gateway.marketplace.pull("core"); // ./core at the default branch
-await core.gateway.marketplace.pull("core", dir, { ref: "v1.1.0" }); // a tag (detached head) or branch
+await core.gateway.marketplace.pull("core", { cwd }); // <cwd>/core at the default branch
+await core.gateway.marketplace.pull("core", { cwd, dir, ref: "v1.1.0" }); // a tag (detached head) or branch
 ```
 
+`cwd` is the consumer's own working directory (core never reads `process.cwd()`); `dir` is relative to it.
+`list` leaves out a malformed entry rather than failing for every repo (`get` of that name is
+`GatewayUnexpectedResponseError`), and a name is checked as a folder name only when `dir` is omitted.
 `pull` clones into a missing or empty folder. A folder that already holds a clone of the same
 `gitUrl` on a branch is fast-forwarded (`action`: `fast-forwarded`, `up-to-date` or `ahead`); a tag
-checkout is already `up-to-date`. A clone of another repo, or on another ref than asked for, is
-`GatewayCloneMismatchError` (`reason`: `different-repo` / `different-ref`, plus `dir` and `repo`) and is
+checkout is `up-to-date` when the gateway's tag still points at the checked-out commit, else
+`GatewayCloneMismatchError` (`tag-moved`). A clone of another repo, or on another ref than asked for, is
+`GatewayCloneMismatchError` (`reason`: `different-repo` / `different-ref` / `tag-moved`, plus `dir` and `repo`) and is
 left untouched; local changes the incoming commits would overwrite are `GatewayDirtyWorkingTreeError`;
 a folder with files but no clone is `GatewayWorkingCopyError` (`not-empty`).
 

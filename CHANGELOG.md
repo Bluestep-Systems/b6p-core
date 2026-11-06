@@ -30,9 +30,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`core.gateway.marketplace`: list and pull marketplace repos** (ClickUp 86bczx3r8).
   `list()` reads `GET /api/v1/registry/repos` (name, description, default branch, tags, `gitUrl`;
   a body of the wrong shape is `GatewayUnexpectedResponseError`), `get(name)` throws
-  `GatewayNotFoundError` for an absent repo, and `pull(name, dir?, { ref? })` makes a plain working
+  `GatewayNotFoundError` for an absent repo, and `pull(name, { cwd, dir?, ref? })` (core never reads `process.cwd()`) makes a plain working
   clone of a branch or tag (default branch, `./<name>`), or fast-forwards an existing clone of the
-  same repo. A clone of another repo or on another ref is `GatewayCloneMismatchError` and is left
+  same repo. A malformed listing entry is skipped, and a name is checked as a folder name (no separators, drive or reserved characters, device names) only when `dir` is omitted. A clone of another repo, on another ref, or on a tag that moved on the gateway is `GatewayCloneMismatchError` and is left
   untouched. It never reads or changes script sources or pins, and there is no push.
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.

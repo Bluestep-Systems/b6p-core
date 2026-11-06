@@ -416,6 +416,28 @@ export class GatewayGit {
 
   // ── internals ──────────────────────────────────────────────────────
 
+  /**
+   * The commit a tag points at on the gateway right now (an annotated tag is peeled to its commit),
+   * or `null` when the repo has no such tag. Nothing is written locally.
+   * @param gitUrl the `gitUrl` of a listing
+   * @throws {Err.GatewayError} a subclass for any gateway failure
+   * @lastreviewed null
+   */
+  remoteTagCommit(gitUrl: string, tag: string): Promise<string | null> {
+    return this.client.sequence(async () => {
+      await this.client.authHeadersFor(gitUrl);
+      const refs = await git.listServerRefs({
+        http: this.http(),
+        url: gitUrl,
+        prefix: "refs/tags/",
+        peelTags: true,
+      });
+      const exact = refs.filter((r) => r.ref === `refs/tags/${tag}`);
+      const found = exact[0];
+      return found ? (found.peeled ?? found.oid) : null;
+    });
+  }
+
   private requireClone(dir: string): void {
     if (!nodeFs.existsSync(path.join(dir, ".git"))) {
       throw new Err.GatewayWorkingCopyError(`${dir} is not a git clone.`, "not-a-clone");
