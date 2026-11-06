@@ -61,6 +61,15 @@ export { TsLibResolver } from "./script/TsLibResolver";
 
 // ─── Gateway (web-global) ────────────────────────────────────────────
 export { GatewayService } from "./gateway/GatewayService";
+export { GatewayGit } from "./gateway/GatewayGit";
+export type {
+  GatewayCloneOptions,
+  GatewayCloneResult,
+  GatewayGitStatus,
+  GatewayGitStatusOptions,
+  GatewayPullResult,
+  GatewayPushResult,
+} from "./gateway/GatewayGit";
 export { GatewayClient, gatewayErrorFor, parseGatewayOrigin } from "./gateway/GatewayClient";
 export type { GatewayClientOptions, GatewayRequestOptions } from "./gateway/GatewayClient";
 export type { GatewayContext, GatewayFetch } from "./gateway/GatewayContext";

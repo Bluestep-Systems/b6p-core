@@ -18,6 +18,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   found, non-fast-forward, too large, unavailable, unexpected, config), also available to a git
   layer through `gatewayErrorFor`. `authHeadersFor(url)` hands the header to a git client, for
   gateway URLs only. The token never appears in an error message or a log line.
+- **`core.gateway.git`: pure-JS git over the gateway** (ClickUp 86bczx1wd). `GatewayGit` clones a
+  knowledge base or marketplace repo from its listing's `gitUrl` (optionally at a branch or tag),
+  reports `status` (dirty paths, ahead/behind), fast-forwards with `pull`, and `push`es the
+  current branch to its upstream. It uses isomorphic-git (MIT, exact-pinned; no git install needed,
+  bundles into single-file builds) and the stored `b6pt_` token on every request. Pushes are
+  fast-forward only: never forced, never a ref deletion, never tags; a non-fast-forward is
+  `GatewayConflictError`. A pull that would overwrite local changes throws
+  `GatewayDirtyWorkingTreeError` (with the `paths`) and changes nothing; other unusable folders
+  are `GatewayWorkingCopyError` (`reason`). File contents are never rewritten.
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.
 - **`FakeGateway`** (testing): an in-process gateway on `127.0.0.1` answering the contract's REST

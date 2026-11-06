@@ -230,8 +230,18 @@ export class GatewayClient {
    * @lastreviewed null
    */
   request(method: string, path: string, options: GatewayRequestOptions = {}): Promise<JsonValue | undefined> {
-    const run = (): Promise<JsonValue | undefined> => this.send(method, path, options);
-    const result = this.tail.then(run, run);
+    return this.sequence(() => this.send(method, path, options));
+  }
+
+  /**
+   * Run `task` in this client's one-at-a-time queue, behind any request or task already in
+   * flight. The git layer wraps a whole operation (several HTTP requests) in this so git traffic
+   * and REST calls never overlap. `task` must not itself call {@link request} or `sequence`, which
+   * would wait on the queue it is holding.
+   * @lastreviewed null
+   */
+  sequence<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(task, task);
     this.tail = result.catch(() => undefined);
     return result;
   }

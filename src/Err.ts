@@ -968,4 +968,46 @@ export namespace Err {
       this.name = "GatewayConfigError";
     }
   }
+
+  /**
+   * A pull would overwrite local changes: the files the incoming commits change are modified,
+   * staged, deleted or untracked in the working copy. Nothing was changed.
+   * @lastreviewed null
+   */
+  export class GatewayDirtyWorkingTreeError extends GatewayError {
+    /**
+     * Repo-relative, `/`-separated paths with local changes that the incoming commits also touch.
+     * @lastreviewed null
+     */
+    readonly paths: string[];
+    constructor(message: string, paths: string[]) {
+      super(message, null, "dirty-working-tree");
+      this.name = "GatewayDirtyWorkingTreeError";
+      this.paths = paths;
+    }
+  }
+
+  /**
+   * The local folder is not in a state the git operation can use. `reason` is `not-empty` (a clone
+   * target that has files), `not-a-clone` (no git repository there), `detached` (no current
+   * branch), `no-upstream` (the branch tracks nothing), `diverged` (the branch and its upstream
+   * each have commits the other lacks, so a fast-forward is impossible) or `ref-not-found` (the
+   * remote has no such branch or tag).
+   * @lastreviewed null
+   */
+  export class GatewayWorkingCopyError extends GatewayError {
+    /**
+     * Which of the states it was.
+     * @lastreviewed null
+     */
+    readonly reason: "not-empty" | "not-a-clone" | "detached" | "no-upstream" | "diverged" | "ref-not-found";
+    constructor(
+      message: string,
+      reason: "not-empty" | "not-a-clone" | "detached" | "no-upstream" | "diverged" | "ref-not-found"
+    ) {
+      super(message, null, reason);
+      this.name = "GatewayWorkingCopyError";
+      this.reason = reason;
+    }
+  }
 }
