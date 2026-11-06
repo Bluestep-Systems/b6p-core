@@ -2,6 +2,7 @@ import * as nodeFs from "node:fs";
 import * as path from "node:path";
 import git from "isomorphic-git";
 import type { GitHttpRequest, GitHttpResponse, HttpClient, WalkerEntry } from "isomorphic-git";
+import { Gateway } from "../constants/Gateway";
 import { Http } from "../constants/Http";
 import { Err } from "../Err";
 import type { GatewayClient } from "./GatewayClient";
@@ -14,6 +15,25 @@ import { redactToken } from "./GatewayToken";
  * @lastreviewed null
  */
 const REMOTE = "origin";
+
+/**
+ * Tuning for a {@link GatewayGit}.
+ * @lastreviewed null
+ */
+export interface GatewayGitOptions {
+  /**
+   * Milliseconds to wait for a git request's response headers. Defaults to
+   * `Gateway.GIT_FIRST_BYTE_TIMEOUT_MS`.
+   * @lastreviewed null
+   */
+  firstByteTimeoutMs?: number;
+  /**
+   * Milliseconds a response body may yield nothing before it is abandoned. Defaults to
+   * `Gateway.GIT_IDLE_TIMEOUT_MS`.
+   * @lastreviewed null
+   */
+  idleTimeoutMs?: number;
+}
 
 /**
  * Options for {@link GatewayGit.clone}.
@@ -200,10 +220,18 @@ function conflictPathsOf(error: unknown): string[] {
  * @lastreviewed null
  */
 export class GatewayGit {
+  private readonly firstByteTimeoutMs: number;
+  private readonly idleTimeoutMs: number;
+  private stall: Err.GatewayUnavailableError | undefined;
+
   constructor(
     private readonly ctx: GatewayContext,
-    private readonly client: GatewayClient
-  ) {}
+    private readonly client: GatewayClient,
+    options: GatewayGitOptions = {}
+  ) {
+    this.firstByteTimeoutMs = options.firstByteTimeoutMs ?? Gateway.GIT_FIRST_BYTE_TIMEOUT_MS;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? Gateway.GIT_IDLE_TIMEOUT_MS;
+  }
 
   /**
    * Clone `gitUrl` into `dir` (created if missing; it must be empty if it exists) and check out
@@ -216,7 +244,7 @@ export class GatewayGit {
    * @lastreviewed null
    */
   clone(gitUrl: string, dir: string, options: GatewayCloneOptions = {}): Promise<GatewayCloneResult> {
-    return this.client.sequence(async () => {
+    return this.sequenced(async () => {
       await this.client.authHeadersFor(gitUrl);
       const existed = nodeFs.existsSync(dir);
       if (existed && (!nodeFs.statSync(dir).isDirectory() || nodeFs.readdirSync(dir).length > 0)) {
@@ -267,7 +295,7 @@ export class GatewayGit {
    * @lastreviewed null
    */
   status(dir: string, options: GatewayGitStatusOptions = {}): Promise<GatewayGitStatus> {
-    return this.client.sequence(async () => {
+    return this.sequenced(async () => {
       this.requireClone(dir);
       const branch = (await git.currentBranch({ fs: nodeFs, dir })) ?? null;
       const head = await git.resolveRef({ fs: nodeFs, dir, ref: "HEAD" });
@@ -307,7 +335,7 @@ export class GatewayGit {
    * @lastreviewed null
    */
   pull(dir: string): Promise<GatewayPullResult> {
-    return this.client.sequence(async () => {
+    return this.sequenced(async () => {
       const tracking = await this.tracking(dir);
       const { branch, head: from, remoteBranch } = tracking;
       if (remoteBranch === null) {
@@ -336,20 +364,19 @@ export class GatewayGit {
         throw this.dirtyError(branch, clash);
       }
 
-      // Move the branch, then check out. A checkout refusal (a case the diff above did not
-      // foresee) puts the branch back, so the tree is never left at odds with HEAD.
-      const branchRef = `refs/heads/${branch}`;
-      await git.writeRef({ fs: nodeFs, dir, ref: branchRef, value: to, force: true });
+      // Check the files out to the new commit FIRST and move the branch only once that has
+      // succeeded, so a crash mid-checkout leaves the branch at the old commit over (at worst)
+      // a part-updated tree, never HEAD at the new commit over the old files.
       try {
-        await git.checkout({ fs: nodeFs, dir, ref: branch, force: false, noUpdateHead: true });
+        await git.checkout({ fs: nodeFs, dir, ref: to, force: false, noUpdateHead: true });
       } catch (error) {
-        await git.writeRef({ fs: nodeFs, dir, ref: branchRef, value: from, force: true });
         const paths = conflictPathsOf(error);
         if (paths.length > 0) {
           throw this.dirtyError(branch, paths);
         }
         throw error;
       }
+      await git.writeRef({ fs: nodeFs, dir, ref: `refs/heads/${branch}`, value: to, force: true });
       return { outcome: "fast-forwarded", branch, from, to };
     });
   }
@@ -365,7 +392,7 @@ export class GatewayGit {
    * @lastreviewed null
    */
   push(dir: string): Promise<GatewayPushResult> {
-    return this.client.sequence(async () => {
+    return this.sequenced(async () => {
       const tracking = await this.tracking(dir);
       const { branch, head, remoteBranch } = tracking;
       if (remoteBranch === null) {
@@ -426,6 +453,20 @@ export class GatewayGit {
   }
 
   // ── internals ──────────────────────────────────────────────────────
+
+  // Run one operation in the client's queue. isomorphic-git can swallow an error thrown from a
+  // response body (it treats it as the end of the stream), so a stall is remembered here and
+  // rethrown in place of whatever protocol error the half-read answer produced.
+  private sequenced<T>(task: () => Promise<T>): Promise<T> {
+    return this.client.sequence(async () => {
+      this.stall = undefined;
+      try {
+        return await task();
+      } catch (error) {
+        throw this.stall ?? error;
+      }
+    });
+  }
 
   private requireClone(dir: string): void {
     if (!nodeFs.existsSync(path.join(dir, ".git"))) {
@@ -557,7 +598,16 @@ export class GatewayGit {
         const secret = (auth[Http.Headers.AUTHORIZATION] ?? "").replace(/^Bearer /, "");
         const method = req.method ?? "GET";
         const headers: Record<string, string> = { ...(req.headers ?? {}), ...auth };
-        const init: RequestInit = { method, headers, redirect: "error", signal: req.signal };
+        const controller = new AbortController();
+        const abort = (): void => controller.abort();
+        if (req.signal) {
+          if (req.signal.aborted) {
+            abort();
+          } else {
+            req.signal.addEventListener("abort", abort, { once: true });
+          }
+        }
+        const init: RequestInit = { method, headers, redirect: "error", signal: controller.signal };
         if (req.body) {
           const chunks: Buffer[] = [];
           for await (const chunk of req.body) {
@@ -567,12 +617,29 @@ export class GatewayGit {
         }
         const url = new URL(req.url);
         const what = `${method} ${url.pathname}${url.search}`;
+        const unavailable = (why: string): Err.GatewayUnavailableError =>
+          new Err.GatewayUnavailableError(`${what}: the gateway could not be reached: ${why}.`, null, null);
         let response: Response;
+        let timer: NodeJS.Timeout | undefined;
         try {
-          response = await this.ctx.fetchFn(url, init);
+          // Raced, not just aborted: the timeout must hold even for a fetch that ignores its signal.
+          const timedOut = new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              abort();
+              reject(unavailable(`no answer within ${this.firstByteTimeoutMs} ms`));
+            }, this.firstByteTimeoutMs);
+            timer.unref?.();
+          });
+          response = await Promise.race([this.ctx.fetchFn(url, init), timedOut]);
         } catch (error) {
-          const why = redactToken(error instanceof Error ? error.message : String(error), secret);
-          throw new Err.GatewayUnavailableError(`${what}: the gateway could not be reached: ${why}.`, null, null);
+          if (error instanceof Err.GatewayError) {
+            throw error;
+          }
+          throw unavailable(
+            `the request failed (${redactToken(error instanceof Error ? error.message : String(error), secret)})`
+          );
+        } finally {
+          clearTimeout(timer);
         }
         this.ctx.logger.debug(`gateway git ${what} -> ${response.status}`);
         if (!response.ok) {
@@ -592,7 +659,12 @@ export class GatewayGit {
           url: req.url,
           method,
           headers: responseHeaders,
-          body: response.body ? streamOf(response.body) : singleChunk(new Uint8Array()),
+          body: response.body
+            ? streamOf(response.body, this.idleTimeoutMs, abort, (why) => {
+                this.stall = unavailable(why);
+                return this.stall;
+              })
+            : singleChunk(new Uint8Array()),
           statusCode: response.status,
           statusMessage: response.statusText,
         };
@@ -601,18 +673,38 @@ export class GatewayGit {
   }
 }
 
-// Adapt a web `ReadableStream` to the async iterator isomorphic-git reads.
-async function* streamOf(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array, void, undefined> {
+// Adapt a web `ReadableStream` to the async iterator isomorphic-git reads. A read that yields
+// nothing for `idleMs` aborts the request and throws what `stalled` builds.
+async function* streamOf(
+  stream: ReadableStream<Uint8Array>,
+  idleMs: number,
+  abort: () => void,
+  stalled: (why: string) => Error
+): AsyncGenerator<Uint8Array, void, undefined> {
   const reader = stream.getReader();
   try {
     for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
+      let timer: NodeJS.Timeout | undefined;
+      const idle = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          abort();
+          reject(stalled(`the response stalled for ${idleMs} ms`));
+        }, idleMs);
+        timer.unref?.();
+      });
+      let next: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        next = await Promise.race([reader.read(), idle]);
+      } finally {
+        clearTimeout(timer);
+      }
+      if (next.done) {
         return;
       }
-      yield value;
+      yield next.value;
     }
   } finally {
+    reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 }

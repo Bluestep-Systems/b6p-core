@@ -169,6 +169,10 @@ for (const [label, token] of [
   ["only the prefix", "b6pt_"],
   ["a trailing newline", "b6pt_abc\n"],
   ["an inner space", "b6pt_ab c"],
+  ["a non-Latin-1 character (…)", "b6pt_ab\u2026"],
+  ["a smart quote", "b6pt_ab\u201d"],
+  ["a Latin-1 non-ASCII character (é)", "b6pt_ab\u00e9"],
+  ["a DEL character", "b6pt_ab\u007f"],
 ]) {
   test(`a token with ${label} → token-malformed before any request, value not quoted`, async () => {
     await withFake(async (fake) => {
@@ -339,6 +343,29 @@ test("parseGatewayOrigin: https anywhere, http only on loopback, bare origins on
     "ftp://gateway.bluestep.net",
   ]) {
     assert.throws(() => parseGatewayOrigin(bad), Err.GatewayConfigError, bad);
+  }
+});
+
+test("GatewayConfigError never quotes the configured value, its host or its path", () => {
+  const secret = "b6pt_SECRETvalue123";
+  for (const bad of [
+    secret,
+    `https://gateway.bluestep.net/${secret}`,
+    `https://gateway.bluestep.net/?t=${secret}`,
+    `https://gateway.bluestep.net/#${secret}`,
+    `https://user:${secret}@gateway.bluestep.net`,
+    `http://${secret.toLowerCase()}.example.com`,
+    `ftp://${secret.toLowerCase()}.example.com`,
+  ]) {
+    let error;
+    try {
+      parseGatewayOrigin(bad);
+    } catch (e) {
+      error = e;
+    }
+    assert.ok(error instanceof Err.GatewayConfigError, bad);
+    thrownMessages.push(error.message);
+    assert.ok(!error.message.toLowerCase().includes("secretvalue123"), `quoted: ${error.message}`);
   }
 });
 
