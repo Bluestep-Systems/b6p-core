@@ -70,18 +70,20 @@ export interface GatewayClientOptions {
  * @lastreviewed null
  */
 export function parseGatewayOrigin(raw: string): string {
+  // No message below quotes the value, its host or its path: a token pasted into the wrong setting
+  // would otherwise reach every error the client throws.
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new Err.GatewayConfigError(`The configured gateway URL "${raw}" is not a URL.`);
+    throw new Err.GatewayConfigError("The configured gateway URL is not a URL.");
   }
   if (url.username || url.password) {
     throw new Err.GatewayConfigError("The configured gateway URL carries credentials, which is not allowed.");
   }
   if (url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) {
     throw new Err.GatewayConfigError(
-      `The configured gateway URL "${url.origin}${url.pathname}" is not a bare origin: it has a path, query or fragment.`
+      "The configured gateway URL is not a bare origin: it has a path, a query or a fragment."
     );
   }
   if (url.protocol === "https:") {
@@ -90,9 +92,12 @@ export function parseGatewayOrigin(raw: string): string {
   if (url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname)) {
     return url.origin;
   }
-  throw new Err.GatewayConfigError(
-    `The configured gateway URL "${url.origin}" is not https; plain http is allowed only on loopback.`
-  );
+  if (url.protocol === "http:") {
+    throw new Err.GatewayConfigError(
+      "The configured gateway URL uses plain http on a host that is not loopback; https is required there."
+    );
+  }
+  throw new Err.GatewayConfigError("The configured gateway URL's scheme is neither https nor http.");
 }
 
 /**
@@ -233,7 +238,7 @@ export class GatewayClient {
     }
     if (target.origin !== origin) {
       throw new Err.GatewayConfigError(
-        `The URL's origin ${target.origin} is not the gateway's origin ${origin}; no token is sent to it.`
+        "A URL handed to the gateway client is not on the gateway's origin; no token is sent to it."
       );
     }
     const token = await this.requireToken();
