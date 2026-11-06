@@ -250,6 +250,17 @@ export class GatewayGit {
   }
 
   /**
+   * The URL the clone in `dir` fetches from and pushes to (its `origin`), or `null` when it has none.
+   * @throws {Err.GatewayWorkingCopyError} `not-a-clone` when `dir` is not a clone
+   * @lastreviewed null
+   */
+  async originUrl(dir: string): Promise<string | null> {
+    this.requireClone(dir);
+    const url: unknown = await git.getConfig({ fs: nodeFs, dir, path: `remote.${REMOTE}.url` });
+    return typeof url === "string" && url.length > 0 ? url : null;
+  }
+
+  /**
    * The state of the clone in `dir`.
    * @throws {Err.GatewayWorkingCopyError} `not-a-clone` when `dir` is not a clone (a detached head is not an
    *   error: `branch` is then `null`)

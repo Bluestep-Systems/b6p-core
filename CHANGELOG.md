@@ -27,6 +27,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `GatewayConflictError`. A pull that would overwrite local changes throws
   `GatewayDirtyWorkingTreeError` (with the `paths`) and changes nothing; other unusable folders
   are `GatewayWorkingCopyError` (`reason`). File contents are never rewritten.
+- **`core.gateway.kb`: knowledge bases** (ClickUp 86bczx3r4). `GatewayKb.list({ scope?, tenant? })` returns
+  the typed entries of `GET /api/v1/knowledge-bases` (a malformed body is
+  `GatewayUnexpectedResponseError`); `resolve(ref)` takes `<name>` (global) or `<U…>/<name>` (tenant)
+  and throws `GatewayKnowledgeBaseError` for a bad, unknown or ambiguous address; `pull(ref, { cwd,
+  dir? })` clones the live branch or fast-forwards an existing clone of the same repository (a clone
+  of another repository is `GatewayWorkingCopyError` `wrong-repository`; local changes in the way are
+  `GatewayDirtyWorkingTreeError`; it never prompts and never discards local changes); `push(dir)`
+  requires `canPush` from a fresh listing (else `GatewayKnowledgeBasePushNotPermittedError` with the
+  `ref`, before anything is sent) and returns `{ pushed, commit, ref }`. `GatewayGit.originUrl(dir)`
+  is added for finding a clone's remote.
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.
 - **`FakeGateway`** (testing): an in-process gateway on `127.0.0.1` answering the contract's REST

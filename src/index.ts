@@ -70,6 +70,13 @@ export type {
   GatewayPullResult,
   GatewayPushResult,
 } from "./gateway/GatewayGit";
+export { GatewayKb } from "./gateway/GatewayKb";
+export type {
+  GatewayKbListOptions,
+  GatewayKbPullOptions,
+  GatewayKbPullResult,
+  GatewayKbPushResult,
+} from "./gateway/GatewayKb";
 export { GatewayClient, gatewayErrorFor, parseGatewayOrigin } from "./gateway/GatewayClient";
 export type { GatewayClientOptions, GatewayRequestOptions } from "./gateway/GatewayClient";
 export type { GatewayContext, GatewayFetch } from "./gateway/GatewayContext";

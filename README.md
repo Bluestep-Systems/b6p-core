@@ -59,8 +59,8 @@ between the local filesystem and the platform over WebDAV:
 | `getFactory` | The `ScriptFactory` for entering the script tree from a bare path |
 
 `core.gateway` ([`GatewayService`](src/gateway/GatewayService.ts)) — web-global's gateway
-(`https://gateway.bluestep.net`), the origin for knowledge bases and marketplace repos. Today it
-holds the HTTP client the knowledge-base and marketplace operations are built on; see
+(`https://gateway.bluestep.net`), the origin for knowledge bases and marketplace repos. It
+holds the HTTP client, the git layer and `core.gateway.kb` (knowledge bases); see
 [Gateway](#gateway) below.
 
 `core` itself — cross-cutting state that is not specific to any one subsystem:
@@ -146,7 +146,9 @@ Failures are typed, all extending `Err.GatewayError` (`status`, `code`):
 | `GatewayUnexpectedResponseError` | any other status, or a 2xx body that is not JSON |
 | `GatewayConfigError` | an unusable `gatewayUrl`, or a URL off the gateway's origin |
 | `GatewayDirtyWorkingTreeError` (`paths`) | a pull would overwrite local changes (git layer) |
-| `GatewayWorkingCopyError` (`reason`) | the local folder cannot be used: `not-empty`, `not-a-clone`, `detached`, `no-upstream`, `diverged`, `ref-not-found` (git layer) |
+| `GatewayKnowledgeBaseError` (`reason`, `ref`, `candidates`) | a knowledge base address is `bad-ref`, `not-found`, `ambiguous`, `unsafe-name`, or a clone is `not-a-kb` |
+| `GatewayKnowledgeBasePushNotPermittedError` (`ref`) | a push to a KB whose listing says `canPush: false` (a `GatewayNotPermittedError`) |
+| `GatewayWorkingCopyError` (`reason`) | the local folder cannot be used: `not-empty`, `not-a-clone`, `detached`, `no-upstream`, `diverged`, `ref-not-found`, `wrong-repository` (git layer, knowledge-base pull) |
 
 `gatewayErrorFor(status, body, what)` applies the same mapping to a status seen elsewhere (the git
 layer). The token never appears in a message or a log line, including when the server echoes it.
@@ -176,6 +178,32 @@ await core.gateway.git.push(dir); // current branch to its upstream, fast-forwar
   `kb:push` is `GatewayScopeError`.
 - Gateway failures map through `gatewayErrorFor`, as for REST. Operations share the client's
   one-at-a-time queue.
+
+#### Knowledge bases
+
+`core.gateway.kb` ([`GatewayKb`](src/gateway/GatewayKb.ts)) lists the knowledge bases the token's user
+may read, global and tenant, and pulls and pushes them over `core.gateway.git`. A KB is addressed as
+`<name>` (global) or `<U…>/<name>` (tenant); the listing's own `global/<name>` and
+`tenant/<U…>/<name>` forms work too.
+
+```typescript
+const kbs = await core.gateway.kb.list({ scope: "tenant", tenant: "U142133" }); // ref, scope, tenant, name, title, liveBranch, canPush, gitUrl
+const kb = await core.gateway.kb.resolve("onboarding");
+const pulled = await core.gateway.kb.pull("U142133/handbook", { cwd: process.cwd() }); // clones into <cwd>/U142133-handbook
+const pushed = await core.gateway.kb.push(pulled.dir); // { pushed, commit, ref }
+```
+
+- `list` checks the body's shape and throws `GatewayUnexpectedResponseError` for a bad one.
+- `resolve` throws `GatewayKnowledgeBaseError` (`reason`: `bad-ref`, `not-found`, `ambiguous` with
+  `candidates`).
+- `pull` clones the live branch into a missing or empty folder (`dir`, relative to the `cwd` you pass;
+  default `<name>`, or `<tenant>-<name>`), and fast-forwards an existing clone of the same repository.
+  A clone of a different repository is `GatewayWorkingCopyError` (`wrong-repository`); incoming commits
+  that touch locally changed files are `GatewayDirtyWorkingTreeError` (`paths`). It never prompts and
+  has no way to discard local changes.
+- `push` finds the KB from the clone's remote in a fresh listing and refuses a KB with
+  `canPush: false` before sending anything, with `GatewayKnowledgeBasePushNotPermittedError` (`ref`).
+  A gateway branch that moved on is `GatewayConflictError`.
 
 For specs, [`FakeGateway`](src/testing/FakeGateway.ts) is an in-process gateway on `127.0.0.1` that
 answers the contract's REST routes and error codes, with `grantToken`, `failNext` and `route` (for

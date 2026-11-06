@@ -71,6 +71,12 @@ are load-bearing rather than stylistic — each records something this repo undi
   provider, which has no `lstat`/symlink/mode surface for isomorphic-git. Each operation runs
   inside `GatewayClient.sequence`. Its specs mount `git http-backend` on `FakeGateway`
   (`test/support/GitHttpBackend.js`), so they need `git` on PATH.
+- **`core.gateway.kb` (`GatewayKb`) decides nothing for the user.** It never prompts: a pull that
+  would overwrite throws `GatewayDirtyWorkingTreeError`, and a push the listing says the user cannot
+  make (`canPush: false`, from a fresh listing, not a cached one) throws before any git request. It
+  has no "discard local changes" path; if one is ever added it is an explicit option behind a
+  `{ destructive: true, safeOption }` prompt, safe option first. A listed `name` used as a default
+  folder must be one plain path segment.
 - **A prompt that overwrites or deletes puts its safe option first and passes
   `{ destructive: true, safeOption }`.** Prompt implementations answer `options[0]` on an empty
   answer and under auto-confirm (the CLI's `--yes`); with the destructive option first, `--yes`
@@ -90,7 +96,7 @@ are load-bearing rather than stylistic — each records something this repo undi
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
-snapshot history), `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit` — web-global's gateway over
+snapshot history), `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit`, `GatewayKb` — web-global's gateway over
 the `b6pt_` token, and pure-JS git through it), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
 parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles, including `FakeGateway`).
 

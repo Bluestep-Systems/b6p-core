@@ -991,8 +991,9 @@ export namespace Err {
    * The local folder is not in a state the git operation can use. `reason` is `not-empty` (a clone
    * target that has files), `not-a-clone` (no git repository there), `detached` (no current
    * branch), `no-upstream` (the branch tracks nothing), `diverged` (the branch and its upstream
-   * each have commits the other lacks, so a fast-forward is impossible) or `ref-not-found` (the
-   * remote has no such branch or tag).
+   * each have commits the other lacks, so a fast-forward is impossible), `ref-not-found` (the
+   * remote has no such branch or tag) or `wrong-repository` (the folder is a clone of a different
+   * repository than the one asked for).
    * @lastreviewed null
    */
   export class GatewayWorkingCopyError extends GatewayError {
@@ -1000,14 +1001,84 @@ export namespace Err {
      * Which of the states it was.
      * @lastreviewed null
      */
-    readonly reason: "not-empty" | "not-a-clone" | "detached" | "no-upstream" | "diverged" | "ref-not-found";
+    readonly reason:
+      | "not-empty"
+      | "not-a-clone"
+      | "detached"
+      | "no-upstream"
+      | "diverged"
+      | "ref-not-found"
+      | "wrong-repository";
     constructor(
       message: string,
-      reason: "not-empty" | "not-a-clone" | "detached" | "no-upstream" | "diverged" | "ref-not-found"
+      reason:
+        | "not-empty"
+        | "not-a-clone"
+        | "detached"
+        | "no-upstream"
+        | "diverged"
+        | "ref-not-found"
+        | "wrong-repository"
     ) {
       super(message, null, reason);
       this.name = "GatewayWorkingCopyError";
       this.reason = reason;
+    }
+  }
+
+  /**
+   * A knowledge base could not be settled on. `reason` is `bad-ref` (the address is not `<name>` or
+   * `<U…>/<name>`), `not-found` (no knowledge base the caller may read has that address; the
+   * gateway does not say whether it exists), `ambiguous` (the listing holds more than one match;
+   * `candidates` are their refs), `unsafe-name` (the listed name cannot be a folder name) or
+   * `not-a-kb` (a clone's remote is not a knowledge base the caller can see).
+   * @lastreviewed null
+   */
+  export class GatewayKnowledgeBaseError extends GatewayError {
+    /**
+     * Which of the situations it was.
+     * @lastreviewed null
+     */
+    readonly reason: "bad-ref" | "not-found" | "ambiguous" | "unsafe-name" | "not-a-kb";
+    /**
+     * The address that was asked for, or `null` when none applies (`not-a-kb`).
+     * @lastreviewed null
+     */
+    readonly ref: string | null;
+    /**
+     * The `ref`s of the listed matches when `reason` is `ambiguous`, otherwise empty.
+     * @lastreviewed null
+     */
+    readonly candidates: string[];
+    constructor(
+      message: string,
+      reason: "bad-ref" | "not-found" | "ambiguous" | "unsafe-name" | "not-a-kb",
+      ref: string | null,
+      candidates: string[] = []
+    ) {
+      super(message, null, reason);
+      this.name = "GatewayKnowledgeBaseError";
+      this.reason = reason;
+      this.ref = ref;
+      this.candidates = candidates;
+    }
+  }
+
+  /**
+   * The caller may read a knowledge base but not push to it (`canPush` was `false` in a fresh
+   * listing). Thrown before anything is sent.
+   * @lastreviewed null
+   */
+  export class GatewayKnowledgeBasePushNotPermittedError extends GatewayNotPermittedError {
+    /**
+     * The knowledge base's `ref` (e.g. `global/onboarding`).
+     * @lastreviewed null
+     */
+    readonly ref: string;
+    constructor(message: string, ref: string) {
+      super(message, "not-permitted");
+      this.name = "GatewayKnowledgeBasePushNotPermittedError";
+      this.ref = ref;
     }
   }
 }

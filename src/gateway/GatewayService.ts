@@ -1,5 +1,6 @@
 import { GatewayClient } from "./GatewayClient";
 import { GatewayGit } from "./GatewayGit";
+import { GatewayKb } from "./GatewayKb";
 import type { GatewayContext } from "./GatewayContext";
 
 /**
@@ -24,8 +25,15 @@ export class GatewayService {
    */
   readonly git: GatewayGit;
 
+  /**
+   * Knowledge bases: list, pull into a local folder, push back.
+   * @lastreviewed null
+   */
+  readonly kb: GatewayKb;
+
   constructor(ctx: GatewayContext) {
     this.client = new GatewayClient(ctx);
     this.git = new GatewayGit(ctx, this.client);
+    this.kb = new GatewayKb(this.client, this.git);
   }
 }
