@@ -9,6 +9,10 @@ This package contains the headless orchestration logic shared by the
 anywhere Node does. You supply the platform adapters (file system, prompts, logging, progress,
 persistence) through provider interfaces.
 
+## Requirements
+
+Node.js **24 or newer** (`engines.node` is `>=24`).
+
 ## Installation
 
 ```bash

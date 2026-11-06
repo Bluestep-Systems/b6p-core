@@ -8,7 +8,7 @@
     "url": "git+https://github.com/Bluestep-Systems/b6p-core.git"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -34,7 +34,7 @@
     "typescript": "5.9.2"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1",
+    "@types/node": "^24.19.2",
     "prettier": "^3.0.0"
   }
 }
