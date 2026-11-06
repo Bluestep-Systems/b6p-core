@@ -67,10 +67,10 @@ async function rejectsWith(promise, type) {
 let promptCalls = 0;
 
 /** Providers for a real B6PCore with `token` stored where BearerAuthProvider keeps it. */
-function makeProviders(token) {
+function makeProviders(token, options = {}) {
   const pub = {};
   const store = token === undefined ? {} : { bearerAuth: JSON.stringify({ scheme: "bearer", token }) };
-  const state = { failSetSecret: false };
+  const state = { failSetSecret: false, setSecretDelayMs: 0 };
   const persistence = {
     get: async (k) => pub[k],
     set: async (k, v) => {
@@ -81,6 +81,9 @@ function makeProviders(token) {
     },
     getSecret: async (k) => store[k],
     setSecret: async (k, v) => {
+      if (state.setSecretDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, state.setSecretDelayMs));
+      }
       if (state.failSetSecret) {
         throw new Error("secret storage is unavailable");
       }
@@ -114,6 +117,7 @@ function makeProviders(token) {
       prompt,
       logger: makeLogger(),
       progress: { withProgress: async (tasks) => Promise.all(tasks.map((t) => t.execute())) },
+      ...(options.fetchFn ? { fetchFn: options.fetchFn } : {}),
     },
   };
 }
@@ -122,10 +126,10 @@ function makeProviders(token) {
  * A fake gateway with TOKEN granted (alias "laptop", id "tok_laptop") and a B6PCore storing it.
  * `fn(fake, core, env)`.
  */
-async function withCore(fn, scopes = ALL_SCOPES, tokenOptions = {}) {
+async function withCore(fn, scopes = ALL_SCOPES, tokenOptions = {}, coreOptions = {}) {
   const fake = await FakeGateway.start();
   fake.grantToken(TOKEN, scopes, { id: "tok_laptop", alias: "laptop", ...tokenOptions });
-  const env = makeProviders(TOKEN);
+  const env = makeProviders(TOKEN, coreOptions);
   const core = new B6PCore(env.providers);
   promptCalls = 0;
   try {
@@ -133,7 +137,8 @@ async function withCore(fn, scopes = ALL_SCOPES, tokenOptions = {}) {
     await fn(fake, core, env);
     assert.strictEqual(promptCalls, 0, "token management never prompts");
   } finally {
-    for (const t of fake.issuedTokens()) secrets.add(t.secret);
+    // Every secret the fake ever accepted (granted or minted, revoked ones included).
+    for (const secret of fake.issuedSecrets) secrets.add(secret);
     core.dispose();
     await fake.stop();
   }
@@ -292,11 +297,22 @@ test("create refuses a bad alias, scope list or expiry before sending anything",
   });
 });
 
-test("a malformed mint answer → GatewayUnexpectedResponseError that does not quote the body's secret", async () => {
+test("a malformed mint answer carrying a secret → GatewayOffContractTokenError that keeps it but never quotes it", async () => {
   await withCore(async (fake, core) => {
     const leaked = "b6pt_in_a_malformed_body_0001";
     secrets.add(leaked);
     fake.failNext({ status: 201, body: JSON.stringify({ id: "tok_9", token: leaked }) });
+    const error = await rejectsWith(
+      core.gateway.tokens.create({ alias: "ci", scopes: [Gateway.Scopes.KB_READ] }),
+      Err.GatewayOffContractTokenError
+    );
+    assert.strictEqual(error.secret, leaked);
+  });
+});
+
+test("a mint answer with no secret at all → GatewayUnexpectedResponseError", async () => {
+  await withCore(async (fake, core) => {
+    fake.failNext({ status: 201, body: JSON.stringify({ id: "tok_9", alias: "ci" }) });
     await rejectsWith(
       core.gateway.tokens.create({ alias: "ci", scopes: [Gateway.Scopes.KB_READ] }),
       Err.GatewayUnexpectedResponseError
@@ -466,6 +482,173 @@ test("rotate tells the store exactly which token it replaces, and a refusal stil
   } finally {
     await fake.stop();
   }
+});
+
+// ── review-a fixes (ruling 33) ──────────────────────────────────────────
+
+/** A fetch that drops `field` from every 201 token answer, as an off-contract gateway might. */
+function dropFromMintAnswers(field) {
+  const base = globalThis.fetch.bind(globalThis);
+  return async (url, init) => {
+    const response = await base(url, init);
+    const path = new URL(String(url)).pathname;
+    if (response.status !== 201 || !path.startsWith(Gateway.Paths.TOKENS)) {
+      return response;
+    }
+    const body = JSON.parse(await response.text());
+    delete body[field];
+    return new Response(JSON.stringify(body), { status: 201, headers: { "Content-Type": "application/json" } });
+  };
+}
+
+test("P0: an off-contract rotate answer of the stored token keeps the secret and still stores it", async () => {
+  await withCore(
+    async (fake, core, env) => {
+      const error = await rejectsWith(core.gateway.tokens.rotate("laptop"), Err.GatewayOffContractTokenError);
+      assert.strictEqual(error.operation, "rotate");
+      assert.strictEqual(typeof error.secret, "string");
+      assert.ok(fake.issuedTokens().some((t) => t.secret === error.secret), "the carried secret is the live token");
+      assert.strictEqual(error.stored, true);
+      assert.strictEqual(env.storedToken(), error.secret, "the replacement was still stored");
+      assert.ok(!Object.keys(error).includes("secret"), "the secret is non-enumerable on the error");
+      assert.ok(/rotated/.test(error.message) && /malformed/.test(error.message));
+    },
+    ALL_SCOPES,
+    { expiresAt: null },
+    { fetchFn: dropFromMintAnswers("expiresAt") }
+  );
+});
+
+test("P0: an off-contract rotate answer whose store then fails still carries the secret", async () => {
+  await withCore(
+    async (fake, core, env) => {
+      env.state.failSetSecret = true;
+      const error = await rejectsWith(core.gateway.tokens.rotate("laptop"), Err.GatewayOffContractTokenError);
+      assert.strictEqual(error.stored, false);
+      assert.ok(fake.issuedTokens().some((t) => t.secret === error.secret));
+      assert.strictEqual(env.storedToken(), TOKEN);
+    },
+    ALL_SCOPES,
+    {},
+    { fetchFn: dropFromMintAnswers("alias") }
+  );
+});
+
+test("P0: an off-contract create answer keeps the minted secret", async () => {
+  await withCore(
+    async (fake, core, env) => {
+      const error = await rejectsWith(
+        core.gateway.tokens.create({ alias: "ci", scopes: [Gateway.Scopes.KB_READ] }),
+        Err.GatewayOffContractTokenError
+      );
+      assert.strictEqual(error.operation, "create");
+      assert.strictEqual(error.stored, false);
+      assert.ok(fake.issuedTokens().some((t) => t.secret === error.secret && t.alias === "ci"));
+      assert.strictEqual(env.storedToken(), TOKEN, "create never stores");
+      assert.ok(/minted/.test(error.message) && /malformed/.test(error.message));
+    },
+    ALL_SCOPES,
+    {},
+    { fetchFn: dropFromMintAnswers("scopes") }
+  );
+});
+
+test("P1: a request queued while the stored token's rotate is in flight runs after the store, with the new token", async () => {
+  await withCore(async (fake, core, env) => {
+    fake.delayMs = 50;
+    env.state.setSecretDelayMs = 20;
+    const rotating = core.gateway.tokens.rotate("laptop");
+    while (!fake.requests.some((r) => r.method === "POST" && r.path.endsWith("/rotate"))) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const queued = core.gateway.client.getJson(Gateway.Paths.KNOWLEDGE_BASES);
+    const result = await rotating;
+    await queued;
+    assert.strictEqual(fake.requests.at(-1).path, Gateway.Paths.KNOWLEDGE_BASES);
+    assert.strictEqual(fake.requests.at(-1).authorization, `Bearer ${result.token.token}`);
+  });
+});
+
+test("P2: a pasted secret with whitespace or quotes around it is refused unsent", async () => {
+  await withCore(async (fake, core) => {
+    for (const pasted of [` ${TOKEN}`, `"${TOKEN}"`, `'${TOKEN}'\n`, `x${TOKEN}`]) {
+      await rejectsWith(core.gateway.tokens.revoke(pasted), Err.GatewayInvalidArgumentError);
+      await rejectsWith(core.gateway.tokens.rotate(pasted), Err.GatewayInvalidArgumentError);
+    }
+    assert.strictEqual(fake.requests.length, 0);
+  });
+});
+
+test("P2: not-found and ambiguous messages never quote the given id or alias", async () => {
+  await withCore(async (fake, core) => {
+    fake.grantToken("b6pt_one_p2", [Gateway.Scopes.KB_READ], { id: "dup-p2", alias: "first" });
+    fake.grantToken("b6pt_two_p2", [Gateway.Scopes.KB_READ], { id: "tok_2", alias: "dup-p2" });
+    const missing = await rejectsWith(core.gateway.tokens.revoke("unmatched-input-xyz"), Err.GatewayNotFoundError);
+    assert.ok(!missing.message.includes("unmatched-input-xyz"), missing.message);
+    const ambiguous = await rejectsWith(core.gateway.tokens.rotate("dup-p2"), Err.GatewayTokenAmbiguousError);
+    assert.ok(!ambiguous.message.includes('"dup-p2"'), ambiguous.message);
+  });
+});
+
+test("P2: rotate reads the stored token once: list, the rotate POST and the store's expected all use it", async () => {
+  const fake = await FakeGateway.start();
+  try {
+    const other = "b6pt_stored_meanwhile_p2";
+    fake.grantToken(TOKEN, ALL_SCOPES, { id: "tok_laptop", alias: "laptop" });
+    fake.grantToken(other, ALL_SCOPES, { id: "tok_other", alias: "other" });
+    const reads = [TOKEN, other, other, other];
+    const replaced = [];
+    const service = new GatewayService({
+      fs: new MockFileSystem(),
+      sessionManager: null,
+      logger: makeLogger(),
+      prompt: null,
+      progress: null,
+      isDebugMode: () => false,
+      gatewayToken: { token: async () => (reads.length > 1 ? reads.shift() : reads[0]) },
+      gatewayTokenStore: {
+        replace: async (expected, next) => {
+          replaced.push([expected, next]);
+        },
+      },
+      gatewayUrl: async () => fake.url,
+      fetchFn: globalThis.fetch.bind(globalThis),
+    });
+    const result = await service.tokens.rotate("laptop");
+    assert.strictEqual(result.rotatedCurrent, true);
+    assert.deepStrictEqual(
+      fake.requests.map((r) => r.authorization),
+      [`Bearer ${TOKEN}`, `Bearer ${TOKEN}`],
+      "list and rotate presented the same token"
+    );
+    assert.deepStrictEqual(replaced, [[TOKEN, result.token.token]]);
+  } finally {
+    for (const secret of fake.issuedSecrets) secrets.add(secret);
+    await fake.stop();
+  }
+});
+
+test("P3: the fake honours expiresAt: an expired token is 401 token-invalid", async () => {
+  await withCore(
+    async (_fake, core) => {
+      const error = await rejectsWith(core.gateway.tokens.list(), Err.GatewayAuthError);
+      assert.strictEqual(error.reason, "token-invalid");
+    },
+    ALL_SCOPES,
+    { createdAt: new Date(Date.now() - 2 * DAY_MS).toISOString(), expiresAt: new Date(Date.now() - DAY_MS).toISOString() }
+  );
+});
+
+test("P3: the leak sweep knows every secret granted or minted, revoked ones included", async () => {
+  await withCore(async (fake, core) => {
+    fake.grantToken("b6pt_granted_then_revoked", [Gateway.Scopes.KB_READ], { id: "tok_gr", alias: "gr" });
+    await core.gateway.tokens.revoke("gr");
+    const minted = await core.gateway.tokens.create({ alias: "m", scopes: [Gateway.Scopes.KB_READ] });
+    await core.gateway.tokens.rotate("m");
+    assert.ok(fake.issuedSecrets.includes("b6pt_granted_then_revoked"));
+    assert.ok(fake.issuedSecrets.includes(minted.token));
+    assert.ok(!fake.issuedTokens().some((t) => t.secret === minted.token), "the minted one was rotated away");
+  });
 });
 
 // ── Run ─────────────────────────────────────────────────────────────────

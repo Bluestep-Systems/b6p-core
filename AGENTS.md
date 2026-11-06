@@ -58,9 +58,13 @@ are load-bearing rather than stylistic — each records something this repo undi
   The gateway side has exactly one write to it: `core.gateway.tokens.rotate()` of the stored token
   puts the replacement in place through `GatewayTokenStore` →
   `BearerAuthProvider.replaceStoredToken(expected, next)`, which refuses unless the stored token is
-  still `expected`. There is never a second stored token. A store failure after the server rotated
-  throws `GatewayTokenStoreError` carrying the new secret (non-enumerable), because the old one is
-  already dead.
+  still `expected` (an in-process compare-then-write, not atomic across processes; do not claim
+  more). There is never a second stored token. Rotation runs list + rotate + store as ONE
+  `GatewayClient.sequence()` unit with one token read, so `current`, the token presented and
+  `expected` agree and no queued request presents the revoked token. A minted secret is never
+  dropped: a store failure throws `GatewayTokenStoreError` (`replacement`), an off-contract answer
+  `GatewayOffContractTokenError` (`secret`, still stored for the stored token), both non-enumerable.
+  Never quote a user-supplied id-or-alias in a message; it may be a pasted secret.
 - **`core.gateway` is the second subsystem** (`GatewayService`, `src/gateway/`). `GatewayContext`
   extends `PlatformContext` with `gatewayToken` (a `GatewayTokenSource`), `gatewayTokenStore` (a
   `GatewayTokenStore`, read only by token rotation), `gatewayUrl()` (core config

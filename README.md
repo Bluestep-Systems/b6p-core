@@ -148,6 +148,9 @@ Failures are typed, all extending `Err.GatewayError` (`status`, `code`):
 | `GatewayUnexpectedResponseError` | any other status, or a 2xx body that is not JSON |
 | `GatewayConfigError` | an unusable `gatewayUrl`, or a URL off the gateway's origin |
 
+`core.gateway.client.sequence(unit)` runs several requests as one queue entry, all presenting one
+read of the token (token rotation uses it so nothing runs between the revoke and the store).
+
 `gatewayErrorFor(status, body, what)` applies the same mapping to a status seen elsewhere (the git
 layer). The token never appears in a message or a log line, including when the server echoes it.
 
@@ -165,10 +168,10 @@ await core.gateway.tokens.revoke("ci"); // id or alias → { id, alias, revokedC
 await core.gateway.tokens.rotate("laptop"); // → { replaced, token, rotatedCurrent }
 ```
 
-- An id or alias is resolved through `list()` first: no match is `GatewayNotFoundError`, a value that
-  is one token's id and another's alias is `GatewayTokenAmbiguousError`, and a value shaped like a
-  `b6pt_` secret is refused (`GatewayInvalidArgumentError`) without being sent. Nothing is revoked or
-  rotated in any of these cases.
+- An id or alias is trimmed and resolved through `list()` first: no match is `GatewayNotFoundError`,
+  a value that is one token's id and another's alias is `GatewayTokenAmbiguousError`, and a value
+  containing `b6pt_` anywhere (a pasted secret) is refused (`GatewayInvalidArgumentError`) without
+  being sent. Nothing is revoked or rotated in any of these cases, and no message quotes the value.
 - `create` refuses an empty or whitespace alias, an empty scope list or an expiry that is not a
   date before sending (`GatewayInvalidArgumentError`). A new token's scopes must be a subset of the
   stored token's.
@@ -176,7 +179,14 @@ await core.gateway.tokens.rotate("laptop"); // → { replaced, token, rotatedCur
   stored token. If storing fails after the gateway has rotated (so the old token is already
   revoked), `rotate` throws `GatewayTokenStoreError`, whose non-enumerable `replacement` property
   carries the new token, secret included, so it can be shown and the user is not locked out. The
-  store also refuses, the same way, when the stored token is no longer the one that was rotated.
+  store also refuses, the same way, when the stored token is no longer the one that was rotated
+  (an in-process compare-then-write, not atomic across processes). The list, the rotate and the
+  store run as one entry in the client's queue with one read of the stored token, so a request
+  queued behind a rotation presents the replacement, never the revoked token.
+- **A minted secret is never dropped.** When a create or rotate answer carries the secret but is
+  otherwise off-contract, the call throws `GatewayOffContractTokenError`, whose non-enumerable
+  `secret` holds it; for a rotation of the stored token it is still offered to the store, and
+  `stored` says whether that worked.
 - **Revoking the stored token** is allowed. The result says `revokedCurrent: true` and the stored
   (now dead) token is left in place; what to do next is the consumer's call.
 - Core never logs a secret or puts one in an error message. Warning about a token that never
@@ -184,8 +194,9 @@ await core.gateway.tokens.rotate("laptop"); // → { replaced, token, rotatedCur
 
 For specs, [`FakeGateway`](src/testing/FakeGateway.ts) is an in-process gateway on `127.0.0.1` that
 answers the contract's REST routes (the token routes included) and error codes, with `grantToken`
-(scopes, plus optional id, alias, owner and expiry), `issuedTokens`, `failNext` and `route` (for
-mounting git smart-HTTP handlers).
+(scopes, plus optional id, alias, owner and expiry; an expired token is `401 token-invalid`),
+`issuedTokens`, `issuedSecrets` (every secret ever accepted, revoked ones included, for leak
+checks), `failNext` and `route` (for mounting git smart-HTTP handlers).
 
 ## Development
 

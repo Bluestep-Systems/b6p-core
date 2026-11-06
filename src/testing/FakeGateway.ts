@@ -132,7 +132,7 @@ export interface FakeGatewayRoute {
  * (`GET`/`POST /api/v1/tokens`, `DELETE /api/v1/tokens/{id}`, `POST /api/v1/tokens/{id}/rotate`,
  * scope `tokens:self`, with `scope-escalation` and `alias-taken`), and `404 not-found` for anything else.
  * Tokens are granted explicitly with their scopes; a request without one is `401 token-missing`,
- * an unknown one `401 token-invalid`, a missing scope `403 scope-missing` with `scope`.
+ * an unknown or expired one `401 token-invalid`, a missing scope `403 scope-missing` with `scope`.
  * @lastreviewed null
  */
 export class FakeGateway {
@@ -161,6 +161,13 @@ export class FakeGateway {
    * @lastreviewed null
    */
   maxInFlight = 0;
+
+  /**
+   * Every secret this fake has ever accepted, granted or minted, revoked ones included, in issue
+   * order. For leak checks: a spec can assert none of them reached a log line or an error.
+   * @lastreviewed null
+   */
+  readonly issuedSecrets: string[] = [];
 
   private inFlight = 0;
   private readonly tokens = new Map<string, FakeGatewayToken>();
@@ -215,6 +222,7 @@ export class FakeGateway {
       options.expiresAt === undefined
         ? new Date(Date.parse(createdAt) + DEFAULT_TOKEN_LIFETIME_MS).toISOString()
         : options.expiresAt;
+    this.issuedSecrets.push(token);
     this.tokens.set(token, {
       secret: token,
       id: options.id ?? `tok_${n}`,
@@ -473,6 +481,7 @@ export class FakeGateway {
       expiresAt,
       lastUsedAt: null,
     };
+    this.issuedSecrets.push(secret);
     this.tokens.set(secret, record);
     return { id: record.id, token: secret, alias, scopes: [...record.scopes], expiresAt };
   }
@@ -488,7 +497,7 @@ export class FakeGateway {
       return false;
     }
     const granted = this.tokens.get(token);
-    if (!granted) {
+    if (!granted || (granted.expiresAt !== null && Date.parse(granted.expiresAt) <= Date.now())) {
       sendJson(res, 401, { error: "token-invalid", message: "The access token is not valid." });
       return false;
     }

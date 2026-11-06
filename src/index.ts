@@ -64,7 +64,7 @@ export { TsLibResolver } from "./script/TsLibResolver";
 export { GatewayService } from "./gateway/GatewayService";
 export { GatewayTokenService } from "./gateway/GatewayTokenService";
 export { GatewayClient, gatewayErrorFor, parseGatewayOrigin } from "./gateway/GatewayClient";
-export type { GatewayClientOptions, GatewayRequestOptions } from "./gateway/GatewayClient";
+export type { GatewayClientOptions, GatewayRequestOptions, GatewaySequence } from "./gateway/GatewayClient";
 export type { GatewayContext, GatewayFetch } from "./gateway/GatewayContext";
 export { gatewayTokenProblem, redactToken } from "./gateway/GatewayToken";
 

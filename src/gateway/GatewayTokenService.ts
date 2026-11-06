@@ -10,7 +10,7 @@ import type {
   JsonObject,
   JsonValue,
 } from "../types";
-import type { GatewayClient } from "./GatewayClient";
+import type { GatewayClient, GatewayRequestOptions } from "./GatewayClient";
 import type { GatewayContext } from "./GatewayContext";
 import { gatewayTokenProblem, redactToken } from "./GatewayToken";
 
@@ -48,19 +48,7 @@ export class GatewayTokenService {
    * @lastreviewed null
    */
   async list(): Promise<GatewayTokenSummary[]> {
-    const what = `${Http.Methods.GET} ${Gateway.Paths.TOKENS}`;
-    const body = await this.client.request(Http.Methods.GET, Gateway.Paths.TOKENS);
-    const tokens = isObject(body) ? body.tokens : undefined;
-    if (!Array.isArray(tokens)) {
-      throw unexpected(what, "is not the token list the contract describes");
-    }
-    return tokens.map((entry) => {
-      const summary = toSummary(entry);
-      if (!summary) {
-        throw unexpected(what, "lists a token that is not shaped as the contract describes");
-      }
-      return summary;
-    });
+    return listVia((method, path) => this.client.request(method, path));
   }
 
   /**
@@ -71,6 +59,8 @@ export class GatewayTokenService {
    *   list, or an expiry that is not a date
    * @throws {Err.GatewayScopeEscalationError} a scope the presenting token lacks was asked for
    * @throws {Err.GatewayAliasTakenError} another of the caller's tokens has the alias
+   * @throws {Err.GatewayOffContractTokenError} the token was minted but the answer was malformed;
+   *   the error carries the secret
    * @lastreviewed null
    */
   async create(request: GatewayTokenCreateRequest): Promise<GatewayMintedToken> {
@@ -87,22 +77,37 @@ export class GatewayTokenService {
     }
     const what = `${Http.Methods.POST} ${Gateway.Paths.TOKENS}`;
     const answer = await this.client.request(Http.Methods.POST, Gateway.Paths.TOKENS, { body });
-    return toMinted(answer, what, "the token may have been minted");
+    const parsed = parseMinted(answer, what, "the token may have been minted");
+    if (parsed.minted) {
+      return parsed.minted;
+    }
+    throw new Err.GatewayOffContractTokenError(
+      `${what}: a token was minted, but the gateway's answer describing it was malformed.`,
+      "create",
+      parsed.secret,
+      false
+    );
   }
 
   /**
-   * Revoke one of the caller's tokens, by id or alias (resolved through {@link list} first).
+   * Revoke one of the caller's tokens, by id or alias (resolved through the list first, in the
+   * same queue entry and with the same token as the revoke).
    * Revoking the stored token is allowed: the result says `revokedCurrent: true`, and the stored
    * token is left in place for the consumer to deal with.
    *
+   * @throws {Err.GatewayInvalidArgumentError} before sending, for an empty id-or-alias or one containing `b6pt_`
    * @throws {Err.GatewayNotFoundError} no token of the caller's has that id or alias
    * @throws {Err.GatewayTokenAmbiguousError} it matches one token's id and another's alias
    * @lastreviewed null
    */
   async revoke(idOrAlias: string): Promise<GatewayTokenRevokeResult> {
-    const target = await this.resolve(idOrAlias);
-    await this.client.request(Http.Methods.DELETE, `${Gateway.Paths.TOKENS}/${encodeURIComponent(target.id)}`);
-    return { id: target.id, alias: target.alias, revokedCurrent: target.current };
+    const wanted = checkIdOrAlias(idOrAlias);
+    // One queue entry and one token read: `current` describes the token the DELETE presents.
+    return this.client.sequence(async (seq) => {
+      const target = pick(await listVia(seq.request), wanted);
+      await seq.request(Http.Methods.DELETE, `${Gateway.Paths.TOKENS}/${encodeURIComponent(target.id)}`);
+      return { id: target.id, alias: target.alias, revokedCurrent: target.current };
+    });
   }
 
   /**
@@ -110,74 +115,147 @@ export class GatewayTokenService {
    * with the same alias, scopes and lifetime policy and revokes the old one. When the rotated
    * token is the stored one, the replacement is stored in its place.
    *
+   * The list, the rotate request and the store run as one entry in the client's queue and present
+   * one read of the stored token, so nothing queued behind can present the revoked token, and the
+   * store replaces exactly the token that was rotated. A secret the gateway returns is never
+   * dropped, whatever fails after it arrives.
+   *
    * @throws {Err.GatewayNotFoundError} no token of the caller's has that id or alias
    * @throws {Err.GatewayTokenAmbiguousError} it matches one token's id and another's alias
    * @throws {Err.GatewayTokenStoreError} the stored token was rotated (so it is already revoked) but
    *   its replacement could not be stored; the error carries the replacement, secret included
+   * @throws {Err.GatewayOffContractTokenError} the token was rotated but the answer was malformed; the
+   *   error carries the secret, and says whether it was stored (only tried for the stored token)
    * @lastreviewed null
    */
   async rotate(idOrAlias: string): Promise<GatewayTokenRotateResult> {
-    const target = await this.resolve(idOrAlias);
-    // What the rotate request will present; the store only replaces this exact value.
-    const presenting = target.current ? await this.ctx.gatewayToken.token() : undefined;
-    const path = `${Gateway.Paths.TOKENS}/${encodeURIComponent(target.id)}/rotate`;
-    const answer = await this.client.request(Http.Methods.POST, path);
-    const token = toMinted(answer, `${Http.Methods.POST} ${path}`, "the token may have been rotated");
-    const replaced = { id: target.id, alias: target.alias };
-    if (!target.current) {
-      return { replaced, token, rotatedCurrent: false };
-    }
-    try {
-      const problem = gatewayTokenProblem(token.token);
-      if (problem) {
-        throw new Error(`the replacement is not usable as a gateway token: ${problem}`);
-      }
-      if (presenting === undefined) {
-        throw new Error("no stored token was read before the rotation");
-      }
-      await this.ctx.gatewayTokenStore.replace(presenting, token.token);
-    } catch (error) {
-      const why = redactToken(
-        redactToken(error instanceof Error ? error.message : String(error), token.token),
-        presenting
-      );
-      throw new Err.GatewayTokenStoreError(
-        `The stored token "${target.alias}" was rotated and the old one is revoked, but the replacement could not be stored: ${why}`,
-        token
-      );
-    }
-    this.ctx.logger.info(`Rotated the stored gateway token "${target.alias}" and stored its replacement.`);
-    return { replaced, token, rotatedCurrent: true };
-  }
+    const wanted = checkIdOrAlias(idOrAlias);
+    // ONE queue entry for list + rotate + store, so no queued request runs between the gateway
+    // revoking the old token and the replacement landing in the store; and ONE token read
+    // (`seq.token`), so `current`, the token the rotate presents and the store's `expected` agree.
+    return this.client.sequence(async (seq) => {
+      const target = pick(await listVia(seq.request), wanted);
+      const path = `${Gateway.Paths.TOKENS}/${encodeURIComponent(target.id)}/rotate`;
+      const what = `${Http.Methods.POST} ${path}`;
+      const answer = await seq.request(Http.Methods.POST, path);
+      const parsed = parseMinted(answer, what, "the token may have been rotated");
+      const secret = parsed.minted ? parsed.minted.token : parsed.secret;
+      const replaced = { id: target.id, alias: target.alias };
 
-  /**
-   * The one token of the caller's whose id or alias is `idOrAlias`.
-   * @lastreviewed null
-   */
-  private async resolve(idOrAlias: string): Promise<GatewayTokenSummary> {
-    if (typeof idOrAlias !== "string" || idOrAlias.length === 0) {
-      throw new Err.GatewayInvalidArgumentError("No token id or alias was given.");
-    }
-    if (idOrAlias.startsWith(Gateway.TOKEN_PREFIX)) {
-      // A pasted secret: never send it, and never quote it.
-      throw new Err.GatewayInvalidArgumentError(
-        `The value given as a token id or alias is shaped like a token secret (${Gateway.TOKEN_PREFIX}…); it was not sent.`
-      );
-    }
-    const tokens = await this.list();
-    const matches = tokens.filter((t) => t.id === idOrAlias || t.alias === idOrAlias);
-    if (matches.length === 0) {
-      throw new Err.GatewayNotFoundError(`No token of this user has the id or alias "${idOrAlias}".`, "not-found");
-    }
-    if (matches.length > 1) {
-      const ids = matches.map((t) => t.id);
-      throw new Err.GatewayTokenAmbiguousError(
-        `"${idOrAlias}" is the id of one of this user's tokens and the alias of another (ids ${ids.join(", ")}).`,
-        ids
-      );
-    }
-    return matches[0];
+      if (!target.current) {
+        if (!parsed.minted) {
+          throw new Err.GatewayOffContractTokenError(
+            `${what}: the token "${target.alias}" was rotated and the old one is revoked, but the gateway's answer describing the replacement was malformed. It is not the stored token, so nothing was stored.`,
+            "rotate",
+            secret,
+            false
+          );
+        }
+        return { replaced, token: parsed.minted, rotatedCurrent: false };
+      }
+
+      // The stored token is already revoked at the gateway: offer the secret to the store even
+      // when the rest of the answer is off-contract, and never drop it.
+      let storeFailure: string | undefined;
+      try {
+        const problem = gatewayTokenProblem(secret);
+        if (problem) {
+          throw new Error(`the replacement is not usable as a gateway token: ${problem}`);
+        }
+        await this.ctx.gatewayTokenStore.replace(seq.token, secret);
+      } catch (error) {
+        storeFailure = redactToken(
+          redactToken(error instanceof Error ? error.message : String(error), secret),
+          seq.token
+        );
+      }
+
+      if (!parsed.minted) {
+        const outcome =
+          storeFailure === undefined
+            ? "The replacement was stored in its place."
+            : `The replacement could not be stored: ${storeFailure}`;
+        throw new Err.GatewayOffContractTokenError(
+          `${what}: the stored token "${target.alias}" was rotated and the old one is revoked, but the gateway's answer describing the replacement was malformed. ${outcome}`,
+          "rotate",
+          secret,
+          storeFailure === undefined
+        );
+      }
+      if (storeFailure !== undefined) {
+        throw new Err.GatewayTokenStoreError(
+          `The stored token "${target.alias}" was rotated and the old one is revoked, but the replacement could not be stored: ${storeFailure}`,
+          parsed.minted
+        );
+      }
+      this.ctx.logger.info(`Rotated the stored gateway token "${target.alias}" and stored its replacement.`);
+      return { replaced, token: parsed.minted, rotatedCurrent: true };
+    });
   }
+}
+
+/**
+ * Sends one request; either the client's queued `request` or a {@link GatewaySequence}'s.
+ * @lastreviewed null
+ */
+type Send = (method: string, path: string, options?: GatewayRequestOptions) => Promise<JsonValue | undefined>;
+
+/**
+ * `GET /api/v1/tokens`, parsed.
+ * @lastreviewed null
+ */
+async function listVia(send: Send): Promise<GatewayTokenSummary[]> {
+  const what = `${Http.Methods.GET} ${Gateway.Paths.TOKENS}`;
+  const body = await send(Http.Methods.GET, Gateway.Paths.TOKENS);
+  const tokens = isObject(body) ? body.tokens : undefined;
+  if (!Array.isArray(tokens)) {
+    throw unexpected(what, "is not the token list the contract describes");
+  }
+  return tokens.map((entry) => {
+    const summary = toSummary(entry);
+    if (!summary) {
+      throw unexpected(what, "lists a token that is not shaped as the contract describes");
+    }
+    return summary;
+  });
+}
+
+/**
+ * Check an id-or-alias argument before anything is sent, and return it trimmed. A value that
+ * contains `b6pt_` anywhere is taken for a pasted secret: refused, never sent, never quoted.
+ * @lastreviewed null
+ */
+function checkIdOrAlias(idOrAlias: string): string {
+  const wanted = typeof idOrAlias === "string" ? idOrAlias.trim() : "";
+  if (wanted.length === 0) {
+    throw new Err.GatewayInvalidArgumentError("No token id or alias was given.");
+  }
+  if (wanted.includes(Gateway.TOKEN_PREFIX)) {
+    throw new Err.GatewayInvalidArgumentError(
+      `The given id or alias contains ${Gateway.TOKEN_PREFIX}, so it looks like a token secret; it was not sent.`
+    );
+  }
+  return wanted;
+}
+
+/**
+ * The one token whose id or alias is `wanted`. Messages never quote `wanted`: it is user input,
+ * and may be a secret the guard above did not recognise.
+ * @lastreviewed null
+ */
+function pick(tokens: readonly GatewayTokenSummary[], wanted: string): GatewayTokenSummary {
+  const matches = tokens.filter((t) => t.id === wanted || t.alias === wanted);
+  if (matches.length === 0) {
+    throw new Err.GatewayNotFoundError("No token of this user has the given id or alias.", "not-found");
+  }
+  if (matches.length > 1) {
+    const ids = matches.map((t) => t.id);
+    throw new Err.GatewayTokenAmbiguousError(
+      `The given id or alias is the id of one of this user's tokens and the alias of another (ids ${ids.join(", ")}).`,
+      ids
+    );
+  }
+  return matches[0];
 }
 
 function isObject(value: JsonValue | undefined): value is JsonObject {
@@ -237,25 +315,28 @@ function toSummary(entry: JsonValue): GatewayTokenSummary | undefined {
 }
 
 /**
- * Parse a mint/rotate answer. The body holds a secret, so a failure never quotes it.
+ * A parsed mint/rotate answer: the full token, or, for an off-contract answer that still carried
+ * a secret, the secret alone (which must never be dropped).
  * @lastreviewed null
  */
-function toMinted(answer: JsonValue | undefined, what: string, consequence: string): GatewayMintedToken {
-  if (isObject(answer)) {
+type ParsedMint = { minted: GatewayMintedToken; secret?: undefined } | { minted?: undefined; secret: string };
+
+/**
+ * Parse a mint/rotate answer. The body holds a secret, so a failure never quotes it. Throws
+ * {@link Err.GatewayUnexpectedResponseError} only when the answer carries no secret at all.
+ * @lastreviewed null
+ */
+function parseMinted(answer: JsonValue | undefined, what: string, consequence: string): ParsedMint {
+  if (isObject(answer) && typeof answer.token === "string" && answer.token.length > 0) {
+    const token = answer.token;
     const id = idOf(answer.id);
-    const { token, alias, scopes, expiresAt } = answer;
-    if (
-      id !== undefined &&
-      typeof token === "string" &&
-      token.length > 0 &&
-      typeof alias === "string" &&
-      isStringArray(scopes) &&
-      isNullableString(expiresAt)
-    ) {
-      return { id, token, alias, scopes, expiresAt, neverExpires: expiresAt === null };
+    const { alias, scopes, expiresAt } = answer;
+    if (id !== undefined && typeof alias === "string" && isStringArray(scopes) && isNullableString(expiresAt)) {
+      return { minted: { id, token, alias, scopes, expiresAt, neverExpires: expiresAt === null } };
     }
+    return { secret: token };
   }
-  throw unexpected(what, `is not the minted token the contract describes; ${consequence}`);
+  throw unexpected(what, `is not the minted token the contract describes, and carries no token; ${consequence}`);
 }
 
 function unexpected(what: string, problem: string): Err.GatewayUnexpectedResponseError {
@@ -269,9 +350,9 @@ function checkAlias(alias: string): void {
   if (BAD_CHARS.test(alias)) {
     throw new Err.GatewayInvalidArgumentError("The token's alias contains whitespace or control characters.");
   }
-  if (alias.startsWith(Gateway.TOKEN_PREFIX)) {
+  if (alias.includes(Gateway.TOKEN_PREFIX)) {
     throw new Err.GatewayInvalidArgumentError(
-      `The token's alias starts with ${Gateway.TOKEN_PREFIX}, which is reserved for token secrets; it was not sent.`
+      `The token's alias contains ${Gateway.TOKEN_PREFIX}, which is reserved for token secrets; it was not sent.`
     );
   }
 }

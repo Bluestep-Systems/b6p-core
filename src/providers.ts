@@ -175,7 +175,8 @@ export interface GatewayTokenStore {
   /**
    * Store `next` in place of `expected`. Rejects, leaving the stored token as it was, when the
    * stored token is no longer `expected` (something else replaced it meanwhile) or cannot be
-   * written. Neither value is ever logged or put in an error message.
+   * written. The check is a compare-then-write, not atomic across processes. Neither value is
+   * ever logged or put in an error message.
    * @lastreviewed null
    */
   replace(expected: string, next: string): Promise<void>;

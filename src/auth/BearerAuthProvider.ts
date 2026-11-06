@@ -169,10 +169,14 @@ export class BearerAuthProvider implements AuthProvider<BearerAuthParams> {
    * Never prompts, and neither value is logged or put in an error message.
    *
    * This is the write behind rotating the stored token through the gateway: the gateway has
-   * already revoked `expected`, so `next` must take its place. The check guards against
-   * overwriting a token that something else (another b6p process, `auth update`) stored while the
-   * rotation was in flight. It is the only write the gateway side has; it does not touch the web
-   * session, which still bootstraps through {@link authHeaderValue}.
+   * already revoked `expected`, so `next` must take its place. It is the only write the gateway
+   * side has; it does not touch the web session, which still bootstraps through
+   * {@link authHeaderValue}.
+   *
+   * The check is an in-process compare-then-write, **not** atomic across processes: it reads, then
+   * writes, with awaits between, and the persistence layer holds no cross-process lock. It catches
+   * a token that something else (another b6p process, `auth update`) stored before the read; a
+   * write by another process that lands between this read and this write is overwritten.
    *
    * @throws {Error} when `next` is empty, the stored token is no longer `expected`, or the write fails
    * @lastreviewed null

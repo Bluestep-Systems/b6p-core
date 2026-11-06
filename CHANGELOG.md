@@ -23,20 +23,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`core.gateway.tokens`: self-service management of the caller's own gateway tokens**
   (ClickUp 86bczx1wj): `list()`, `create({ alias, scopes, expiresAt? })` (the secret is returned
   once; `expiresAt: null` never expires, reported as `neverExpires`), `revoke(idOrAlias)` and
-  `rotate(idOrAlias)`. An id or alias is resolved through `list()` first; no match is
-  `GatewayNotFoundError` and an id/alias clash is `GatewayTokenAmbiguousError`, with nothing
-  revoked. Rotating the stored token stores its replacement in place (still one stored token); if
-  that store fails after the gateway rotated, `GatewayTokenStoreError` carries the new token so it
-  is not lost. Revoking the stored token is allowed, reported as `revokedCurrent: true`, and leaves
+  `rotate(idOrAlias)`. An id or alias is trimmed and resolved through `list()` first; no match is
+  `GatewayNotFoundError`, an id/alias clash is `GatewayTokenAmbiguousError`, and a value containing
+  `b6pt_` is refused unsent; nothing is revoked, and the value is never quoted. Rotating the stored
+  token stores its replacement in place (still one stored token), with list, rotate and store as
+  one queue entry over one token read; if that store fails after the gateway rotated,
+  `GatewayTokenStoreError` carries the new token so it is not lost. An answer that carries the
+  secret but is otherwise off-contract throws `GatewayOffContractTokenError` carrying it (and the
+  stored token's replacement is still stored). Revoking the stored token is allowed, reported as `revokedCurrent: true`, and leaves
   the stored token in place. Needs the `tokens:self` scope (`Gateway.Scopes.TOKENS_SELF`). New
   errors `GatewayScopeEscalationError` (`403 scope-escalation`), `GatewayAliasTakenError`
-  (`409 alias-taken`), `GatewayInvalidArgumentError`, `GatewayTokenAmbiguousError` and
-  `GatewayTokenStoreError`. No secret is logged or put in an error message.
+  (`409 alias-taken`), `GatewayInvalidArgumentError`, `GatewayTokenAmbiguousError`,
+  `GatewayTokenStoreError` and `GatewayOffContractTokenError`. `GatewayClient.sequence()` runs
+  several requests as one queue entry over one token read. No secret is logged or put in an error message.
 - **`BearerAuthProvider.replaceStoredToken(expected, next)`**: replaces the stored token only while
-  it is still `expected`; the write behind rotating it. Never prompts or logs either value.
+  it is still `expected` (an in-process compare-then-write, not atomic across processes); the write
+  behind rotating it. Never prompts or logs either value.
 - **`FakeGateway`** (testing): an in-process gateway on `127.0.0.1` answering the contract's REST
   shapes and error codes, with hooks for git routes, and the self-service token routes
-  (`grantToken` takes an optional id, alias, owner and expiry; `issuedTokens()` lists what it accepts).
+  (`grantToken` takes an optional id, alias, owner and expiry, and an expired token is refused;
+  `issuedTokens()` lists what it accepts; `issuedSecrets` every secret it ever accepted).
 
 ## [0.8.1] - 2026-10-20
 

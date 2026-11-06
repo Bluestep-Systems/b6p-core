@@ -1051,4 +1051,45 @@ export namespace Err {
       });
     }
   }
+
+  /**
+   * The gateway minted or rotated a token (code `off-contract`), but its `2xx` answer about the
+   * token was malformed (a field missing or of the wrong type). The answer did carry the secret,
+   * which exists nowhere else, so this error carries it in {@link secret} rather than dropping it.
+   *
+   * For a rotation of the stored token, the old token is already revoked, and the secret was
+   * still offered to the store; {@link stored} says whether that worked. `secret` is
+   * non-enumerable, so a generic error logger or `JSON.stringify` does not print it; read the
+   * property by name. The message never contains it.
+   * @lastreviewed null
+   */
+  export class GatewayOffContractTokenError extends GatewayError {
+    /**
+     * The minted `b6pt_…` secret.
+     * @lastreviewed null
+     */
+    declare readonly secret: string;
+    /**
+     * Which operation minted it.
+     * @lastreviewed null
+     */
+    readonly operation: "create" | "rotate";
+    /**
+     * Whether the secret is now the stored token (only ever `true` for a rotation of the stored token).
+     * @lastreviewed null
+     */
+    readonly stored: boolean;
+    constructor(message: string, operation: "create" | "rotate", secret: string, stored: boolean) {
+      super(message, null, "off-contract");
+      this.name = "GatewayOffContractTokenError";
+      this.operation = operation;
+      this.stored = stored;
+      Object.defineProperty(this, "secret", {
+        value: secret,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
+  }
 }

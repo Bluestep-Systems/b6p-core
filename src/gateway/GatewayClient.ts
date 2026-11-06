@@ -32,6 +32,26 @@ export interface GatewayRequestOptions {
 }
 
 /**
+ * The handle a {@link GatewayClient.sequence} unit sends its requests through. Every request it
+ * sends presents the one {@link token} read when the unit started.
+ * @lastreviewed null
+ */
+export interface GatewaySequence {
+  /**
+   * The token read once when the unit started; every request of the unit presents it. A secret:
+   * never log it or put it in a message.
+   * @lastreviewed null
+   */
+  readonly token: string;
+  /**
+   * Send one request as part of the unit. Await each before sending the next: the unit holds the
+   * client's queue, so its own requests are not queued behind one another.
+   * @lastreviewed null
+   */
+  request(method: string, path: string, options?: GatewayRequestOptions): Promise<JsonValue | undefined>;
+}
+
+/**
  * Tuning for a {@link GatewayClient}.
  * @lastreviewed null
  */
@@ -244,6 +264,42 @@ export class GatewayClient {
     return result;
   }
 
+  /**
+   * Run `unit` as ONE entry in the request queue: no other request on this client runs between its
+   * requests, or between its last request and the end of its local work (rotation stores the
+   * replacement token there, so nothing queued can present the just-revoked one). The stored token
+   * is read once, when the unit starts, and every request of the unit presents it.
+   *
+   * Inside `unit`, send through the given {@link GatewaySequence} only. Calling {@link request} or
+   * {@link sequence} on this client from inside it waits behind the unit itself and never runs.
+   *
+   * @throws {Err.GatewayAuthError} before `unit` runs, when no usable token is available
+   * @lastreviewed null
+   */
+  sequence<T>(unit: (seq: GatewaySequence) => Promise<T>): Promise<T> {
+    const run = async (): Promise<T> => {
+      const token = await this.requireToken();
+      let open = true;
+      const seq: GatewaySequence = {
+        token,
+        request: async (method, path, options = {}) => {
+          if (!open) {
+            throw new Err.GatewayConfigError("A gateway request was sent through a sequence that has ended.");
+          }
+          return this.send(method, path, options, token);
+        },
+      };
+      try {
+        return await unit(seq);
+      } finally {
+        open = false;
+      }
+    };
+    const result = this.tail.then(run, run);
+    this.tail = result.catch(() => undefined);
+    return result;
+  }
+
   private async requireToken(): Promise<string> {
     const token = await this.ctx.gatewayToken.token();
     if (token === undefined || token.length === 0) {
@@ -256,7 +312,12 @@ export class GatewayClient {
     return token;
   }
 
-  private async send(method: string, path: string, options: GatewayRequestOptions): Promise<JsonValue | undefined> {
+  private async send(
+    method: string,
+    path: string,
+    options: GatewayRequestOptions,
+    presetToken?: string
+  ): Promise<JsonValue | undefined> {
     const origin = await this.origin();
     if (!path.startsWith("/") || path.startsWith("//")) {
       throw new Err.GatewayConfigError(`The gateway path "${path}" is not an absolute path.`);
@@ -268,7 +329,7 @@ export class GatewayClient {
       }
     }
     const what = `${method} ${url.pathname}${url.search}`;
-    const token = await this.requireToken();
+    const token = presetToken ?? (await this.requireToken());
 
     const headers: Record<string, string> = {
       [Http.Headers.AUTHORIZATION]: `${AuthTypes.BEARER_PREFIX}${token}`,
