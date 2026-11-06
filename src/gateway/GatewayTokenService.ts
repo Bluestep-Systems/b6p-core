@@ -132,7 +132,7 @@ export class GatewayTokenService {
     const wanted = checkIdOrAlias(idOrAlias);
     // ONE queue entry for list + rotate + store, so no queued request runs between the gateway
     // revoking the old token and the replacement landing in the store; and ONE token read
-    // (`seq.token`), so `current`, the token the rotate presents and the store's `expected` agree.
+    // (`seq.token()`), so `current`, the token the rotate presents and the store's `expected` agree.
     return this.client.sequence(async (seq) => {
       const target = pick(await listVia(seq.request), wanted);
       const path = `${Gateway.Paths.TOKENS}/${encodeURIComponent(target.id)}/rotate`;
@@ -162,11 +162,11 @@ export class GatewayTokenService {
         if (problem) {
           throw new Error(`the replacement is not usable as a gateway token: ${problem}`);
         }
-        await this.ctx.gatewayTokenStore.replace(seq.token, secret);
+        await this.ctx.gatewayTokenStore.replace(await seq.token(), secret);
       } catch (error) {
         storeFailure = redactToken(
           redactToken(error instanceof Error ? error.message : String(error), secret),
-          seq.token
+          await seq.token()
         );
       }
 

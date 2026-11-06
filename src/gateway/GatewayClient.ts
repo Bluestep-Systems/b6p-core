@@ -33,16 +33,17 @@ export interface GatewayRequestOptions {
 
 /**
  * The handle a {@link GatewayClient.sequence} unit sends its requests through. Every request it
- * sends presents the one {@link token} read when the unit started.
+ * sends presents the one token read by its first {@link token} call.
  * @lastreviewed null
  */
 export interface GatewaySequence {
   /**
-   * The token read once when the unit started; every request of the unit presents it. A secret:
-   * never log it or put it in a message.
+   * The stored token, read once on first call (a typed {@link Err.GatewayAuthError} when none is
+   * usable) and the same value on every later call and request of the unit. A secret: never log
+   * it or put it in a message.
    * @lastreviewed null
    */
-  readonly token: string;
+  token(): Promise<string>;
   /**
    * Send one request as part of the unit. Await each before sending the next: the unit holds the
    * client's queue, so its own requests are not queued behind one another.
@@ -263,28 +264,28 @@ export class GatewayClient {
    * @lastreviewed null
    */
   request(method: string, path: string, options: GatewayRequestOptions = {}): Promise<JsonValue | undefined> {
-    const run = (): Promise<JsonValue | undefined> => this.send(method, path, options);
-    const result = this.tail.then(run, run);
-    this.tail = result.catch(() => undefined);
-    return result;
+    return this.sequence((seq) => seq.request(method, path, options));
   }
 
   /**
-   * Run `unit` as ONE entry in the request queue: no other request on this client runs between its
-   * requests, or between its last request and the end of its local work (rotation stores the
-   * replacement token there, so nothing queued can present the just-revoked one). The stored token
-   * is read once, when the unit starts, and every request of the unit presents it.
+   * Run `unit` as ONE entry in this client's one-at-a-time queue, behind any request or unit
+   * already in flight. Nothing else on this client runs until `unit` settles. The git layer wraps
+   * a whole operation (several HTTP requests) in this so git traffic and REST calls never overlap
+   * (it ignores `seq`); token rotation runs list + rotate + store in it, so nothing queued can
+   * present the just-revoked token.
    *
-   * Inside `unit`, send through the given {@link GatewaySequence} only. Calling {@link request} or
-   * {@link sequence} on this client from inside it waits behind the unit itself and never runs.
+   * `seq.token()` reads the stored token once, on first use, and every later call and every
+   * `seq.request` of the unit presents that same value.
    *
-   * @throws {Err.GatewayAuthError} before `unit` runs, when no usable token is available
+   * Inside `unit`, send REST requests through `seq` only. Calling {@link request} or `sequence` on
+   * this client from inside it waits behind the unit itself and never runs.
    * @lastreviewed null
    */
   sequence<T>(unit: (seq: GatewaySequence) => Promise<T>): Promise<T> {
     const run = async (): Promise<T> => {
-      const token = await this.requireToken();
+      let read: Promise<string> | undefined;
       let open = true;
+      const token = (): Promise<string> => (read ??= this.requireToken());
       const seq: GatewaySequence = {
         token,
         request: async (method, path, options = {}) => {
@@ -321,7 +322,7 @@ export class GatewayClient {
     method: string,
     path: string,
     options: GatewayRequestOptions,
-    presetToken?: string
+    readToken: () => Promise<string>
   ): Promise<JsonValue | undefined> {
     const origin = await this.origin();
     if (!path.startsWith("/") || path.startsWith("//")) {
@@ -334,7 +335,7 @@ export class GatewayClient {
       }
     }
     const what = `${method} ${url.pathname}${url.search}`;
-    const token = presetToken ?? (await this.requireToken());
+    const token = await readToken();
 
     const headers: Record<string, string> = {
       [Http.Headers.AUTHORIZATION]: `${AuthTypes.BEARER_PREFIX}${token}`,

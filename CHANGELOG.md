@@ -18,6 +18,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   found, non-fast-forward, too large, unavailable, unexpected, config), also available to a git
   layer through `gatewayErrorFor`. `authHeadersFor(url)` hands the header to a git client, for
   gateway URLs only. The token never appears in an error message or a log line.
+- **`core.gateway.git`: pure-JS git over the gateway** (ClickUp 86bczx1wd). `GatewayGit` clones a
+  knowledge base or marketplace repo from its listing's `gitUrl` (optionally at a branch or tag),
+  reports `status` (dirty paths, ahead/behind), fast-forwards with `pull`, and `push`es the
+  current branch to its upstream. It uses isomorphic-git (MIT, exact-pinned; no git install needed,
+  bundles into single-file builds) and the stored `b6pt_` token on every request. Pushes are
+  fast-forward only: never forced, never a ref deletion, never tags; a non-fast-forward is
+  `GatewayConflictError`. A pull that would overwrite local changes throws
+  `GatewayDirtyWorkingTreeError` (with the `paths`) and changes nothing; other unusable folders
+  are `GatewayWorkingCopyError` (`reason`). File contents are never rewritten. A git request
+  that stalls (no response headers in 30 s, or a body silent for 60 s) fails as
+  `GatewayUnavailableError` and releases the queue; a pull checks the files out before it moves
+  the branch, so an interrupted pull never leaves HEAD ahead of the tree.
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.
 - **`core.gateway.tokens`: self-service management of the caller's own gateway tokens**
@@ -34,8 +46,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the stored token in place. Needs the `tokens:self` scope (`Gateway.Scopes.TOKENS_SELF`). New
   errors `GatewayScopeEscalationError` (`403 scope-escalation`), `GatewayAliasTakenError`
   (`409 alias-taken`), `GatewayInvalidArgumentError`, `GatewayTokenAmbiguousError`,
-  `GatewayTokenStoreError` and `GatewayOffContractTokenError`. `GatewayClient.sequence()` runs
-  several requests as one queue entry over one token read. No secret is logged or put in an error message.
+  `GatewayTokenStoreError` and `GatewayOffContractTokenError`. `GatewayClient.sequence((seq) => …)`
+  is the client's one queue primitive (the git layer's whole-operation hold uses it too); `seq`
+  sends requests over one token read. No secret is logged or put in an error message.
 - **`BearerAuthProvider.replaceStoredToken(expected, next)`**: replaces the stored token only while
   it is still `expected` (an in-process compare-then-write, not atomic across processes); the write
   behind rotating it. Never prompts or logs either value.

@@ -73,6 +73,16 @@ are load-bearing rather than stylistic — each records something this repo undi
   marketplace operations go there too, over that one client, so all gateway requests share its
   sequential queue. Errors are `Err.Gateway*`; a git layer maps statuses
   with `gatewayErrorFor` rather than its own table.
+- **`core.gateway.git` (`GatewayGit`) is pure-JS git (isomorphic-git, exact-pinned) and keeps four
+  rules.** It runs only on gateway-supplied `gitUrl`s, with the bearer from `authHeadersFor(url)` on
+  every request (a foreign origin throws first; redirects are never followed). It pushes only
+  fast-forwards: no `force`, no `delete`, no tags, and a branch behind its upstream is refused
+  before the wire. A pull never overwrites: it throws `GatewayDirtyWorkingTreeError` with the
+  paths instead of prompting, and puts the branch back if a checkout refuses. And it never
+  rewrites file contents (no autocrlf). Its clones go through Node's `fs`, not the `FileSystem`
+  provider, which has no `lstat`/symlink/mode surface for isomorphic-git. Each operation runs
+  inside `GatewayClient.sequence`. Its specs mount `git http-backend` on `FakeGateway`
+  (`test/support/GitHttpBackend.js`), so they need `git` on PATH.
 - **A prompt that overwrites or deletes puts its safe option first and passes
   `{ destructive: true, safeOption }`.** Prompt implementations answer `options[0]` on an empty
   answer and under auto-confirm (the CLI's `--yes`); with the destructive option first, `--yes`
@@ -92,8 +102,9 @@ are load-bearing rather than stylistic — each records something this repo undi
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
-snapshot history), `gateway/` (`GatewayService`, `GatewayClient`, `GatewayTokenService` — web-global's gateway over the
-`b6pt_` token), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
+snapshot history), `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit`, `GatewayTokenService` —
+web-global's gateway over the `b6pt_` token, pure-JS git through it, and the caller's own token
+management), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
 parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles, including `FakeGateway`).
 
 ## Commands
