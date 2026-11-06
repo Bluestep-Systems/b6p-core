@@ -1022,7 +1022,7 @@ export namespace Err {
      * Which of the two it was.
      * @lastreviewed null
      */
-    readonly reason: "different-repo" | "different-ref" | "tag-moved";
+    readonly reason: "different-repo" | "different-ref" | "tag-moved" | "tag-gone";
     /**
      * The local folder.
      * @lastreviewed null
@@ -1033,7 +1033,12 @@ export namespace Err {
      * @lastreviewed null
      */
     readonly repo: string;
-    constructor(message: string, reason: "different-repo" | "different-ref" | "tag-moved", dir: string, repo: string) {
+    constructor(
+      message: string,
+      reason: "different-repo" | "different-ref" | "tag-moved" | "tag-gone",
+      dir: string,
+      repo: string
+    ) {
       super(message, null, reason);
       this.name = "GatewayCloneMismatchError";
       this.reason = reason;

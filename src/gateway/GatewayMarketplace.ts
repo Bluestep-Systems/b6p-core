@@ -275,7 +275,7 @@ export class GatewayMarketplace {
           upstream === null
             ? `Tag ${ref} no longer exists on the gateway; ${target} still has the commit it was cloned at.`
             : `Tag ${ref} now points at a different commit on the gateway than the one checked out in ${target}.`,
-          "tag-moved",
+          upstream === null ? "tag-gone" : "tag-moved",
           target,
           repo.name
         );

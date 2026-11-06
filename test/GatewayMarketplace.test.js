@@ -304,7 +304,7 @@ test("a tag that moved or was deleted on the gateway is GatewayCloneMismatchErro
     assert.strictEqual(git(dir, "rev-parse", "HEAD"), head);
     git(core, "tag", "-d", "v1");
     error = await rejectsWith(pullAt(market, "core", dir, { ref: "v1" }), Err.GatewayCloneMismatchError);
-    assert.strictEqual(error.reason, "tag-moved");
+    assert.strictEqual(error.reason, "tag-gone");
   });
 });
 

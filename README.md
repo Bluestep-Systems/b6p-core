@@ -198,8 +198,8 @@ await core.gateway.marketplace.pull("core", { cwd, dir, ref: "v1.1.0" }); // a t
 `pull` clones into a missing or empty folder. A folder that already holds a clone of the same
 `gitUrl` on a branch is fast-forwarded (`action`: `fast-forwarded`, `up-to-date` or `ahead`); a tag
 checkout is `up-to-date` when the gateway's tag still points at the checked-out commit, else
-`GatewayCloneMismatchError` (`tag-moved`). A clone of another repo, or on another ref than asked for, is
-`GatewayCloneMismatchError` (`reason`: `different-repo` / `different-ref` / `tag-moved`, plus `dir` and `repo`) and is
+`GatewayCloneMismatchError` (`tag-moved`, or `tag-gone` when the gateway no longer has the tag). A clone of another repo, or on another ref than asked for, is
+`GatewayCloneMismatchError` (`reason`: `different-repo` / `different-ref` / `tag-moved` / `tag-gone`, plus `dir` and `repo`) and is
 left untouched; local changes the incoming commits would overwrite are `GatewayDirtyWorkingTreeError`;
 a folder with files but no clone is `GatewayWorkingCopyError` (`not-empty`).
 
