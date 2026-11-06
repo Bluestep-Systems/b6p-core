@@ -76,7 +76,7 @@ export class TsConfig implements ScriptPathElement {
       // A fresh pull of a MergeReport `static/` sub-project can leave `outDir`
       // as an empty string (or omit it). Rather than aborting the whole push
       // with `MissingConfigurationError` (b6p-cli#9), fall back to the same
-      // default the transpiler uses (`.build`) so the build step tolerates it.
+      // default the platform compiler emits to (`.build`) so the push tolerates it.
       this.scriptRoot.ctx.logger.info(
         `tsconfig at ${this.path()} has no usable outDir; defaulting build folder to "${outDir}".`
       );
@@ -89,10 +89,10 @@ export class TsConfig implements ScriptPathElement {
    *
    * An empty string, whitespace, or a missing/non-string value all mean "not
    * specified"; we fall back to {@link FolderNames.DOT_BUILD} (`.build`) — the
-   * same default {@link ScriptTranspiler.DEFAULT_TS_CONFIG} emits to — instead
+   * same default the platform compiler emits to — instead
    * of throwing. `.build` (rather than `.`) is deliberate: it keeps a source
    * `.ts` OUT of "its respective build folder", so the file stays eligible for
-   * transpile and the push collision-prompt logic behaves normally.
+   * push and the push collision-prompt logic behaves normally.
    * @lastreviewed null
    */
   static resolveOutDir(rawOutDir: unknown): string {

@@ -5,6 +5,29 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING: core no longer compiles or type-checks; `push` uploads sources only.** The platform
+  now compiles BSJS server-side, on save and again when a snapshot is published, so the in-process
+  TypeScript compiler is gone (ClickUp 86bczwj62). Hold the release until that server-side
+  compile is deployed everywhere.
+  - Removed exports: `TsLibResolver`, the `TranspileOutcome` type, `checkEmittedEntrypoint` and the
+    `EmittedEntrypointCheck` type.
+  - Removed `PushResult.typeCheckDiagnostics`. A snapshot push no longer compiles, stops on a
+    missing or empty `scripts/app.js`, warns about stale client bundles, or reports "published
+    without a passing type-check".
+  - Removed `B6PProviders.typescriptLibDirs` (and the matching `ScriptContext` member): there is
+    no compiler left to give a lib directory to.
+  - Removed `ScriptRoot.compileDraftFolder`, `deleteBuildFolder`, `findStaleClientBundles`,
+    `selectStaleBundles`, `getDraftTsConfigPath` and `getDraftBuildFolder`.
+  - A push neither uploads nor deletes files under a tsconfig's build folder (`.build` by default):
+    the platform owns what it compiles there. `PushResult.pushed` is now `false` only when the
+    draft folder is missing or empty.
+- `typescript` moved from `dependencies` to `devDependencies`, pinned to 7.0.2; it builds the
+  package and nothing in `src/` imports it.
+
 ## [0.8.1] - 2026-10-20
 
 ### Fixed

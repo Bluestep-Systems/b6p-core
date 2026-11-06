@@ -1,17 +1,16 @@
 import * as path from "path";
 import { XMLParser } from "fast-xml-parser";
-import ts from "typescript";
-import { FileExtensions, FolderNames, Http, SpecialFiles } from "../constants";
+import { FolderNames, Http, SpecialFiles } from "../constants";
 import { B6PUri } from "../B6PUri";
 import { GlobMatcher } from "../data/GlobMatcher";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
 import { ScriptFactory } from "./ScriptFactory";
 import { SnapshotHistoryRecorder } from "./SnapshotHistoryRecorder";
 import type { ScriptContext } from "./ScriptContext";
+import type { ScriptRoot } from "./ScriptRoot";
 import type { FileSystem, ProgressTask } from "../providers";
 import { Err } from "../Err";
 import { ScriptFile } from "./ScriptFile";
-import { TsConfig } from "./TsConfig";
 
 /**
  * Recursively collect all files under a directory.
@@ -52,6 +51,36 @@ async function readGitIgnorePatterns(rootPath: string, fs: FileSystem): Promise<
 }
 
 /**
+ * Absolute paths of the build folders (each tsconfig's `outDir`, `.build` by default) under the
+ * draft. The platform compiles BSJS and owns what it writes there, so a push neither uploads these
+ * files nor offers to delete the platform's copies. A tsconfig that cannot be read is skipped: this
+ * is best-effort and must never stop a push.
+ * @param scriptRoot The script being pushed
+ * @param logger Where skipped tsconfigs are logged
+ * @lastreviewed null
+ */
+async function findBuildFolders(scriptRoot: ScriptRoot, logger: ScriptContext["logger"]): Promise<string[]> {
+  const folders: string[] = [];
+  for (const tsConfig of await scriptRoot.findTsConfigFiles()) {
+    try {
+      folders.push(B6PUri.stripDirectoryMarker(path.normalize((await tsConfig.getBuildFolder()).uri().fsPath)));
+    } catch (e) {
+      logger.info(`Skipping build folder of ${tsConfig.path()}: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  return folders;
+}
+
+/**
+ * Whether a path is inside one of the given folders.
+ * @lastreviewed null
+ */
+function isInAnyFolder(filePath: string, folders: string[]): boolean {
+  const normalized = B6PUri.stripDirectoryMarker(path.normalize(filePath));
+  return folders.some((folder) => normalized === folder || normalized.startsWith(folder + path.sep));
+}
+
+/**
  * Outcome of a push, for callers that need more signal than the human-facing
  * messages — e.g. a CLI that must exit non-zero or emit `--json` when nothing
  * was uploaded or a snapshot shipped without a history entry. Check `pushed`
@@ -62,8 +91,7 @@ async function readGitIgnorePatterns(rootPath: string, fs: FileSystem): Promise<
 export interface PushResult {
   /**
    * True when the upload actually ran. False when the push aborted before
-   * uploading anything (draft folder missing, or empty; or, on a snapshot push,
-   * the compiled `scripts/app.js` missing or blank) — a state a machine
+   * uploading anything (draft folder missing, or empty) — a state a machine
    * consumer must not read as success.
    * @lastreviewed null
    */
@@ -74,22 +102,6 @@ export interface PushResult {
    * @lastreviewed null
    */
   historyRecorded: boolean;
-  /**
-   * Type-check outcome of the pre-publish transpile:
-   *  - `null` — no platform-code type-check ran. A plain (non-snapshot) push
-   *    does not compile; a push that aborted before compiling never got there;
-   *    and a snapshot whose TS all lives under nested client bundles (nothing
-   *    governed by the draft-root tsconfig) has no draft-root code to check.
-   *  - `0` — the draft-root code compiled with zero diagnostics: genuinely
-   *    type-checked.
-   *  - `> 0` — compiled, but N diagnostics were reported. The JavaScript was
-   *    emitted and published anyway (the platform runs the emitted JS on
-   *    GraalVM regardless of type errors, and local declarations may be
-   *    incomplete), so this is a loud warning, not a failure. A machine consumer
-   *    should treat `> 0` as "published without a passing type-check".
-   * @lastreviewed null
-   */
-  typeCheckDiagnostics: number | null;
   /**
    * Whether the live (`snapshot/`) copy of every file this push wrote reads back identical to the
    * local bytes (compared by ETag, the platform's SHA-512 of the content):
@@ -107,7 +119,7 @@ export interface PushResult {
    */
   liveVerified: boolean | null;
   /**
-   * Draft-relative paths (`/`-separated, e.g. `.build/scripts/app.js`) whose live copy failed the
+   * Draft-relative paths (`/`-separated, e.g. `scripts/app.ts`) whose live copy failed the
    * read-back. Empty unless `liveVerified` is false.
    * @lastreviewed null
    */
@@ -139,95 +151,6 @@ export interface LiveSnapshotCheck {
    * @lastreviewed null
    */
   indeterminate: string[];
-}
-
-/**
- * Outcome of {@link checkEmittedEntrypoint}.
- * @lastreviewed null
- */
-export interface EmittedEntrypointCheck {
-  /**
-   * - `"no-source"` — the draft has no `scripts/app.ts` (a JS-only draft): nothing to check.
-   * - `"ok"` — the compiled entrypoint exists and has content.
-   * - `"missing"` — `scripts/app.ts` exists but the compile wrote no `scripts/app.js`.
-   * - `"empty"` — the compiled entrypoint has no code: only comments (the inline source map
-   *   included) and the compiler's empty-module lines, e.g. from a blank `app.ts` or one holding
-   *   only types. The platform serves such a file as an empty `200`.
-   * @lastreviewed null
-   */
-  status: "no-source" | "ok" | "missing" | "empty";
-  /**
-   * Absolute path of the compiled entrypoint the check looked for.
-   * @lastreviewed null
-   */
-  emittedPath: string;
-}
-
-/**
- * Statements the compiler writes into a module with no code of its own: the ES module marker a
- * types-only file compiles to, and the CommonJS preamble. Compared token by token, so spacing and
- * comments don't matter.
- * @lastreviewed null
- */
-const EMPTY_MODULE_STATEMENTS = [
-  "export{};",
-  '"use strict";',
-  "'use strict';",
-  'Object.defineProperty(exports,"__esModule",{value:true});',
-];
-
-/**
- * Whether compiled JavaScript has code beyond comments and {@link EMPTY_MODULE_STATEMENTS}. The
- * compiler always appends an inline source map comment, so a blank `app.ts` never compiles to a
- * blank file; the TypeScript scanner drops comments and whitespace as trivia.
- * @param js The compiled file's text
- * @lastreviewed null
- */
-function hasCode(js: string): boolean {
-  const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, js);
-  let tokens = "";
-  for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
-    tokens += scanner.getTokenText();
-  }
-  for (const statement of EMPTY_MODULE_STATEMENTS) {
-    tokens = tokens.split(statement).join("");
-  }
-  return tokens.length > 0;
-}
-
-/**
- * Pre-publish check for a snapshot push: after the compile, the entrypoint the platform runtime
- * loads must be there. The runtime resolves `scripts/app` to `<build folder>/scripts/app.js`; if
- * that file is missing or has no code, publishing it breaks the live version (a missing one fails
- * with `NoSuchFileException .../scripts/app`, one with no code answers an empty `200`), so the push
- * must stop before any upload (ClickUp 86bbqnrtp).
- *
- * Only the entrypoint is checked. A helper module may legitimately compile to almost nothing, so
- * checking every emitted file would stop good pushes. The transpiler sets `rootDir` to the
- * tsconfig's folder, which is why `scripts/app.ts` always maps to `<build folder>/scripts/app.js`.
- * @param opts.draftPath The draft folder
- * @param opts.buildFolderPath The draft-root tsconfig's build folder ({@link ScriptRoot.getDraftBuildFolder})
- * @param opts.fs The file system to read
- * @returns What was found, and the path it looked at
- * @lastreviewed null
- */
-export async function checkEmittedEntrypoint(opts: {
-  draftPath: string;
-  buildFolderPath: string;
-  fs: FileSystem;
-}): Promise<EmittedEntrypointCheck> {
-  const { draftPath, buildFolderPath, fs } = opts;
-  const emittedPath = path.join(buildFolderPath, FolderNames.SCRIPTS, "app" + FileExtensions.JAVASCRIPT);
-  const sourceUri = B6PUri.fromFsPath(path.join(draftPath, FolderNames.SCRIPTS, "app" + FileExtensions.TYPESCRIPT));
-  if (!(await fs.exists(sourceUri))) {
-    return { status: "no-source", emittedPath };
-  }
-  const emittedUri = B6PUri.fromFsPath(emittedPath);
-  if (!(await fs.exists(emittedUri))) {
-    return { status: "missing", emittedPath };
-  }
-  const text = Buffer.from(await fs.readFile(emittedUri)).toString("utf-8");
-  return { status: hasCode(text) ? "ok" : "empty", emittedPath };
 }
 
 /**
@@ -428,7 +351,6 @@ export async function executePush(opts: {
     return {
       pushed: false,
       historyRecorded: false,
-      typeCheckDiagnostics: null,
       liveVerified: null,
       liveMismatches: [],
       keptPlatformOnly: [],
@@ -446,53 +368,12 @@ export async function executePush(opts: {
   const scriptRoot = factory.createScriptRoot(rootUri);
   scriptRoot.withParser(parser);
 
-  // Snapshots transpile TS into the draft build folder so both the source
-  // and emitted JS get uploaded and captured in history. Must run before
-  // flattenDirectory so the emitted files are included in the upload set.
-  // A plain (non-snapshot) push does not compile, so its type-check status is
-  // null rather than a count.
-  let typeCheckDiagnostics: number | null = null;
-  let typeCheckDetail = "";
-  if (snapshot) {
-    const compileOutcome = await scriptRoot.compileDraftFolder();
-    typeCheckDiagnostics = compileOutcome.diagnosticCount;
-    typeCheckDetail = compileOutcome.diagnosticText;
+  // Push uploads sources only. BSJS is compiled on the platform: it compiles on save and again when a
+  // snapshot is published, and the compiled output lives in the build folder it owns. Core neither
+  // compiles nor type-checks, so a push has no emit step and no compile output to upload.
 
-    const buildFolderPath = (await scriptRoot.getDraftBuildFolder()).uri().fsPath;
-    const entrypoint = await checkEmittedEntrypoint({ draftPath, buildFolderPath, fs });
-    if (entrypoint.status === "missing" || entrypoint.status === "empty") {
-      prompt.error(
-        `Snapshot not published: the compiled entrypoint ${entrypoint.emittedPath} ` +
-          `${entrypoint.status === "missing" ? "is missing" : "has no code"} after compiling scripts/app.ts. ` +
-          `The platform runs that file, so publishing it would break the live version. Nothing was ` +
-          `uploaded. Check scripts/app.ts, the compile output and the draft ${TsConfig.NAME}.`
-      );
-      return {
-        pushed: false,
-        historyRecorded: false,
-        typeCheckDiagnostics,
-        liveVerified: null,
-        liveMismatches: [],
-        keptPlatformOnly: [],
-      };
-    }
-  }
-
-  // Push does NOT transpile client bundles (e.g. a MergeReport `static/script.ts`
-  // → `static/.build/script.js`); the platform serves that emitted JS verbatim
-  // rather than recompiling it. Warn loudly if a bundle's source is newer than
-  // its compiled output so a push can't silently ship stale client JS
-  // (b6p-cli#9). Runs for both plain and snapshot pushes; reflects on-disk state
-  // after any snapshot compile.
-  for (const { bundle, buildFolder } of await scriptRoot.findStaleClientBundles()) {
-    prompt.warn(
-      `Stale client bundle: source(s) under ${bundle} are newer than the compiled output in ${buildFolder}. ` +
-        `b6p push does not transpile client TypeScript — recompile the bundle before pushing, ` +
-        `or you will ship stale client JS.`
-    );
-  }
-
-  const allFiles = await flattenDirectory(draftPath, fs);
+  const buildFolders = await findBuildFolders(scriptRoot, logger);
+  const allFiles = (await flattenDirectory(draftPath, fs)).filter((f) => !isInAnyFolder(f, buildFolders));
   logger.info(`Found ${allFiles.length} files in draft folder`);
 
   if (allFiles.length === 0) {
@@ -500,7 +381,6 @@ export async function executePush(opts: {
     return {
       pushed: false,
       historyRecorded: false,
-      typeCheckDiagnostics,
       liveVerified: null,
       liveMismatches: [],
       keptPlatformOnly: [],
@@ -568,7 +448,6 @@ export async function executePush(opts: {
       return {
         pushed: true,
         historyRecorded: false,
-        typeCheckDiagnostics,
         liveVerified: false,
         liveMismatches: live.mismatches,
         keptPlatformOnly: [],
@@ -586,6 +465,7 @@ export async function executePush(opts: {
     targetUrl,
     draftPath,
     gitignoreMatcher,
+    buildFolders,
   });
 
   let historyRecorded = true;
@@ -598,33 +478,17 @@ export async function executePush(opts: {
     }
   }
 
-  // A snapshot that compiled with diagnostics shipped un-type-checked JS. Say so
-  // loudly and do NOT let the run read as a clean success — the platform never
-  // type-checks, so this push was the only gate (ClickUp 86bbeb659).
-  const shippedWithDiagnostics = snapshot && typeCheckDiagnostics !== null && typeCheckDiagnostics > 0;
-  if (shippedWithDiagnostics) {
-    prompt.warn(
-      `Published WITHOUT a passing type-check: the pre-publish transpile reported ` +
-        `${typeCheckDiagnostics} diagnostic(s). The JavaScript was emitted and is now live, but these ` +
-        `were NOT verified — each is either a real type error or a missing platform declaration, and ` +
-        `the platform does not type-check on its side. Review them before relying on this build:\n\n` +
-        typeCheckDetail
-    );
-  }
-
   if (snapshot && !historyRecorded) {
     prompt.warn(
-      "Snapshot files uploaded and compiled, but the snapshot history entry could NOT be recorded — " +
+      "Snapshot files uploaded, but the snapshot history entry could NOT be recorded — " +
         "the browser IDE's Project History has no restore point for this snapshot. " +
         "Run the snapshot push again to retry recording it."
     );
-  } else if (shippedWithDiagnostics) {
-    prompt.info("Snapshot uploaded — but see the type-check warning above.");
   } else {
     prompt.info(snapshot ? "Snapshot complete!" : "Push complete!");
   }
 
-  return { pushed: true, historyRecorded, typeCheckDiagnostics, liveVerified, liveMismatches: [], keptPlatformOnly };
+  return { pushed: true, historyRecorded, liveVerified, liveMismatches: [], keptPlatformOnly };
 }
 
 /**
@@ -636,6 +500,8 @@ export async function executePush(opts: {
  * @param opts.targetUrl The script's WebDAV base URL, listed with `PROPFIND`
  * @param opts.draftPath The local draft folder to compare against
  * @param opts.gitignoreMatcher The script's `.gitignore` patterns
+ * @param opts.buildFolders Absolute build folder paths the platform owns; files under them are never
+ *   deleted
  * @returns Draft-relative paths of the platform-only files it kept because deleting them was not
  *   confirmed; empty when there were none, when they were deleted, or when cleanup failed
  * @lastreviewed null
@@ -645,8 +511,9 @@ export async function cleanupUnusedUpstairsPaths(opts: {
   targetUrl: string;
   draftPath: string;
   gitignoreMatcher: GlobMatcher;
+  buildFolders?: string[];
 }): Promise<string[]> {
-  const { ctx, targetUrl, draftPath, gitignoreMatcher } = opts;
+  const { ctx, targetUrl, draftPath, gitignoreMatcher, buildFolders = [] } = opts;
   const { fs, prompt, logger, sessionManager } = ctx;
 
   try {
@@ -709,6 +576,10 @@ export async function cleanupUnusedUpstairsPaths(opts: {
       const localEquivalent = path.join(draftPath, ...draftRelative.split("/"));
       if (gitignoreMatcher.matches(localEquivalent)) {
         logger.info(`File is in .gitignore; skipping deletion: ${href}`);
+        continue;
+      }
+
+      if (isInAnyFolder(localEquivalent, buildFolders)) {
         continue;
       }
 

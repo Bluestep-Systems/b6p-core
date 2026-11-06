@@ -4,14 +4,12 @@ export type { ReportResult } from "./B6PCore";
 export { B6PUri } from "./B6PUri";
 export { Err } from "./Err";
 export {
-  checkEmittedEntrypoint,
   cleanupUnusedUpstairsPaths,
   collectOverwriteCandidates,
   confirmOverwrites,
   executePush,
   verifyLiveSnapshot,
 } from "./script/push";
-export type { EmittedEntrypointCheck, LiveSnapshotCheck, OverwriteCandidate, PushResult } from "./script/push";
 export type { PlatformContext } from "./PlatformContext";
 
 // ─── Provider interfaces ─────────────────────────────────────────────
@@ -50,13 +48,11 @@ export { ResponseCodes } from "./network/StatusCodes";
 export { ScriptFactory } from "./script/ScriptFactory";
 export { ScriptNode } from "./script/ScriptNode";
 export { ScriptRoot } from "./script/ScriptRoot";
-export type { TranspileOutcome } from "./script/ScriptTranspiler";
 export { ScriptFile } from "./script/ScriptFile";
 export type { ScriptFolder } from "./script/ScriptFolder";
 export type { ScriptContext } from "./script/ScriptContext";
 export { ScriptService } from "./script/ScriptService";
 export type { AuditResult, DeployConfig, PullResult } from "./script/ScriptService";
-export { TsLibResolver } from "./script/TsLibResolver";
 
 // ─── Constants ───────────────────────────────────────────────────────
 export {

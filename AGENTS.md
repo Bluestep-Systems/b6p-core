@@ -69,8 +69,7 @@ are load-bearing rather than stylistic — each records something this repo undi
   coalesce `save()` before parallelizing anything.
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
-CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
-snapshot history), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
+CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, snapshot history), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
 parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles).
 
 ## Commands
@@ -95,11 +94,12 @@ no matter what. Correctness comes from `check-types` under `strict` + `noUnusedL
 in `tsconfig.base.json` — strictness belongs there, and `tsconfig.json` carries only this package's
 output settings. Do not reintroduce a linter without wiring it to a **failing** exit code.
 
-**`typescript` is an exact-pinned runtime `dependency` at 5.9.2**, not a devDependency: this library
-compiles TypeScript *while running* (a `push --snapshot` transpiles in-process), so it needs the
-compiler as a library, and the same version builds the package. Do not float the pin, do not add a
-second compiler, and read `b6p-cli/docs/adr/0002-typescript-version-strategy.md` before touching it —
-it records why TypeScript 7 cannot serve this role and what would have to change first.
+**`typescript` is an exact-pinned `devDependency` (7.x) and builds the package only.** This library
+ships no compiler and nothing in `src/` may import `typescript`: the platform compiles BSJS
+server-side, on save and again when a snapshot is published, so `push` uploads sources and never
+emits, uploads `.build` or type-checks. Do not move it back to `dependencies`, do not float the
+pin, and read `b6p-cli/docs/adr/0003-*` (the TypeScript version strategy, superseding 0002) before
+changing this.
 
 ## Documentation, in the same change
 
