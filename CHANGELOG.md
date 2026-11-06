@@ -5,6 +5,13 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### BREAKING
+
+- **Node 18 through 22 are no longer supported; `engines.node` is now `>=24`.** CI runs on Node 24 and
+  26, and `@types/node` is `^24`. (ClickUp 86bczx7f0)
+
 ## [0.8.1] - 2026-10-20
 
 ### Fixed

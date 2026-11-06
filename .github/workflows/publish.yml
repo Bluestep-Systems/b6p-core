@@ -38,10 +38,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: package-lock.json
           registry-url: 'https://registry.npmjs.org'
@@ -49,10 +49,12 @@ jobs:
       - name: Install dependencies
         run: |
           for i in 1 2 3; do
-            npm ci --prefer-offline --no-audit && break
+            npm ci --prefer-offline --no-audit && exit 0
             echo "Attempt $i failed, retrying..."
             sleep 5
           done
+          echo "::error::npm ci failed after 3 attempts"
+          exit 1
         shell: bash
 
       # Guard against publishing a tag whose version doesn't match package.json.
