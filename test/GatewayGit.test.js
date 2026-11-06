@@ -20,6 +20,20 @@ const path = require("node:path");
 const { Err, FakeGateway, GatewayService, MockFileSystem } = require("../dist/index.js");
 const { mountGitBackend, seedRepo, commitToRemote, git } = require("./support/GitHttpBackend");
 
+// Prerequisite: fail loudly (never skip) when git is missing, before any case runs.
+{
+  const probe = require("node:child_process").spawnSync("git", ["--version"], { encoding: "utf8" });
+  if (probe.error || probe.status !== 0) {
+    console.error(
+      "GatewayGit spec FAILED: it needs `git` on PATH (to build fixtures and serve them with `git http-backend`), " +
+        "but running `git --version` failed" +
+        (probe.error ? `: ${probe.error.message}` : ` (exit ${probe.status})`) +
+        ". Install git and re-run."
+    );
+    process.exit(1);
+  }
+}
+
 const TOKEN = "b6pt_spec_gitgitgit0123456789";
 const READ_ONLY_TOKEN = "b6pt_spec_readonly0123456789";
 
