@@ -162,6 +162,25 @@ export interface GatewayTokenSource {
   token(): Promise<string | undefined>;
 }
 
+/**
+ * Where a rotated replacement of the stored `b6pt_` token is written. There is still ONE stored
+ * token: this replaces it in place and never adds a second.
+ *
+ * `B6PCore` backs it with {@link BearerAuthProvider.replaceStoredToken}. It is the narrowest write
+ * the token-management service needs, and the only one: it cannot clear, prompt, or store a token
+ * that is not replacing the one it was rotated from.
+ * @lastreviewed null
+ */
+export interface GatewayTokenStore {
+  /**
+   * Store `next` in place of `expected`. Rejects, leaving the stored token as it was, when the
+   * stored token is no longer `expected` (something else replaced it meanwhile) or cannot be
+   * written. Neither value is ever logged or put in an error message.
+   * @lastreviewed null
+   */
+  replace(expected: string, next: string): Promise<void>;
+}
+
 // ── Logging ─────────────────────────────────────────────────────────
 
 export interface Logger {

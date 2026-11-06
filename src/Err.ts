@@ -1,3 +1,5 @@
+import type { GatewayMintedToken } from "./types";
+
 /**
  * Centralized error namespace containing all custom error types used throughout the application.
  * All error classes extend {@link Error} and have descriptive names that indicate why the error was thrown.
@@ -966,6 +968,87 @@ export namespace Err {
     constructor(message: string) {
       super(message, null, null);
       this.name = "GatewayConfigError";
+    }
+  }
+
+  /**
+   * `403 scope-escalation`: a token was asked for with a scope the presenting token does not
+   * hold. A new token's scopes never exceed the presenting token's.
+   * @lastreviewed null
+   */
+  export class GatewayScopeEscalationError extends GatewayError {
+    constructor(message: string) {
+      super(message, 403, "scope-escalation");
+      this.name = "GatewayScopeEscalationError";
+    }
+  }
+
+  /**
+   * `409 alias-taken`: another of this user's tokens already has the alias.
+   * @lastreviewed null
+   */
+  export class GatewayAliasTakenError extends GatewayError {
+    constructor(message: string) {
+      super(message, 409, "alias-taken");
+      this.name = "GatewayAliasTakenError";
+    }
+  }
+
+  /**
+   * An argument to a gateway operation was refused before anything was sent (code
+   * `invalid-argument`): an empty alias or scope list, an expiry that is not a date, or a value
+   * shaped like a token secret where an id or alias belongs. The value is never quoted.
+   * @lastreviewed null
+   */
+  export class GatewayInvalidArgumentError extends GatewayError {
+    constructor(message: string) {
+      super(message, null, "invalid-argument");
+      this.name = "GatewayInvalidArgumentError";
+    }
+  }
+
+  /**
+   * An id-or-alias matched more than one of the caller's tokens (one by id, another by alias), so
+   * nothing was revoked or rotated (code `ambiguous`).
+   * @lastreviewed null
+   */
+  export class GatewayTokenAmbiguousError extends GatewayError {
+    /**
+     * The ids of the tokens it matched.
+     * @lastreviewed null
+     */
+    readonly ids: readonly string[];
+    constructor(message: string, ids: readonly string[]) {
+      super(message, null, "ambiguous");
+      this.name = "GatewayTokenAmbiguousError";
+      this.ids = ids;
+    }
+  }
+
+  /**
+   * The gateway rotated the stored token, so the old one is already revoked, but storing the
+   * replacement failed (code `store-failed`). The replacement's secret exists only here: it is
+   * carried in {@link replacement} so the consumer can show it and the user is not locked out.
+   *
+   * `replacement` is non-enumerable, so a generic error logger or `JSON.stringify` does not print
+   * the secret; read the property by name. The message never contains it.
+   * @lastreviewed null
+   */
+  export class GatewayTokenStoreError extends GatewayError {
+    /**
+     * The minted replacement, secret included.
+     * @lastreviewed null
+     */
+    declare readonly replacement: GatewayMintedToken;
+    constructor(message: string, replacement: GatewayMintedToken) {
+      super(message, null, "store-failed");
+      this.name = "GatewayTokenStoreError";
+      Object.defineProperty(this, "replacement", {
+        value: replacement,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
     }
   }
 }

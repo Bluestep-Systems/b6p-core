@@ -60,8 +60,8 @@ between the local filesystem and the platform over WebDAV:
 
 `core.gateway` ([`GatewayService`](src/gateway/GatewayService.ts)) — web-global's gateway
 (`https://gateway.bluestep.net`), the origin for knowledge bases and marketplace repos. Today it
-holds the HTTP client the knowledge-base and marketplace operations are built on; see
-[Gateway](#gateway) below.
+holds the HTTP client the knowledge-base and marketplace operations are built on, and
+`core.gateway.tokens` for managing the caller's own access tokens; see [Gateway](#gateway) below.
 
 `core` itself — cross-cutting state that is not specific to any one subsystem:
 
@@ -140,7 +140,9 @@ Failures are typed, all extending `Err.GatewayError` (`status`, `code`):
 | `GatewayScopeError` (`scope`) | `403 scope-missing` |
 | `GatewayNotPermittedError` | `403 not-permitted` |
 | `GatewayNotFoundError` | `404` (also for something that exists but is not visible) |
+| `GatewayScopeEscalationError` | `403 scope-escalation` (a new token asked for a scope the presenting one lacks) |
 | `GatewayConflictError` | `409 non-fast-forward` |
+| `GatewayAliasTakenError` | `409 alias-taken` |
 | `GatewayTooLargeError` | `413 too-large` |
 | `GatewayUnavailableError` | `502`/`503`/`504`, a network failure or a timeout |
 | `GatewayUnexpectedResponseError` | any other status, or a 2xx body that is not JSON |
@@ -149,8 +151,40 @@ Failures are typed, all extending `Err.GatewayError` (`status`, `code`):
 `gatewayErrorFor(status, body, what)` applies the same mapping to a status seen elsewhere (the git
 layer). The token never appears in a message or a log line, including when the server echoes it.
 
+#### Access tokens
+
+`core.gateway.tokens` ([`GatewayTokenService`](src/gateway/GatewayTokenService.ts)) manages the
+caller's **own** tokens. Every call needs the `tokens:self` scope on the stored token
+(`GatewayScopeError` with `scope: "tokens:self"` otherwise); nothing addresses another user.
+
+```typescript
+const tokens = await core.gateway.tokens.list(); // [{ id, alias, scopes, createdAt, expiresAt, lastUsedAt, current, neverExpires }]
+const minted = await core.gateway.tokens.create({ alias: "ci", scopes: ["kb:read"] }); // 90 days by default
+minted.token; // the b6pt_ secret, shown this once; expiresAt: null mints one that never expires (neverExpires: true)
+await core.gateway.tokens.revoke("ci"); // id or alias → { id, alias, revokedCurrent }
+await core.gateway.tokens.rotate("laptop"); // → { replaced, token, rotatedCurrent }
+```
+
+- An id or alias is resolved through `list()` first: no match is `GatewayNotFoundError`, a value that
+  is one token's id and another's alias is `GatewayTokenAmbiguousError`, and a value shaped like a
+  `b6pt_` secret is refused (`GatewayInvalidArgumentError`) without being sent. Nothing is revoked or
+  rotated in any of these cases.
+- `create` refuses an empty or whitespace alias, an empty scope list or an expiry that is not a
+  date before sending (`GatewayInvalidArgumentError`). A new token's scopes must be a subset of the
+  stored token's.
+- **Rotating the stored token** (`current`) stores the replacement in its place: there is still one
+  stored token. If storing fails after the gateway has rotated (so the old token is already
+  revoked), `rotate` throws `GatewayTokenStoreError`, whose non-enumerable `replacement` property
+  carries the new token, secret included, so it can be shown and the user is not locked out. The
+  store also refuses, the same way, when the stored token is no longer the one that was rotated.
+- **Revoking the stored token** is allowed. The result says `revokedCurrent: true` and the stored
+  (now dead) token is left in place; what to do next is the consumer's call.
+- Core never logs a secret or puts one in an error message. Warning about a token that never
+  expires is the consumer's job; results carry `neverExpires`.
+
 For specs, [`FakeGateway`](src/testing/FakeGateway.ts) is an in-process gateway on `127.0.0.1` that
-answers the contract's REST routes and error codes, with `grantToken`, `failNext` and `route` (for
+answers the contract's REST routes (the token routes included) and error codes, with `grantToken`
+(scopes, plus optional id, alias, owner and expiry), `issuedTokens`, `failNext` and `route` (for
 mounting git smart-HTTP handlers).
 
 ## Development

@@ -163,4 +163,30 @@ export class BearerAuthProvider implements AuthProvider<BearerAuthParams> {
   async storedToken(): Promise<string | undefined> {
     return (await this.readStored())?.token;
   }
+
+  /**
+   * Replace the stored token with `next`, but only while the stored token is still `expected`.
+   * Never prompts, and neither value is logged or put in an error message.
+   *
+   * This is the write behind rotating the stored token through the gateway: the gateway has
+   * already revoked `expected`, so `next` must take its place. The check guards against
+   * overwriting a token that something else (another b6p process, `auth update`) stored while the
+   * rotation was in flight. It is the only write the gateway side has; it does not touch the web
+   * session, which still bootstraps through {@link authHeaderValue}.
+   *
+   * @throws {Error} when `next` is empty, the stored token is no longer `expected`, or the write fails
+   * @lastreviewed null
+   */
+  async replaceStoredToken(expected: string, next: string): Promise<void> {
+    if (next.length === 0) {
+      throw new Error("The replacement token is empty; the stored token was left as it was.");
+    }
+    const stored = await this.readStored();
+    if (stored?.token !== expected) {
+      throw new Error("The stored token is no longer the one that was rotated; it was left as it was.");
+    }
+    const creds: BearerAuthParams = { scheme: BEARER_SCHEME, token: next };
+    await this.persistence.setSecret(PERSISTENCE_KEY, JSON.stringify(creds));
+    this.logger.info("Token replaced");
+  }
 }

@@ -135,10 +135,18 @@ export function gatewayErrorFor(status: number, bodyText: string, what: string, 
         const lacks = scope ? `the access token lacks the ${scope} scope` : "the access token lacks a required scope";
         return new Err.GatewayScopeError(msg(lacks), scope);
       }
+      if (code === "scope-escalation") {
+        return new Err.GatewayScopeEscalationError(
+          msg("a new token's scopes may not exceed those of the token making the request")
+        );
+      }
       return new Err.GatewayNotPermittedError(msg("this user is not permitted to do this"), code);
     case 404:
       return new Err.GatewayNotFoundError(msg("not found, or not visible to this user"), code);
     case 409:
+      if (code === "alias-taken") {
+        return new Err.GatewayAliasTakenError(msg("another of this user's tokens already has that alias"));
+      }
       return new Err.GatewayConflictError(msg("the update does not build on the current branch head"), code);
     case 413:
       return new Err.GatewayTooLargeError(msg("the request is larger than the gateway accepts"), code);

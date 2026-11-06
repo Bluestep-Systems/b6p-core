@@ -20,8 +20,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   gateway URLs only. The token never appears in an error message or a log line.
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.
+- **`core.gateway.tokens`: self-service management of the caller's own gateway tokens**
+  (ClickUp 86bczx1wj): `list()`, `create({ alias, scopes, expiresAt? })` (the secret is returned
+  once; `expiresAt: null` never expires, reported as `neverExpires`), `revoke(idOrAlias)` and
+  `rotate(idOrAlias)`. An id or alias is resolved through `list()` first; no match is
+  `GatewayNotFoundError` and an id/alias clash is `GatewayTokenAmbiguousError`, with nothing
+  revoked. Rotating the stored token stores its replacement in place (still one stored token); if
+  that store fails after the gateway rotated, `GatewayTokenStoreError` carries the new token so it
+  is not lost. Revoking the stored token is allowed, reported as `revokedCurrent: true`, and leaves
+  the stored token in place. Needs the `tokens:self` scope (`Gateway.Scopes.TOKENS_SELF`). New
+  errors `GatewayScopeEscalationError` (`403 scope-escalation`), `GatewayAliasTakenError`
+  (`409 alias-taken`), `GatewayInvalidArgumentError`, `GatewayTokenAmbiguousError` and
+  `GatewayTokenStoreError`. No secret is logged or put in an error message.
+- **`BearerAuthProvider.replaceStoredToken(expected, next)`**: replaces the stored token only while
+  it is still `expected`; the write behind rotating it. Never prompts or logs either value.
 - **`FakeGateway`** (testing): an in-process gateway on `127.0.0.1` answering the contract's REST
-  shapes and error codes, with hooks for git routes.
+  shapes and error codes, with hooks for git routes, and the self-service token routes
+  (`grantToken` takes an optional id, alias, owner and expiry; `issuedTokens()` lists what it accepts).
 
 ## [0.8.1] - 2026-10-20
 

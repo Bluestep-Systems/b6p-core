@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import { Gateway } from "../constants/Gateway";
@@ -7,7 +8,63 @@ import type {
   GatewayKnowledgeBaseList,
   GatewayMarketplaceRepo,
   GatewayMarketplaceRepoList,
+  GatewayMintedTokenBody,
+  GatewayTokenList,
 } from "../types";
+
+/**
+ * The gateway's default lifetime for a minted token with no `expiresAt`.
+ * @lastreviewed null
+ */
+const DEFAULT_TOKEN_LIFETIME_MS = 90 * 24 * 60 * 60 * 1_000;
+
+/**
+ * Metadata for a token granted with {@link FakeGateway.grantToken}. Everything is optional.
+ * @lastreviewed null
+ */
+export interface FakeGatewayTokenOptions {
+  /**
+   * Defaults to `tok_<n>`.
+   * @lastreviewed null
+   */
+  id?: string;
+  /**
+   * Defaults to `token-<n>`.
+   * @lastreviewed null
+   */
+  alias?: string;
+  /**
+   * The global user who owns it; the token routes only show a user their own. Defaults to `"user"`.
+   * @lastreviewed null
+   */
+  owner?: string;
+  /**
+   * ISO 8601; defaults to now.
+   * @lastreviewed null
+   */
+  createdAt?: string;
+  /**
+   * ISO 8601 or `null` (never expires); defaults to 90 days after `createdAt`.
+   * @lastreviewed null
+   */
+  expiresAt?: string | null;
+}
+
+/**
+ * A token the {@link FakeGateway} accepts, secret included, as {@link FakeGateway.issuedTokens}
+ * reports it for assertions.
+ * @lastreviewed null
+ */
+export interface FakeGatewayToken {
+  secret: string;
+  id: string;
+  alias: string;
+  owner: string;
+  scopes: string[];
+  createdAt: string;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+}
 
 /**
  * One request the {@link FakeGateway} received, as recorded for assertions.
@@ -71,7 +128,9 @@ export interface FakeGatewayRoute {
  * (via {@link route}) to a git client that brings its own HTTP stack.
  *
  * Built in: `GET /api/v1/knowledge-bases` (scope `kb:read`, `?scope=` and `?tenant=` filters),
- * `GET /api/v1/registry/repos` (scope `registry:read`), `404 not-found` for anything else.
+ * `GET /api/v1/registry/repos` (scope `registry:read`), the self-service token routes
+ * (`GET`/`POST /api/v1/tokens`, `DELETE /api/v1/tokens/{id}`, `POST /api/v1/tokens/{id}/rotate`,
+ * scope `tokens:self`, with `scope-escalation` and `alias-taken`), and `404 not-found` for anything else.
  * Tokens are granted explicitly with their scopes; a request without one is `401 token-missing`,
  * an unknown one `401 token-invalid`, a missing scope `403 scope-missing` with `scope`.
  * @lastreviewed null
@@ -104,7 +163,8 @@ export class FakeGateway {
   maxInFlight = 0;
 
   private inFlight = 0;
-  private readonly tokens = new Map<string, Set<string>>();
+  private readonly tokens = new Map<string, FakeGatewayToken>();
+  private tokenSerial = 0;
   private readonly failures: FakeGatewayFailure[] = [];
   private readonly routes: FakeGatewayRoute[] = [];
 
@@ -148,8 +208,32 @@ export class FakeGateway {
    * Accept `token` with these scopes (replacing any earlier grant).
    * @lastreviewed null
    */
-  grantToken(token: string, scopes: readonly string[]): void {
-    this.tokens.set(token, new Set(scopes));
+  grantToken(token: string, scopes: readonly string[], options: FakeGatewayTokenOptions = {}): void {
+    const n = ++this.tokenSerial;
+    const createdAt = options.createdAt ?? new Date().toISOString();
+    const expiresAt =
+      options.expiresAt === undefined
+        ? new Date(Date.parse(createdAt) + DEFAULT_TOKEN_LIFETIME_MS).toISOString()
+        : options.expiresAt;
+    this.tokens.set(token, {
+      secret: token,
+      id: options.id ?? `tok_${n}`,
+      alias: options.alias ?? `token-${n}`,
+      owner: options.owner ?? "user",
+      scopes: [...new Set(scopes)],
+      createdAt,
+      expiresAt,
+      lastUsedAt: null,
+    });
+  }
+
+  /**
+   * Every token this fake currently accepts, secrets included (granted or minted through the
+   * token routes).
+   * @lastreviewed null
+   */
+  issuedTokens(): FakeGatewayToken[] {
+    return [...this.tokens.values()].map((t) => ({ ...t, scopes: [...t.scopes] }));
   }
 
   /**
@@ -248,6 +332,12 @@ export class FakeGateway {
         sendJson(res, 200, list);
         return;
       }
+      if (url.pathname === Gateway.Paths.TOKENS || url.pathname.startsWith(`${Gateway.Paths.TOKENS}/`)) {
+        if (this.authorize(req, res, Gateway.Scopes.TOKENS_SELF)) {
+          this.handleTokens(method, url.pathname, body, req, res);
+        }
+        return;
+      }
       if (!this.authorize(req, res)) {
         return;
       }
@@ -255,6 +345,136 @@ export class FakeGateway {
     } finally {
       this.inFlight--;
     }
+  }
+
+  /**
+   * The contract's §Tokens routes, for a request already authorised with `tokens:self`.
+   * @lastreviewed null
+   */
+  private handleTokens(
+    method: string,
+    path: string,
+    body: string,
+    req: http.IncomingMessage,
+    res: http.ServerResponse
+  ): void {
+    const caller = this.tokens.get(tokenFrom(req.headers.authorization) ?? "");
+    if (!caller) {
+      sendJson(res, 401, { error: "token-invalid", message: "The access token is not valid." });
+      return;
+    }
+    const own = [...this.tokens.values()].filter((t) => t.owner === caller.owner);
+    const notFound = (): void => sendJson(res, 404, { error: "not-found", message: "Not found." });
+
+    if (path === Gateway.Paths.TOKENS) {
+      if (method === "GET") {
+        const list: GatewayTokenList = {
+          tokens: own.map((t) => ({
+            id: t.id,
+            alias: t.alias,
+            scopes: [...t.scopes],
+            createdAt: t.createdAt,
+            expiresAt: t.expiresAt,
+            lastUsedAt: t.lastUsedAt,
+            current: t === caller,
+          })),
+        };
+        sendJson(res, 200, list);
+        return;
+      }
+      if (method === "POST") {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          parsed = undefined;
+        }
+        const request = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+        const { alias, scopes } = request;
+        if (
+          typeof alias !== "string" ||
+          alias.length === 0 ||
+          !Array.isArray(scopes) ||
+          !scopes.every((s): s is string => typeof s === "string")
+        ) {
+          sendJson(res, 400, { error: "bad-request", message: "alias and scopes are required." });
+          return;
+        }
+        if (scopes.some((s) => !caller.scopes.includes(s))) {
+          sendJson(res, 403, {
+            error: "scope-escalation",
+            message: "The new token's scopes exceed the presenting token's.",
+          });
+          return;
+        }
+        if (own.some((t) => t.alias === alias)) {
+          sendJson(res, 409, { error: "alias-taken", message: `The alias ${alias} is taken.` });
+          return;
+        }
+        const createdAt = new Date().toISOString();
+        let expiresAt: string | null;
+        if (!("expiresAt" in request) || request.expiresAt === undefined) {
+          expiresAt = new Date(Date.now() + DEFAULT_TOKEN_LIFETIME_MS).toISOString();
+        } else if (request.expiresAt === null) {
+          expiresAt = null;
+        } else if (typeof request.expiresAt === "string") {
+          expiresAt = request.expiresAt;
+        } else {
+          sendJson(res, 400, { error: "bad-request", message: "expiresAt is not a date." });
+          return;
+        }
+        sendJson(res, 201, this.mint(caller.owner, alias, scopes, createdAt, expiresAt));
+        return;
+      }
+      notFound();
+      return;
+    }
+
+    const rest = path.slice(Gateway.Paths.TOKENS.length + 1).split("/");
+    const target = own.find((t) => t.id === decodeURIComponent(rest[0]));
+    if (!target) {
+      notFound();
+      return;
+    }
+    if (rest.length === 1 && method === "DELETE") {
+      this.tokens.delete(target.secret);
+      res.writeHead(204).end();
+      return;
+    }
+    if (rest.length === 2 && rest[1] === "rotate" && method === "POST") {
+      const createdAt = new Date().toISOString();
+      const expiresAt =
+        target.expiresAt === null
+          ? null
+          : new Date(Date.now() + (Date.parse(target.expiresAt) - Date.parse(target.createdAt))).toISOString();
+      this.tokens.delete(target.secret);
+      sendJson(res, 201, this.mint(target.owner, target.alias, target.scopes, createdAt, expiresAt));
+      return;
+    }
+    notFound();
+  }
+
+  private mint(
+    owner: string,
+    alias: string,
+    scopes: readonly string[],
+    createdAt: string,
+    expiresAt: string | null
+  ): GatewayMintedTokenBody {
+    const n = ++this.tokenSerial;
+    const secret = `${Gateway.TOKEN_PREFIX}fake_${n}_${randomBytes(12).toString("hex")}`;
+    const record: FakeGatewayToken = {
+      secret,
+      id: `tok_${n}`,
+      alias,
+      owner,
+      scopes: [...new Set(scopes)],
+      createdAt,
+      expiresAt,
+      lastUsedAt: null,
+    };
+    this.tokens.set(secret, record);
+    return { id: record.id, token: secret, alias, scopes: [...record.scopes], expiresAt };
   }
 
   /**
@@ -267,15 +487,16 @@ export class FakeGateway {
       sendJson(res, 401, { error: "token-missing", message: "No access token was sent." });
       return false;
     }
-    const scopes = this.tokens.get(token);
-    if (!scopes) {
+    const granted = this.tokens.get(token);
+    if (!granted) {
       sendJson(res, 401, { error: "token-invalid", message: "The access token is not valid." });
       return false;
     }
-    if (scope && !scopes.has(scope)) {
+    if (scope && !granted.scopes.includes(scope)) {
       sendJson(res, 403, { error: "scope-missing", message: `The token lacks ${scope}.`, scope });
       return false;
     }
+    granted.lastUsedAt = new Date().toISOString();
     return true;
   }
 }

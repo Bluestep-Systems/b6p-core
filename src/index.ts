@@ -22,6 +22,7 @@ export type {
   FileStat,
   FileSystem,
   GatewayTokenSource,
+  GatewayTokenStore,
   LockDiagnoser,
   LockHolder,
   Logger,
@@ -61,6 +62,7 @@ export { TsLibResolver } from "./script/TsLibResolver";
 
 // ─── Gateway (web-global) ────────────────────────────────────────────
 export { GatewayService } from "./gateway/GatewayService";
+export { GatewayTokenService } from "./gateway/GatewayTokenService";
 export { GatewayClient, gatewayErrorFor, parseGatewayOrigin } from "./gateway/GatewayClient";
 export type { GatewayClientOptions, GatewayRequestOptions } from "./gateway/GatewayClient";
 export type { GatewayContext, GatewayFetch } from "./gateway/GatewayContext";
@@ -115,7 +117,13 @@ export type { UpdateInfo, GithubRelease, ClientInfo, UpdateServiceConfig } from 
 // ─── Test utilities (still in core because they're vscode-free) ──────
 export { MockFileSystem } from "./testing/MockFileSystem";
 export { FakeGateway } from "./testing/FakeGateway";
-export type { FakeGatewayFailure, FakeGatewayRequest, FakeGatewayRoute } from "./testing/FakeGateway";
+export type {
+  FakeGatewayFailure,
+  FakeGatewayRequest,
+  FakeGatewayRoute,
+  FakeGatewayToken,
+  FakeGatewayTokenOptions,
+} from "./testing/FakeGateway";
 
 // ─── Shared ambient-style types (formerly types/index.d.ts) ──────────
 export type {
@@ -147,4 +155,12 @@ export type {
   GatewayKnowledgeBaseList,
   GatewayMarketplaceRepo,
   GatewayMarketplaceRepoList,
+  GatewayMintedToken,
+  GatewayMintedTokenBody,
+  GatewayTokenCreateRequest,
+  GatewayTokenList,
+  GatewayTokenRecord,
+  GatewayTokenRevokeResult,
+  GatewayTokenRotateResult,
+  GatewayTokenSummary,
 } from "./types";

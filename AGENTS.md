@@ -55,11 +55,19 @@ are load-bearing rather than stylistic — each records something this repo undi
   session: `GatewayClient` reads it through `BearerAuthProvider.storedToken()` (never prompts), not
   `authHeaderValue()`, and never through `SessionManager`. The gateway sends it only to its
   configured origin (https, or http on loopback), and it never appears in a message or log line.
+  The gateway side has exactly one write to it: `core.gateway.tokens.rotate()` of the stored token
+  puts the replacement in place through `GatewayTokenStore` →
+  `BearerAuthProvider.replaceStoredToken(expected, next)`, which refuses unless the stored token is
+  still `expected`. There is never a second stored token. A store failure after the server rotated
+  throws `GatewayTokenStoreError` carrying the new secret (non-enumerable), because the old one is
+  already dead.
 - **`core.gateway` is the second subsystem** (`GatewayService`, `src/gateway/`). `GatewayContext`
-  extends `PlatformContext` with `gatewayToken` (a `GatewayTokenSource`), `gatewayUrl()` (core
-  config `settings.gatewayUrl`, default `https://gateway.bluestep.net`) and `fetchFn`. Knowledge-base
-  and marketplace operations go beside `client` on `GatewayService`, over that one client, so all
-  gateway requests share its sequential queue. Errors are `Err.Gateway*`; a git layer maps statuses
+  extends `PlatformContext` with `gatewayToken` (a `GatewayTokenSource`), `gatewayTokenStore` (a
+  `GatewayTokenStore`, read only by token rotation), `gatewayUrl()` (core config
+  `settings.gatewayUrl`, default `https://gateway.bluestep.net`) and `fetchFn`. `tokens`
+  (`GatewayTokenService`, the caller's own tokens) sits beside `client`, and knowledge-base and
+  marketplace operations go there too, over that one client, so all gateway requests share its
+  sequential queue. Errors are `Err.Gateway*`; a git layer maps statuses
   with `gatewayErrorFor` rather than its own table.
 - **A prompt that overwrites or deletes puts its safe option first and passes
   `{ destructive: true, safeOption }`.** Prompt implementations answer `options[0]` on an empty
@@ -80,7 +88,7 @@ are load-bearing rather than stylistic — each records something this repo undi
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
-snapshot history), `gateway/` (`GatewayService`, `GatewayClient` — web-global's gateway over the
+snapshot history), `gateway/` (`GatewayService`, `GatewayClient`, `GatewayTokenService` — web-global's gateway over the
 `b6pt_` token), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
 parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles, including `FakeGateway`).
 
