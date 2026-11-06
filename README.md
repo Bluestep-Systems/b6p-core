@@ -198,7 +198,7 @@ const pushed = await core.gateway.kb.push(pulled.dir); // { pushed, commit, ref 
   `candidates`).
 - `pull` clones the live branch into a missing or empty folder (`dir`, relative to the `cwd` you pass;
   default `<name>`, or `<tenant>-<name>`), and fast-forwards an existing clone of the same repository.
-  A clone of a different repository is `GatewayWorkingCopyError` (`wrong-repository`); incoming commits
+  An existing clone that is not on the KB's live branch (or is detached) is refused before any fetch with `GatewayKnowledgeBaseError` (`wrong-branch`, `branch`, `liveBranch`). A clone of a different repository is `GatewayWorkingCopyError` (`wrong-repository`); incoming commits
   that touch locally changed files are `GatewayDirtyWorkingTreeError` (`paths`). It never prompts and
   has no way to discard local changes.
 - `push` finds the KB from the clone's remote in a fresh listing and refuses a KB with

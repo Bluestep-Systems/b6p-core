@@ -1031,7 +1031,7 @@ export namespace Err {
    * `<U…>/<name>`), `not-found` (no knowledge base the caller may read has that address; the
    * gateway does not say whether it exists), `ambiguous` (the listing holds more than one match;
    * `candidates` are their refs), `unsafe-name` (the listed name cannot be a folder name) or
-   * `not-a-kb` (a clone's remote is not a knowledge base the caller can see) or `wrong-branch` (a push
+   * `not-a-kb` (a clone's remote is not a knowledge base the caller can see) or `wrong-branch` (a pull or push
    * from a clone that is not on the knowledge base's live branch, or on a detached head).
    * @lastreviewed null
    */

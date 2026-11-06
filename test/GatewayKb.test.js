@@ -267,6 +267,35 @@ test("pull of an existing clone of the same KB fast-forwards, then reports up-to
   });
 });
 
+test("pull of a clone not on the live branch, detached, or on a retired live branch is refused before any fetch", async () => {
+  await withKb(async ({ fake, kb, demo }) => {
+    const cwd = tmp();
+    const { dir } = await kb.pull("demo", { cwd });
+    git(dir, "checkout", "-q", "-b", "side");
+    let before = fake.requests.length;
+    let error = await rejectsWith(kb.pull("demo", { cwd }), Err.GatewayKnowledgeBaseError);
+    assert.strictEqual(error.reason, "wrong-branch");
+    assert.strictEqual(error.ref, "global/demo");
+    assert.strictEqual(error.branch, "side");
+    assert.strictEqual(error.liveBranch, "master");
+    assert.deepStrictEqual(fake.requests.slice(before).map((r) => r.path), ["/api/v1/knowledge-bases"]);
+
+    git(dir, "checkout", "-q", "--detach");
+    error = await rejectsWith(kb.pull("demo", { cwd }), Err.GatewayKnowledgeBaseError);
+    assert.strictEqual(error.branch, null);
+
+    // the server moved the live branch since the clone was made
+    git(dir, "checkout", "-q", "master");
+    fake.knowledgeBases[0].liveBranch = "next";
+    before = fake.requests.length;
+    error = await rejectsWith(kb.pull("demo", { cwd }), Err.GatewayKnowledgeBaseError);
+    assert.strictEqual(error.branch, "master");
+    assert.strictEqual(error.liveBranch, "next");
+    assert.deepStrictEqual(fake.requests.slice(before).map((r) => r.path), ["/api/v1/knowledge-bases"]);
+    assert.strictEqual(git(demo, "rev-parse", "master"), git(dir, "rev-parse", "master"));
+  });
+});
+
 test("pull never prompts: a clean fast-forward needs no prompt provider", async () => {
   await withKb(async ({ kb, demo }) => {
     // the service above is built with prompt: null, so any prompt call would throw

@@ -287,8 +287,9 @@ export class GatewayKb {
    * branch; an existing clone of the same repository is fast-forwarded. Never prompts, never
    * discards local changes.
    *
-   * @throws {Err.GatewayKnowledgeBaseError} the address is bad, unknown or ambiguous, or the listed
-   *   name cannot be a folder name (`unsafe-name`)
+   * @throws {Err.GatewayKnowledgeBaseError} the address is bad, unknown or ambiguous, the listed
+   *   name cannot be a folder name (`unsafe-name`), or an existing clone is not on the live branch
+   *   or is detached (`wrong-branch`, refused before any fetch)
    * @throws {Err.GatewayWorkingCopyError} `wrong-repository` (the folder is a clone of another repo),
    *   `not-empty` (it has files but is not a clone), `diverged`, `detached` or `no-upstream`
    * @throws {Err.GatewayDirtyWorkingTreeError} the incoming commits change files with local changes
@@ -322,6 +323,7 @@ export class GatewayKb {
           "wrong-repository"
         );
       }
+      await this.requireLiveBranch(dir, kb);
       const pulled = await this.git.pull(dir);
       return { kb, dir, outcome: pulled.outcome, branch: pulled.branch, from: pulled.from, to: pulled.to };
     }
@@ -358,19 +360,24 @@ export class GatewayKb {
         kb.ref
       );
     }
+    await this.requireLiveBranch(dir, kb);
+    const pushed = await this.git.push(dir);
+    return { pushed: pushed.pushed, commit: pushed.head, ref: kb.ref };
+  }
+
+  // Refuse, from what is on disk alone, a clone that is detached or not on the KB's current live branch.
+  private async requireLiveBranch(dir: string, kb: GatewayKnowledgeBase): Promise<void> {
     const { branch } = await this.git.status(dir);
     if (branch !== kb.liveBranch) {
       throw new Err.GatewayKnowledgeBaseError(
         branch === null
-          ? `${dir} is on a detached head, but knowledge base ${kb.ref} takes pushes only on its live branch ${kb.liveBranch}.`
-          : `${dir} is on branch ${branch}, but knowledge base ${kb.ref} takes pushes only on its live branch ${kb.liveBranch}.`,
+          ? `${dir} is on a detached head, but knowledge base ${kb.ref} is used only on its live branch ${kb.liveBranch}.`
+          : `${dir} is on branch ${branch}, but knowledge base ${kb.ref} is used only on its live branch ${kb.liveBranch}.`,
         "wrong-branch",
         kb.ref,
         [],
         { branch, liveBranch: kb.liveBranch }
       );
     }
-    const pushed = await this.git.push(dir);
-    return { pushed: pushed.pushed, commit: pushed.head, ref: kb.ref };
   }
 }
