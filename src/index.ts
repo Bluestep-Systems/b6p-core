@@ -65,6 +65,7 @@ export { GatewayGit } from "./gateway/GatewayGit";
 export type {
   GatewayCloneOptions,
   GatewayCloneResult,
+  GatewayGitOptions,
   GatewayGitStatus,
   GatewayGitStatusOptions,
   GatewayPullResult,

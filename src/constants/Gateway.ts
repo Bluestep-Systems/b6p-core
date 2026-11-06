@@ -24,6 +24,21 @@ export namespace Gateway {
   export const REQUEST_TIMEOUT_MS = 30_000;
 
   /**
+   * How long a git request may wait for the gateway's first byte (its response headers) before it
+   * counts as the gateway being unavailable. Generous because the gateway may be waking the forge.
+   * @lastreviewed null
+   */
+  export const GIT_FIRST_BYTE_TIMEOUT_MS = 30_000;
+
+  /**
+   * How long a git response body may go without yielding any bytes before it counts as the gateway
+   * being unavailable. An idle timeout rather than a total one, so a large pack on a slow link is
+   * never cut off while it is still arriving.
+   * @lastreviewed null
+   */
+  export const GIT_IDLE_TIMEOUT_MS = 60_000;
+
+  /**
    * REST paths, relative to the gateway origin.
    * @lastreviewed null
    */

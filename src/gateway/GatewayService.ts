@@ -1,5 +1,6 @@
 import { GatewayClient } from "./GatewayClient";
 import { GatewayGit } from "./GatewayGit";
+import type { GatewayGitOptions } from "./GatewayGit";
 import { GatewayMarketplace } from "./GatewayMarketplace";
 import type { GatewayContext } from "./GatewayContext";
 
@@ -31,9 +32,9 @@ export class GatewayService {
    */
   readonly marketplace: GatewayMarketplace;
 
-  constructor(ctx: GatewayContext) {
+  constructor(ctx: GatewayContext, options: { git?: GatewayGitOptions } = {}) {
     this.client = new GatewayClient(ctx);
-    this.git = new GatewayGit(ctx, this.client);
+    this.git = new GatewayGit(ctx, this.client, options.git);
     this.marketplace = new GatewayMarketplace(this.client, this.git);
   }
 }

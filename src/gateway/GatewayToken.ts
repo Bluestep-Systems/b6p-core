@@ -4,9 +4,11 @@ import { Gateway } from "../constants/Gateway";
  * Why a candidate value is not a gateway access token, or `null` when it is one. The reason never
  * quotes the value: a token pasted into the wrong place must not reach a log or an error message.
  *
- * Checked: the `b6pt_` prefix, something after it, and no whitespace or control characters (which
- * would corrupt the `Authorization` header). The token's alphabet past that is the gateway's
- * business and is not checked.
+ * Checked: the `b6pt_` prefix, something after it, and only printable ASCII (`0x21`–`0x7E`).
+ * Whitespace and control characters would corrupt the `Authorization` header, and a character
+ * outside ASCII (a smart quote or `…` from a paste) makes fetch refuse the header, which would
+ * otherwise surface as the gateway being unreachable. Within printable ASCII the alphabet is the
+ * gateway's business and is not checked.
  * @lastreviewed null
  */
 export function gatewayTokenProblem(candidate: string): string | null {
@@ -19,8 +21,8 @@ export function gatewayTokenProblem(candidate: string): string | null {
   if (candidate.length === Gateway.TOKEN_PREFIX.length) {
     return `it has nothing after ${Gateway.TOKEN_PREFIX}`;
   }
-  if (/[\s\u0000-\u001f\u007f]/.test(candidate)) {
-    return "it contains whitespace or control characters";
+  if (/[^\x21-\x7e]/.test(candidate)) {
+    return "it contains a character that is not printable ASCII (whitespace, a control character or a non-ASCII character)";
   }
   return null;
 }

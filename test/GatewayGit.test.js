@@ -81,17 +81,20 @@ async function withGit(fn, opts = {}) {
     "dir/c.txt": "charlie\n",
     "crlf.txt": Buffer.from("one\r\ntwo\r\n"),
   });
-  const service = new GatewayService({
-    fs: new MockFileSystem(),
-    sessionManager: null,
-    logger: makeLogger(),
-    prompt: null,
-    progress: null,
-    isDebugMode: () => false,
-    gatewayToken: { token: async () => ("token" in opts ? opts.token : TOKEN) },
-    gatewayUrl: async () => fake.url,
-    fetchFn: globalThis.fetch.bind(globalThis),
-  });
+  const service = new GatewayService(
+    {
+      fs: new MockFileSystem(),
+      sessionManager: null,
+      logger: makeLogger(),
+      prompt: null,
+      progress: null,
+      isDebugMode: () => false,
+      gatewayToken: { token: async () => ("token" in opts ? opts.token : TOKEN) },
+      gatewayUrl: async () => fake.url,
+      fetchFn: opts.fetchFn ?? globalThis.fetch.bind(globalThis),
+    },
+    opts.gitOptions ? { git: opts.gitOptions } : undefined
+  );
   try {
     await fn({ fake, backend, bare, service, gitUrl: fake.gitUrl("knowledge-base", "kb-demo") });
   } finally {
@@ -157,7 +160,10 @@ test("clone of a named branch and of a tag", async () => {
 test("clone of a ref the repository lacks is ref-not-found and leaves no folder behind", async () => {
   await withGit(async (ctx) => {
     const dir = path.join(tmp(), "none");
-    const error = await rejectsWith(ctx.service.git.clone(ctx.gitUrl, dir, { ref: "nope" }), Err.GatewayWorkingCopyError);
+    const error = await rejectsWith(
+      ctx.service.git.clone(ctx.gitUrl, dir, { ref: "nope" }),
+      Err.GatewayWorkingCopyError
+    );
     assert.strictEqual(error.reason, "ref-not-found");
     assert.ok(!fs.existsSync(dir));
   });
@@ -531,8 +537,117 @@ test("git operations run one at a time, in call order", async () => {
     ctx.fake.requests.length = 0;
     ctx.fake.maxInFlight = 0;
     commitToRemote(ctx.bare, "master", { "r.txt": "r\n" });
-    await Promise.all([ctx.service.git.pull(dir), ctx.service.git.status(dir, { fetch: true }), ctx.service.git.push(dir)]);
+    await Promise.all([
+      ctx.service.git.pull(dir),
+      ctx.service.git.status(dir, { fetch: true }),
+      ctx.service.git.push(dir),
+    ]);
     assert.strictEqual(ctx.fake.maxInFlight, 1);
+  });
+});
+
+// ── timeouts (a stalled gateway must never wedge the queue) ─────────────
+
+const FAST = { firstByteTimeoutMs: 200, idleTimeoutMs: 200 };
+
+test("a gateway that never answers a git request is GatewayUnavailableError, and the queue is released", async () => {
+  let stall = true;
+  const real = globalThis.fetch.bind(globalThis);
+  // ignores the abort signal on purpose: the timeout must not depend on fetch honouring it
+  const fetchFn = (url, init) => (stall ? new Promise(() => {}) : real(url, init));
+  await withGit(
+    async (ctx) => {
+      const dir = path.join(tmp(), "x");
+      const started = Date.now();
+      const error = await rejectsWith(ctx.service.git.clone(ctx.gitUrl, dir), Err.GatewayUnavailableError);
+      assert.ok(Date.now() - started < 5_000);
+      assert.ok(!fs.existsSync(dir));
+      stall = false;
+      const queued = await ctx.service.client.getJson("/api/v1/knowledge-bases");
+      assert.deepStrictEqual(queued, { knowledgeBases: [] });
+      assert.ok(error.message.length > 0);
+    },
+    { fetchFn, gitOptions: FAST }
+  );
+});
+
+test("a git response that stalls mid-body is GatewayUnavailableError, and the queue is released", async () => {
+  let stall = true;
+  const real = globalThis.fetch.bind(globalThis);
+  const fetchFn = (url, init) => {
+    if (!stall) {
+      return real(url, init);
+    }
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("001e# service=git-upload-pack\n"));
+      },
+    });
+    return Promise.resolve(new Response(body, { status: 200 }));
+  };
+  await withGit(
+    async (ctx) => {
+      const dir = path.join(tmp(), "x");
+      await rejectsWith(ctx.service.git.clone(ctx.gitUrl, dir), Err.GatewayUnavailableError);
+      assert.ok(!fs.existsSync(dir));
+      stall = false;
+      await ctx.service.client.getJson("/api/v1/knowledge-bases");
+    },
+    { fetchFn, gitOptions: FAST }
+  );
+});
+
+test("a slow but steady body is not cut off by the idle timeout", async () => {
+  await withGit(
+    async (ctx) => {
+      const dir = await cloned(ctx);
+      assert.strictEqual(read(dir, "a.txt"), "alpha\n");
+    },
+    { gitOptions: { firstByteTimeoutMs: 5_000, idleTimeoutMs: 5_000 } }
+  );
+});
+
+// ── pull ordering ───────────────────────────────────────────────────────
+
+test("pull checks the files out BEFORE it moves the branch, so a crash mid-checkout cannot leave HEAD ahead of the tree", async () => {
+  const iso = require("isomorphic-git").default; // the object GatewayGit calls through
+  await withGit(async (ctx) => {
+    const dir = await cloned(ctx);
+    const before = headOf(dir);
+    commitToRemote(ctx.bare, "master", { "a.txt": "alpha 2\n" });
+    const realCheckout = iso.checkout;
+    let branchDuringCheckout;
+    iso.checkout = async (args) => {
+      branchDuringCheckout = git(dir, "rev-parse", "refs/heads/master");
+      return realCheckout(args);
+    };
+    try {
+      await ctx.service.git.pull(dir);
+    } finally {
+      iso.checkout = realCheckout;
+    }
+    assert.strictEqual(branchDuringCheckout, before, "the branch must not move until the checkout has succeeded");
+    assert.strictEqual(read(dir, "a.txt"), "alpha 2\n");
+    assert.strictEqual(git(dir, "status", "--porcelain"), "");
+  });
+});
+
+test("a pull whose checkout fails leaves the branch where it was", async () => {
+  const iso = require("isomorphic-git").default; // the object GatewayGit calls through
+  await withGit(async (ctx) => {
+    const dir = await cloned(ctx);
+    const before = headOf(dir);
+    commitToRemote(ctx.bare, "master", { "a.txt": "alpha 2\n" });
+    const realCheckout = iso.checkout;
+    iso.checkout = async () => {
+      throw new Error("disk full");
+    };
+    try {
+      await rejectsWith(ctx.service.git.pull(dir), Error);
+    } finally {
+      iso.checkout = realCheckout;
+    }
+    assert.strictEqual(headOf(dir), before);
   });
 });
 
@@ -554,7 +669,9 @@ test("git operations run one at a time, in call order", async () => {
     failures++;
     console.error(`  ✗ the token never appears in a thrown message or log line\n    ${leaks.join("\n    ")}`);
   } else {
-    console.log(`  ✓ the token never appears in a thrown message or log line (${thrownMessages.length} errors, ${logLines.length} log lines)`);
+    console.log(
+      `  ✓ the token never appears in a thrown message or log line (${thrownMessages.length} errors, ${logLines.length} log lines)`
+    );
   }
 
   for (const dir of scratch) {

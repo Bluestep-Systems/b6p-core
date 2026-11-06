@@ -26,7 +26,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fast-forward only: never forced, never a ref deletion, never tags; a non-fast-forward is
   `GatewayConflictError`. A pull that would overwrite local changes throws
   `GatewayDirtyWorkingTreeError` (with the `paths`) and changes nothing; other unusable folders
-  are `GatewayWorkingCopyError` (`reason`). File contents are never rewritten.
+  are `GatewayWorkingCopyError` (`reason`). File contents are never rewritten. A git request
+  that stalls (no response headers in 30 s, or a body silent for 60 s) fails as
+  `GatewayUnavailableError` and releases the queue; a pull checks the files out before it moves
+  the branch, so an interrupted pull never leaves HEAD ahead of the tree.
 - **`core.gateway.marketplace`: list and pull marketplace repos** (ClickUp 86bczx3r8).
   `list()` reads `GET /api/v1/registry/repos` (name, description, default branch, tags, `gitUrl`;
   a body of the wrong shape is `GatewayUnexpectedResponseError`), `get(name)` throws
