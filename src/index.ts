@@ -70,6 +70,8 @@ export type {
   GatewayPullResult,
   GatewayPushResult,
 } from "./gateway/GatewayGit";
+export { GatewayMarketplace } from "./gateway/GatewayMarketplace";
+export type { GatewayMarketplacePullOptions, GatewayMarketplacePullResult } from "./gateway/GatewayMarketplace";
 export { GatewayClient, gatewayErrorFor, parseGatewayOrigin } from "./gateway/GatewayClient";
 export type { GatewayClientOptions, GatewayRequestOptions } from "./gateway/GatewayClient";
 export type { GatewayContext, GatewayFetch } from "./gateway/GatewayContext";

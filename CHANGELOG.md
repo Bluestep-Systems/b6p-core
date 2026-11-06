@@ -27,6 +27,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `GatewayConflictError`. A pull that would overwrite local changes throws
   `GatewayDirtyWorkingTreeError` (with the `paths`) and changes nothing; other unusable folders
   are `GatewayWorkingCopyError` (`reason`). File contents are never rewritten.
+- **`core.gateway.marketplace`: list and pull marketplace repos** (ClickUp 86bczx3r8).
+  `list()` reads `GET /api/v1/registry/repos` (name, description, default branch, tags, `gitUrl`;
+  a body of the wrong shape is `GatewayUnexpectedResponseError`), `get(name)` throws
+  `GatewayNotFoundError` for an absent repo, and `pull(name, dir?, { ref? })` makes a plain working
+  clone of a branch or tag (default branch, `./<name>`), or fast-forwards an existing clone of the
+  same repo. A clone of another repo or on another ref is `GatewayCloneMismatchError` and is left
+  untouched. It never reads or changes script sources or pins, and there is no push.
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.
 - **`FakeGateway`** (testing): an in-process gateway on `127.0.0.1` answering the contract's REST

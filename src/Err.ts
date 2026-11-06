@@ -1010,4 +1010,35 @@ export namespace Err {
       this.reason = reason;
     }
   }
+
+  /**
+   * A marketplace pull found a clone it must not update. `reason` is `different-repo` (the
+   * folder's `origin` is not this repo's `gitUrl`) or `different-ref` (the clone is on another
+   * branch or tag than the one asked for). Nothing was changed.
+   * @lastreviewed null
+   */
+  export class GatewayCloneMismatchError extends GatewayError {
+    /**
+     * Which of the two it was.
+     * @lastreviewed null
+     */
+    readonly reason: "different-repo" | "different-ref";
+    /**
+     * The local folder.
+     * @lastreviewed null
+     */
+    readonly dir: string;
+    /**
+     * The marketplace repo the pull was for.
+     * @lastreviewed null
+     */
+    readonly repo: string;
+    constructor(message: string, reason: "different-repo" | "different-ref", dir: string, repo: string) {
+      super(message, null, reason);
+      this.name = "GatewayCloneMismatchError";
+      this.reason = reason;
+      this.dir = dir;
+      this.repo = repo;
+    }
+  }
 }

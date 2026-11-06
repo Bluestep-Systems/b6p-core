@@ -30,9 +30,10 @@ function tokenOf(header) {
 /**
  * @param fake a started FakeGateway
  * @param pushTokens tokens allowed to use receive-pack
+ * @param readScope the scope a fetch needs (`registry:read` for a marketplace-only fake)
  * @returns {{ root: string, rejectPushWith409: boolean, bare(org, repo): string, cleanup(): void }}
  */
-function mountGitBackend(fake, pushTokens) {
+function mountGitBackend(fake, pushTokens, readScope = "kb:read") {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "b6p-gitsrv-"));
   const state = {
     root,
@@ -113,8 +114,8 @@ function mountGitBackend(fake, pushTokens) {
       });
     });
   };
-  fake.route({ method: "GET", prefix: GIT_PREFIX + "/", scope: "kb:read", handler });
-  fake.route({ method: "POST", prefix: GIT_PREFIX + "/", scope: "kb:read", handler });
+  fake.route({ method: "GET", prefix: GIT_PREFIX + "/", scope: readScope, handler });
+  fake.route({ method: "POST", prefix: GIT_PREFIX + "/", scope: readScope, handler });
   return state;
 }
 
