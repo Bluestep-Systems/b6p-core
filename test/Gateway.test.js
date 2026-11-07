@@ -386,6 +386,56 @@ test("a protocol-relative path cannot move the request off the gateway origin", 
   });
 });
 
+for (const [label, path] of [
+  ["a backslash", "/\\evil.example.com/x"],
+  ["a tab", "/\t/evil.example.com/x"],
+  ["a CR/LF", "/\r\n/evil.example.com/x"],
+  ["a double slash", "//evil.example.com/x"],
+  ["a slash and two backslashes", "/\\\\evil.example.com/x"],
+  ["a backslash then slash", "/\\/evil.example.com/x"],
+]) {
+  test(`a path with ${label} that resolves off-origin is refused before any request, unquoted`, async () => {
+    await withFake(async (fake) => {
+      const { client, fetches } = makeClient(fake);
+      const error = await rejectsWith(client.getJson(path), Err.GatewayConfigError);
+      assert.strictEqual(fetches.length, 0, `fetched ${fetches.join(", ")}`);
+      assert.ok(!error.message.includes("evil"), `quoted: ${error.message}`);
+    });
+  });
+}
+
+test("an encoded double slash stays a path on the gateway origin", async () => {
+  await withFake(async (fake) => {
+    const { client, fetches } = makeClient(fake);
+    await rejectsWith(client.getJson("/%2F%2Fevil.example.com/x"), Err.GatewayNotFoundError);
+    assert.strictEqual(fetches.length, 1);
+    assert.strictEqual(new URL(fetches[0]).origin, fake.url);
+  });
+});
+
+test("a redirect is refused and not followed, as a distinct redirect-refused error that does not quote Location", async () => {
+  await withFake(async (fake) => {
+    const other = await FakeGateway.start();
+    other.grantToken(TOKEN, [Gateway.Scopes.KB_READ]);
+    try {
+      fake.route({
+        method: "GET",
+        prefix: "/api/v1/moved",
+        handler: (_req, res) => res.writeHead(302, { Location: `${other.url}/api/v1/knowledge-bases?secret-location` }).end(),
+      });
+      const { client } = makeClient(fake);
+      const error = await rejectsWith(client.getJson("/api/v1/moved"), Err.GatewayUnexpectedResponseError);
+      assert.strictEqual(error.status, 302);
+      assert.strictEqual(error.code, "redirect-refused");
+      assert.match(error.message, /redirect/);
+      assert.ok(!error.message.includes("secret-location") && !error.message.includes(other.url), error.message);
+      assert.strictEqual(other.requests.length, 0, "the redirect target got no request");
+    } finally {
+      await other.stop();
+    }
+  });
+});
+
 test("authHeadersFor gives the Bearer header for a gateway URL and refuses any other origin", async () => {
   await withFake(async (fake) => {
     const { client } = makeClient(fake);

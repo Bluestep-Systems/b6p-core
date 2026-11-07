@@ -10,8 +10,8 @@ import { GatewayTokenService } from "./GatewayTokenService";
  *
  * It holds the HTTP {@link client}, the {@link git} layer and the caller's own token management
  * ({@link tokens}); the knowledge-base and marketplace operations are added beside them as their
- * own members. Each is built over that one client, so every gateway request shares its
- * one-at-a-time queue.
+ * own members. Each is built over that one client, so every REST request made through it, every
+ * git operation and every token rotation shares its one-at-a-time queue.
  * @lastreviewed null
  */
 export class GatewayService {

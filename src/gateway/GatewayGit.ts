@@ -175,6 +175,32 @@ function posix(file: string): string {
   return file.split(path.sep).join("/").replace(/^\.\//, "");
 }
 
+// isomorphic-git error codes that mean the other end did not speak smart HTTP.
+const PROTOCOL_ERROR_CODES = new Set([
+  "HttpError",
+  "SmartHttpError",
+  "ParseError",
+  "EmptyServerResponseError",
+  "RemoteCapabilityError",
+  "UnknownTransportError",
+  "UrlParseError",
+  "NotFoundError",
+  "InvalidOidError",
+  "InternalError",
+]);
+
+// The outermost folder on the way to `dir` that does not exist yet: what a clone into `dir` creates.
+function topmostMissing(dir: string): string {
+  let top = path.resolve(dir);
+  for (;;) {
+    const parent = path.dirname(top);
+    if (parent === top || nodeFs.existsSync(parent)) {
+      return top;
+    }
+    top = parent;
+  }
+}
+
 // The error's `code`, as isomorphic-git sets it on every error it throws.
 function codeOf(error: unknown): string | undefined {
   if (typeof error === "object" && error !== null && "code" in error) {
@@ -247,6 +273,7 @@ export class GatewayGit {
     return this.sequenced(async () => {
       await this.client.authHeadersFor(gitUrl);
       const existed = nodeFs.existsSync(dir);
+      const topCreated = existed ? undefined : topmostMissing(dir);
       if (existed && (!nodeFs.statSync(dir).isDirectory() || nodeFs.readdirSync(dir).length > 0)) {
         throw new Err.GatewayWorkingCopyError(`${dir} already has files, so nothing was cloned into it.`, "not-empty");
       }
@@ -260,6 +287,7 @@ export class GatewayGit {
           ref: options.ref,
           singleBranch: true,
         });
+        this.throwIfStalled();
       } catch (error) {
         // Whatever is in `dir` now was put there by this attempt (it was absent or empty).
         if (existed) {
@@ -267,7 +295,7 @@ export class GatewayGit {
             nodeFs.rmSync(path.join(dir, entry), { recursive: true, force: true });
           }
         } else {
-          nodeFs.rmSync(dir, { recursive: true, force: true });
+          nodeFs.rmSync(topCreated ?? dir, { recursive: true, force: true });
         }
         throw this.notFoundRef(error, options.ref) ?? error;
       }
@@ -346,6 +374,20 @@ export class GatewayGit {
         );
       }
 
+      // An earlier pull killed after its checkout but before its ref write leaves HEAD at `from`
+      // over an index and files that are exactly `to`. Only that exact state is finished here.
+      if (await this.matchesCommit(dir, to)) {
+        await git.writeRef({ fs: nodeFs, dir, ref: `refs/heads/${branch}`, value: to, force: true });
+        return { outcome: "fast-forwarded", branch, from, to };
+      }
+
+      // The checkout rebuilds the index from `to`, which would silently drop anything staged, even
+      // on a path the incoming commits do not touch. So any staged change refuses the pull.
+      const staged = await this.stagedPaths(dir);
+      if (staged.length > 0) {
+        throw this.dirtyError(branch, staged, "staged");
+      }
+
       const incoming = await this.changedBetween(dir, from, to);
       const dirty = new Set(await this.dirtyPaths(dir));
       const clash = incoming.filter((file) => dirty.has(file) || [...dirty].some((d) => file.startsWith(`${d}/`)));
@@ -411,6 +453,7 @@ export class GatewayGit {
           remoteRef: `refs/heads/${remoteBranch}`,
           force: false,
         });
+        this.throwIfStalled();
       } catch (error) {
         if (codeOf(error) === "PushRejectedError") {
           throw new Err.GatewayConflictError(
@@ -424,7 +467,7 @@ export class GatewayGit {
         const said = Object.values(result.refs)
           .map((r) => r.error)
           .filter((e): e is string => typeof e === "string");
-        const text = [result.error, ...said].filter(Boolean).join("; ");
+        const text = redactToken([result.error, ...said].filter(Boolean).join("; "), await this.tokenText());
         if (/non-fast-forward|fetch first|stale info/i.test(text)) {
           throw new Err.GatewayConflictError(
             `${branch} does not build on ${REMOTE}/${remoteBranch}: the gateway rejected the push as not a fast-forward.`,
@@ -449,12 +492,41 @@ export class GatewayGit {
   private sequenced<T>(task: () => Promise<T>): Promise<T> {
     return this.client.sequence(async () => {
       this.stall = undefined;
+      let result: T;
       try {
-        return await task();
+        result = await task();
       } catch (error) {
-        throw this.stall ?? error;
+        throw this.stall ?? this.typed(error);
       }
+      this.throwIfStalled();
+      return result;
     });
+  }
+
+  // isomorphic-git's own protocol errors (some quote a preview of the response body) become typed
+  // gateway errors that quote nothing; every other error passes through as it is.
+  private typed(error: unknown): unknown {
+    const code = codeOf(error);
+    if (error instanceof Err.GatewayError || code === undefined || !PROTOCOL_ERROR_CODES.has(code)) {
+      return error;
+    }
+    return new Err.GatewayUnexpectedResponseError(
+      `The gateway's answer was not valid git smart HTTP (${code}).`,
+      null,
+      "invalid-git-response"
+    );
+  }
+
+  // The token as it was sent, for redacting server-supplied text. Asked of the same source each time.
+  private async tokenText(): Promise<string | undefined> {
+    const header = (await this.client.authHeadersFor(await this.client.origin()))[Http.Headers.AUTHORIZATION];
+    return header?.replace(/^Bearer /, "");
+  }
+
+  private throwIfStalled(): void {
+    if (this.stall) {
+      throw this.stall;
+    }
   }
 
   private requireClone(dir: string): void {
@@ -487,12 +559,28 @@ export class GatewayGit {
     return new Err.GatewayWorkingCopyError(`${branch} tracks no branch on the gateway.`, "no-upstream");
   }
 
-  private dirtyError(branch: string, paths: string[]): Err.GatewayDirtyWorkingTreeError {
+  private dirtyError(branch: string, paths: string[], kind?: "staged"): Err.GatewayDirtyWorkingTreeError {
     const sorted = [...new Set(paths)].sort();
+    const what = kind === "staged" ? "staged changes to" : "local changes to";
     return new Err.GatewayDirtyWorkingTreeError(
-      `Updating ${branch} would overwrite local changes to ${sorted.length} file(s); nothing was changed.`,
+      `Updating ${branch} would overwrite ${what} ${sorted.length} file(s); nothing was changed.`,
       sorted
     );
+  }
+
+  // Paths whose index entry differs from HEAD (staged edits, additions and deletions).
+  private async stagedPaths(dir: string): Promise<string[]> {
+    const rows = await git.statusMatrix({ fs: nodeFs, dir });
+    return rows
+      .filter(([, head, , stage]) => (head === 1 && stage !== 1) || (head === 0 && stage !== 0))
+      .map(([file]) => posix(file))
+      .sort();
+  }
+
+  // Whether the index and every file are exactly commit `oid`'s tree (nothing untracked either).
+  private async matchesCommit(dir: string, oid: string): Promise<boolean> {
+    const rows = await git.statusMatrix({ fs: nodeFs, dir, ref: oid });
+    return rows.every(([, head, work, stage]) => head === 1 && work === 1 && stage === 1);
   }
 
   // Map isomorphic-git's "no such remote ref" failure to a GatewayWorkingCopyError (ref-not-found).
@@ -516,6 +604,7 @@ export class GatewayGit {
       singleBranch: true,
       tags: false,
     });
+    this.throwIfStalled();
   }
 
   private async aheadBehind(
@@ -596,7 +685,7 @@ export class GatewayGit {
             req.signal.addEventListener("abort", abort, { once: true });
           }
         }
-        const init: RequestInit = { method, headers, redirect: "error", signal: controller.signal };
+        const init: RequestInit = { method, headers, redirect: "manual", signal: controller.signal };
         if (req.body) {
           const chunks: Buffer[] = [];
           for await (const chunk of req.body) {
@@ -631,6 +720,20 @@ export class GatewayGit {
           clearTimeout(timer);
         }
         this.ctx.logger.debug(`gateway git ${what} -> ${response.status}`);
+        // Redirects are never followed ("manual" above); one is named, not mistaken for a network
+        // failure. Location is not quoted: it is server-supplied and names a place no token went.
+        if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
+          throw new Err.GatewayUnexpectedResponseError(
+            `${what}: the gateway answered with a redirect (${response.status}), which was not followed.`,
+            response.status,
+            "redirect-refused"
+          );
+        }
+        // Belt and braces after any URL resolution inside the fetch: the answer must come from the
+        // gateway's own origin.
+        if (response.url && new URL(response.url).origin !== (await this.client.origin())) {
+          throw new Err.GatewayConfigError("A git response came from outside the gateway's origin; it was discarded.");
+        }
         if (!response.ok) {
           let text = "";
           try {

@@ -651,6 +651,17 @@ test("P3: the leak sweep knows every secret granted or minted, revoked ones incl
   });
 });
 
+test("an id that would resolve off-origin is encoded onto the gateway path, so the origin check passes and the token is found", async () => {
+  await withCore(async (fake, core) => {
+    fake.grantToken("b6pt_hostile_id_0001", [Gateway.Scopes.KB_READ], { id: "\\\\evil.example/x", alias: "hostile" });
+    const result = await core.gateway.tokens.revoke("hostile");
+    assert.strictEqual(result.id, "\\\\evil.example/x");
+    const del = tokenRequests(fake).find((r) => r.method === "DELETE");
+    assert.strictEqual(del.path, `${Gateway.Paths.TOKENS}/%5C%5Cevil.example%2Fx`);
+    assert.ok(!fake.issuedTokens().some((t) => t.alias === "hostile"));
+  });
+});
+
 // ── Run ─────────────────────────────────────────────────────────────────
 
 (async () => {

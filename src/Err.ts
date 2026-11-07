@@ -948,7 +948,8 @@ export namespace Err {
   }
 
   /**
-   * Any other non-2xx status, or a 2xx whose body is not the JSON the route promises.
+   * Any other non-2xx status, a refused redirect (code `redirect-refused`; redirects are never
+   * followed), or a 2xx whose body is not the JSON the route promises.
    * @lastreviewed null
    */
   export class GatewayUnexpectedResponseError extends GatewayError {
