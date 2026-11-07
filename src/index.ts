@@ -76,6 +76,7 @@ export type {
   GatewayKbListOptions,
   GatewayKbPullOptions,
   GatewayKbPullResult,
+  GatewayKbPushOptions,
   GatewayKbPushResult,
 } from "./gateway/GatewayKb";
 export { GatewayClient, gatewayErrorFor, parseGatewayOrigin } from "./gateway/GatewayClient";

@@ -1034,9 +1034,9 @@ export namespace Err {
    * A knowledge base could not be settled on. `reason` is `bad-ref` (the address is not `<name>` or
    * `<U…>/<name>`), `not-found` (no knowledge base the caller may read has that address; the
    * gateway does not say whether it exists), `ambiguous` (the listing holds more than one match;
-   * `candidates` are their refs), `unsafe-name` (the listed name cannot be a folder name) or
+   * `candidates` are their refs), `unsafe-name` (the listed name cannot be a folder name),
    * `not-a-kb` (a clone's remote is not a knowledge base the caller can see) or `wrong-branch` (a pull or push
-   * from a clone that is not on the knowledge base's live branch, or on a detached head).
+   * from a clone that is not on the knowledge base's live branch, does not track it, or is on a detached head).
    * @lastreviewed null
    */
   export class GatewayKnowledgeBaseError extends GatewayError {
@@ -1065,12 +1065,18 @@ export namespace Err {
      * @lastreviewed null
      */
     readonly liveBranch: string | null;
+    /**
+     * For `wrong-branch`: what the clone's branch tracks, as `origin/<branch>`, or `null` when it
+     * tracks nothing. Otherwise `null`.
+     * @lastreviewed null
+     */
+    readonly upstream: string | null;
     constructor(
       message: string,
       reason: "bad-ref" | "not-found" | "ambiguous" | "unsafe-name" | "not-a-kb" | "wrong-branch",
       ref: string | null,
       candidates: string[] = [],
-      branches: { branch: string | null; liveBranch: string } | null = null
+      branches: { branch: string | null; liveBranch: string; upstream: string | null } | null = null
     ) {
       super(message, null, reason);
       this.name = "GatewayKnowledgeBaseError";
@@ -1079,6 +1085,7 @@ export namespace Err {
       this.candidates = candidates;
       this.branch = branches?.branch ?? null;
       this.liveBranch = branches?.liveBranch ?? null;
+      this.upstream = branches?.upstream ?? null;
     }
   }
 
@@ -1097,6 +1104,18 @@ export namespace Err {
       super(message, "not-permitted");
       this.name = "GatewayKnowledgeBasePushNotPermittedError";
       this.ref = ref;
+    }
+  }
+
+  /**
+   * A caller passed an argument core cannot act on, such as a relative path with no absolute
+   * `cwd` to resolve it against. Core never reads `process.cwd()`.
+   * @lastreviewed null
+   */
+  export class GatewayInvalidArgumentError extends GatewayError {
+    constructor(message: string) {
+      super(message, null, "invalid-argument");
+      this.name = "GatewayInvalidArgumentError";
     }
   }
 }

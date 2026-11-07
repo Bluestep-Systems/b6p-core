@@ -43,9 +43,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `GatewayUnexpectedResponseError`); `resolve(ref)` takes `<name>` (global) or `<U…>/<name>` (tenant)
   and throws `GatewayKnowledgeBaseError` for a bad, unknown or ambiguous address; `pull(ref, { cwd,
   dir? })` clones the live branch or fast-forwards an existing clone of the same repository (a clone
-  not on the live branch, or detached, is `GatewayKnowledgeBaseError` `wrong-branch` before any fetch; a clone
+  not on the live branch, not tracking it, or detached, is `GatewayKnowledgeBaseError` `wrong-branch` before any fetch; a clone
   of another repository is `GatewayWorkingCopyError` `wrong-repository`; local changes in the way are
-  `GatewayDirtyWorkingTreeError`; it never prompts and never discards local changes; a listed name or tenant that is not a safe folder name, such as `.git`, `GIT~1` or a Windows device name, is `unsafe-name` before any request); `push(dir)`
+  `GatewayDirtyWorkingTreeError`; it never prompts and never discards local changes; a listed name or tenant that is not a safe folder name, such as `.git`, `GIT~1` or a Windows device name, is `unsafe-name` before any clone request; control and format characters in a listing's text fields make it an invalid listing); `push(dir, { cwd? })`
+  (a relative `dir` needs an absolute `cwd`, else `GatewayInvalidArgumentError`; core never reads `process.cwd()`)
   requires `canPush` from a fresh listing (else `GatewayKnowledgeBasePushNotPermittedError` with the
   `ref`, before anything is sent; a clone off the live branch or detached is `GatewayKnowledgeBaseError`
   `wrong-branch` with `branch` and `liveBranch`) and returns `{ pushed, commit, ref }`. `GatewayGit.originUrl(dir)`

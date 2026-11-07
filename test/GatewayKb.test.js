@@ -375,6 +375,17 @@ test("pull refuses a listed name or tenant that is not a safe folder name, creat
     "a\u001fb",
     "a:b",
     "a\\b",
+    "CONIN$",
+    "conout$",
+    "COM0",
+    "LPT0",
+    "CON .txt",
+    "\u200c.git",
+    "a\u200bb",
+    "a\u202eb",
+    "a\u2060b",
+    "a\ufeffb",
+    "a\u00adb",
   ];
   for (const bad of hostile) {
     await withKb(async ({ fake, kb }) => {
@@ -383,6 +394,11 @@ test("pull refuses a listed name or tenant that is not a safe folder name, creat
       fake.knowledgeBases.push(entry(fake, { name: "ok", tenant: bad, ref: `tenant/${bad}/ok` }));
       const before = fake.requests.length;
       for (const ref of [bad, `${bad}/ok`]) {
+        // control and format characters never get past the listing check; the rest reach the name check
+        if (/[\p{Cc}\p{Cf}]/u.test(bad)) {
+          await rejectsWith(kb.pull(ref, { cwd }), Err.GatewayUnexpectedResponseError);
+          continue;
+        }
         const error = await rejectsWith(kb.pull(ref, { cwd }), Err.GatewayKnowledgeBaseError);
         // an address with edge whitespace is refused earlier, as a bad address
         const expected = bad === bad.trim() ? "unsafe-name" : "bad-ref";
@@ -395,6 +411,66 @@ test("pull refuses a listed name or tenant that is not a safe folder name, creat
       );
     });
   }
+});
+
+test("pull and push refuse a clone whose branch tracks a branch other than the live one, touching nothing", async () => {
+  await withKb(async ({ fake, kb, demo }) => {
+    const cwd = tmp();
+    const { dir } = await kb.pull("demo", { cwd });
+    commitToRemote(demo, "draft", { "d.txt": "d\n" });
+    git(dir, "config", "branch.master.merge", "refs/heads/draft");
+    fs.writeFileSync(path.join(dir, "x.txt"), "x\n");
+    git(dir, "add", "-A");
+    git(dir, "commit", "-m", "local");
+    const head = git(dir, "rev-parse", "HEAD");
+    const draft = git(demo, "rev-parse", "draft");
+    const before = fake.requests.length;
+    for (const op of [() => kb.pull("demo", { cwd }), () => kb.push(dir)]) {
+      const error = await rejectsWith(op(), Err.GatewayKnowledgeBaseError);
+      assert.strictEqual(error.reason, "wrong-branch");
+      assert.strictEqual(error.branch, "master");
+      assert.strictEqual(error.liveBranch, "master");
+      assert.strictEqual(error.upstream, "origin/draft");
+    }
+    assert.ok(fake.requests.slice(before).every((r) => r.path === "/api/v1/knowledge-bases"));
+    assert.strictEqual(git(dir, "rev-parse", "HEAD"), head);
+    assert.strictEqual(git(demo, "rev-parse", "draft"), draft);
+
+    git(dir, "config", "--unset", "branch.master.merge");
+    const none = await rejectsWith(kb.push(dir), Err.GatewayKnowledgeBaseError);
+    assert.strictEqual(none.upstream, null);
+  });
+});
+
+test("push resolves a relative dir against the cwd it is given, never process.cwd()", async () => {
+  await withKb(async ({ kb, demo }) => {
+    const cwd = tmp();
+    await kb.pull("demo", { cwd });
+    fs.writeFileSync(path.join(cwd, "demo", "r.txt"), "r\n");
+    git(path.join(cwd, "demo"), "add", "-A");
+    git(path.join(cwd, "demo"), "commit", "-m", "rel");
+    await rejectsWith(kb.push("demo"), Err.GatewayInvalidArgumentError);
+    await rejectsWith(kb.push("demo", { cwd: "relative" }), Err.GatewayInvalidArgumentError);
+    await rejectsWith(kb.pull("demo", { cwd: "relative" }), Err.GatewayInvalidArgumentError);
+    const result = await kb.push("demo", { cwd });
+    assert.strictEqual(result.pushed, true);
+    assert.strictEqual(git(demo, "rev-parse", "master"), result.commit);
+  });
+});
+
+test("a listing entry with control or format characters in a text field is an invalid listing", async () => {
+  const good = { ref: "global/a", scope: "global", tenant: null, name: "a", title: "A", liveBranch: "master", canPush: true, gitUrl: "http://x/a.git" };
+  const bad = ["\u001b[31mred", "a\u0007b", "a\u200bb", "a\u202eb", "a\ufeffb", "a\u007fb"];
+  for (const field of ["ref", "name", "title", "liveBranch"]) {
+    for (const value of bad) {
+      await withBody({ knowledgeBases: [{ ...good, [field]: value }] }, async (kb) => {
+        await rejectsWith(kb.list(), Err.GatewayUnexpectedResponseError);
+      });
+    }
+  }
+  await withBody({ knowledgeBases: [{ ...good, scope: "tenant", tenant: "U\u001b1" }] }, async (kb) => {
+    await rejectsWith(kb.list(), Err.GatewayUnexpectedResponseError);
+  });
 });
 
 // ── push ────────────────────────────────────────────────────────────────

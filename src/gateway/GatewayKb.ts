@@ -81,6 +81,19 @@ export interface GatewayKbPullResult {
 }
 
 /**
+ * Options for {@link GatewayKb.push}.
+ * @lastreviewed null
+ */
+export interface GatewayKbPushOptions {
+  /**
+   * The absolute folder a relative `dir` is resolved against. Required for a relative `dir`; core
+   * never reads `process.cwd()`.
+   * @lastreviewed null
+   */
+  cwd?: string;
+}
+
+/**
  * What {@link GatewayKb.push} did.
  * @lastreviewed null
  */
@@ -111,6 +124,30 @@ interface ParsedRef {
   name: string;
 }
 
+function requireAbsolute(value: string, what: string): void {
+  if (!path.isAbsolute(value)) {
+    throw new Err.GatewayInvalidArgumentError(`The ${what} "${value}" is not an absolute path.`);
+  }
+}
+
+/**
+ * `dir` as an absolute path: used as given when absolute, else resolved against the consumer's
+ * `cwd`. Core never reads `process.cwd()`.
+ * @lastreviewed null
+ */
+function absoluteDir(dir: string, cwd: string | undefined): string {
+  if (path.isAbsolute(dir)) {
+    return dir;
+  }
+  if (cwd === undefined) {
+    throw new Err.GatewayInvalidArgumentError(
+      `The folder "${dir}" is relative and no cwd was given to resolve it against.`
+    );
+  }
+  requireAbsolute(cwd, "cwd");
+  return path.resolve(cwd, dir);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -132,7 +169,7 @@ function knowledgeBaseFrom(entry: unknown, index: number): GatewayKnowledgeBase 
   }
   const text = (field: string): string => {
     const value = entry[field];
-    if (typeof value !== "string" || value.length === 0) {
+    if (typeof value !== "string" || value.length === 0 || HIDDEN_CHARACTERS.test(value)) {
       throw bad(field);
     }
     return value;
@@ -145,7 +182,12 @@ function knowledgeBaseFrom(entry: unknown, index: number): GatewayKnowledgeBase 
   let tenant: string | null;
   if (scope === "global" && tenantField === null) {
     tenant = null;
-  } else if (scope === "tenant" && typeof tenantField === "string" && tenantField.length > 0) {
+  } else if (
+    scope === "tenant" &&
+    typeof tenantField === "string" &&
+    tenantField.length > 0 &&
+    !HIDDEN_CHARACTERS.test(tenantField)
+  ) {
     tenant = tenantField;
   } else {
     throw bad("tenant");
@@ -190,6 +232,13 @@ function parseRef(raw: string): ParsedRef {
 }
 
 /**
+ * Control characters and Unicode format or ignorable characters (zero-width, bidi, BOM, soft hyphen
+ * and the like). Some file systems ignore them, so `<ZWNJ>.git` is `.git` there.
+ * @lastreviewed null
+ */
+const HIDDEN_CHARACTERS = /[\p{Cc}\p{Cf}]/u;
+
+/**
  * A folder name taken from a listing must be one plain path segment, so a hostile or odd name
  * cannot place a clone outside the folder the consumer chose.
  * @lastreviewed null
@@ -199,13 +248,20 @@ function isPlainSegment(segment: string): boolean {
     return false;
   }
   // Hidden names (".", "..", ".git" in any case), Windows trailing dots, and any path or reserved character.
-  if (segment.startsWith(".") || segment.endsWith(".") || /[\\/:*?"<>|\u0000-\u001f\u007f]/.test(segment)) {
+  if (
+    segment.startsWith(".") ||
+    segment.endsWith(".") ||
+    /[\\/:*?"<>|]/.test(segment) ||
+    HIDDEN_CHARACTERS.test(segment)
+  ) {
     return false;
   }
   // Windows 8.3 short name of ".git" (GIT~1) and reserved device names, with or without an extension
   // (superscript digits count: COM¹ is a device).
-  const stem = segment.split(".")[0];
-  return !/^git~\d+$/i.test(stem) && !/^(con|prn|aux|nul|(com|lpt)[1-9\u00b9\u00b2\u00b3])$/i.test(stem);
+  const stem = segment.split(".")[0].trim();
+  return (
+    !/^git~\d+$/i.test(stem) && !/^(con|prn|aux|nul|conin\$|conout\$|(com|lpt)[0-9\u00b9\u00b2\u00b3])$/i.test(stem)
+  );
 }
 
 /**
@@ -307,6 +363,7 @@ export class GatewayKb {
    * @lastreviewed null
    */
   async pull(ref: string, options: GatewayKbPullOptions): Promise<GatewayKbPullResult> {
+    requireAbsolute(options.cwd, "cwd");
     const kb = await this.resolve(ref);
     const folder = options.dir ?? (kb.tenant === null ? kb.name : `${kb.tenant}-${kb.name}`);
     if (options.dir === undefined && ![kb.name, kb.tenant ?? "x", folder].every(isPlainSegment)) {
@@ -341,10 +398,11 @@ export class GatewayKb {
   }
 
   /**
-   * Push the local commits of the clone in `dir` to its knowledge base. The knowledge base is found
+   * Push the local commits of the clone in `dir` (a relative `dir` is resolved against `options.cwd`) to its knowledge base. The knowledge base is found
    * from the clone's remote in a fresh listing, and a clone whose `canPush` is `false` is refused
    * before anything is sent.
    *
+   * @throws {Err.GatewayInvalidArgumentError} `dir` is relative and `options.cwd` is missing or not absolute
    * @throws {Err.GatewayKnowledgeBasePushNotPermittedError} the listing says this user cannot push there
    * @throws {Err.GatewayKnowledgeBaseError} `not-a-kb`: the clone's remote is not a knowledge base this user can see;
    *   `wrong-branch`: the clone is not on the live branch (or is detached), refused before any git request
@@ -353,7 +411,8 @@ export class GatewayKb {
    * @throws {Err.GatewayError} a subclass for any other gateway failure
    * @lastreviewed null
    */
-  async push(dir: string): Promise<GatewayKbPushResult> {
+  async push(dir: string, options: GatewayKbPushOptions = {}): Promise<GatewayKbPushResult> {
+    dir = absoluteDir(dir, options.cwd);
     const origin = await this.git.originUrl(dir);
     const listed = await this.list();
     const kb = origin === null ? undefined : listed.find((candidate) => sameUrl(candidate.gitUrl, origin));
@@ -377,16 +436,18 @@ export class GatewayKb {
 
   // Refuse, from what is on disk alone, a clone that is detached or not on the KB's current live branch.
   private async requireLiveBranch(dir: string, kb: GatewayKnowledgeBase): Promise<void> {
-    const { branch } = await this.git.status(dir);
-    if (branch !== kb.liveBranch) {
+    const { branch, upstream } = await this.git.status(dir);
+    if (branch !== kb.liveBranch || upstream !== `origin/${kb.liveBranch}`) {
       throw new Err.GatewayKnowledgeBaseError(
         branch === null
           ? `${dir} is on a detached head, but knowledge base ${kb.ref} is used only on its live branch ${kb.liveBranch}.`
-          : `${dir} is on branch ${branch}, but knowledge base ${kb.ref} is used only on its live branch ${kb.liveBranch}.`,
+          : branch !== kb.liveBranch
+            ? `${dir} is on branch ${branch}, but knowledge base ${kb.ref} is used only on its live branch ${kb.liveBranch}.`
+            : `${dir} is on branch ${branch}, which tracks ${upstream ?? "nothing"}, but knowledge base ${kb.ref} is used only on its live branch ${kb.liveBranch}.`,
         "wrong-branch",
         kb.ref,
         [],
-        { branch, liveBranch: kb.liveBranch }
+        { branch, liveBranch: kb.liveBranch, upstream }
       );
     }
   }
