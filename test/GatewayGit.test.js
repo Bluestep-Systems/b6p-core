@@ -288,13 +288,36 @@ test("a redirect to another origin is not followed, so the token never reaches i
     });
     try {
       const dir = path.join(tmp(), "x");
-      await rejectsWith(service.git.clone(fake.gitUrl("knowledge-base", "kb-moved"), dir), Err.GatewayUnavailableError);
+      const error = await rejectsWith(
+        service.git.clone(fake.gitUrl("knowledge-base", "kb-moved"), dir),
+        Err.GatewayUnexpectedResponseError
+      );
+      assert.strictEqual(error.code, "redirect-refused");
+      assert.strictEqual(error.status, 302);
+      assert.ok(!error.message.includes(foreign), "the server-supplied Location is not quoted");
       assert.strictEqual(stats().hits, 0);
       assert.ok(!fs.existsSync(dir));
     } finally {
       await fake.stop();
     }
   });
+});
+
+test("a response whose URL is off the gateway's origin is discarded", async () => {
+  const real = globalThis.fetch.bind(globalThis);
+  const fetchFn = async (url, init) => {
+    const response = await real(url, init);
+    Object.defineProperty(response, "url", { value: "http://127.0.0.1:1/elsewhere" });
+    return response;
+  };
+  await withGit(
+    async (ctx) => {
+      const dir = path.join(tmp(), "x");
+      await rejectsWith(ctx.service.git.clone(ctx.gitUrl, dir), Err.GatewayConfigError);
+      assert.ok(!fs.existsSync(dir));
+    },
+    { fetchFn }
+  );
 });
 
 // ── status ──────────────────────────────────────────────────────────────

@@ -59,11 +59,15 @@ are load-bearing rather than stylistic — each records something this repo undi
   extends `PlatformContext` with `gatewayToken` (a `GatewayTokenSource`), `gatewayUrl()` (core
   config `settings.gatewayUrl`, default `https://gateway.bluestep.net`) and `fetchFn`. Knowledge-base
   and marketplace operations go beside `client` on `GatewayService`, over that one client, so all
-  gateway requests share its sequential queue. Errors are `Err.Gateway*`; a git layer maps statuses
+  REST requests made through the client share its sequential queue, and so does every git operation (`GatewayClient.sequence`);
+  `authHeadersFor` itself is not queued.
+  The client never follows a redirect (a 3xx is `redirect-refused`) and refuses a path that resolves
+  off the gateway origin. Errors are `Err.Gateway*`; a git layer maps statuses
   with `gatewayErrorFor` rather than its own table.
 - **`core.gateway.git` (`GatewayGit`) is pure-JS git (isomorphic-git, exact-pinned) and keeps four
   rules.** It runs only on gateway-supplied `gitUrl`s, with the bearer from `authHeadersFor(url)` on
-  every request (a foreign origin throws first; redirects are never followed). It pushes only
+  every request (a foreign origin throws first; a 3xx is `redirect-refused`, never followed; a response whose URL is off
+  the origin is discarded). It pushes only
   fast-forwards: no `force`, no `delete`, no tags, and a branch behind its upstream is refused
   before the wire. A pull never overwrites: it throws `GatewayDirtyWorkingTreeError` with the
   paths instead of prompting, and puts the branch back if a checkout refuses. And it never

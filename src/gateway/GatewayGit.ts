@@ -596,7 +596,7 @@ export class GatewayGit {
             req.signal.addEventListener("abort", abort, { once: true });
           }
         }
-        const init: RequestInit = { method, headers, redirect: "error", signal: controller.signal };
+        const init: RequestInit = { method, headers, redirect: "manual", signal: controller.signal };
         if (req.body) {
           const chunks: Buffer[] = [];
           for await (const chunk of req.body) {
@@ -631,6 +631,20 @@ export class GatewayGit {
           clearTimeout(timer);
         }
         this.ctx.logger.debug(`gateway git ${what} -> ${response.status}`);
+        // Redirects are never followed ("manual" above); one is named, not mistaken for a network
+        // failure. Location is not quoted: it is server-supplied and names a place no token went.
+        if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
+          throw new Err.GatewayUnexpectedResponseError(
+            `${what}: the gateway answered with a redirect (${response.status}), which was not followed.`,
+            response.status,
+            "redirect-refused"
+          );
+        }
+        // Belt and braces after any URL resolution inside the fetch: the answer must come from the
+        // gateway's own origin.
+        if (response.url && new URL(response.url).origin !== (await this.client.origin())) {
+          throw new Err.GatewayConfigError("A git response came from outside the gateway's origin; it was discarded.");
+        }
         if (!response.ok) {
           let text = "";
           try {
