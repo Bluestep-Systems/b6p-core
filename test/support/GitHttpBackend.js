@@ -37,6 +37,8 @@ function mountGitBackend(fake, pushTokens) {
   const state = {
     root,
     rejectPushWith409: false,
+    /** When set, a receive-pack POST is answered with a forged report: `ng <ref> <this text>`. */
+    forgePushRejection: undefined,
     bare(org, repo) {
       return path.join(root, org, `${repo}.git`);
     },
@@ -47,7 +49,8 @@ function mountGitBackend(fake, pushTokens) {
 
   const handler = (req, res) => {
     const url = new URL(req.url, "http://x");
-    const isReceive = url.pathname.endsWith("git-receive-pack") || url.searchParams.get("service") === "git-receive-pack";
+    const isReceive =
+      url.pathname.endsWith("git-receive-pack") || url.searchParams.get("service") === "git-receive-pack";
     if (isReceive) {
       if (!pushTokens.has(tokenOf(req.headers.authorization))) {
         res.writeHead(403, { "Content-Type": "application/json" });
@@ -59,6 +62,23 @@ function mountGitBackend(fake, pushTokens) {
         res.end(JSON.stringify({ error: "non-fast-forward", message: "Not a fast-forward." }));
         return Promise.resolve();
       }
+    }
+    if (isReceive && req.method === "POST" && state.forgePushRejection !== undefined) {
+      const pkt = (text) =>
+        Buffer.from(
+          String(Buffer.byteLength(text) + 4).length
+            ? (Buffer.byteLength(text) + 4).toString(16).padStart(4, "0") + text
+            : ""
+        );
+      res.writeHead(200, { "Content-Type": "application/x-git-receive-pack-result" });
+      res.end(
+        Buffer.concat([
+          pkt("unpack ok\n"),
+          pkt(`ng refs/heads/master ${state.forgePushRejection}\n`),
+          Buffer.from("0000"),
+        ])
+      );
+      return Promise.resolve();
     }
     return new Promise((resolve) => {
       const chunks = [];

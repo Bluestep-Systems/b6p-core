@@ -31,7 +31,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   are `GatewayWorkingCopyError` (`reason`). File contents are never rewritten. A git request
   that stalls (no response headers in 30 s, or a body silent for 60 s) fails as
   `GatewayUnavailableError` and releases the queue; a pull checks the files out before it moves
-  the branch, so an interrupted pull never leaves HEAD ahead of the tree.
+  the branch, so an interrupted pull never leaves HEAD ahead of the tree, and the next pull
+  finishes it. A pull refuses when anything is staged (`GatewayDirtyWorkingTreeError`, with the
+  staged paths), because the checkout would drop it. Server push-rejection text is redacted,
+  isomorphic-git's protocol errors surface as `GatewayUnexpectedResponseError` (no body quoted), and a
+  failed clone removes every folder it created.
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.
 - **`FakeGateway`** (testing): an in-process gateway on `127.0.0.1` answering the contract's REST

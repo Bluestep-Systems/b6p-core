@@ -70,7 +70,7 @@ are load-bearing rather than stylistic — each records something this repo undi
   the origin is discarded). It pushes only
   fast-forwards: no `force`, no `delete`, no tags, and a branch behind its upstream is refused
   before the wire. A pull never overwrites: it throws `GatewayDirtyWorkingTreeError` with the
-  paths instead of prompting, and puts the branch back if a checkout refuses. And it never
+  paths instead of prompting (anything staged refuses, since the checkout rebuilds the index), and puts the branch back if a checkout refuses. And it never
   rewrites file contents (no autocrlf). Its clones go through Node's `fs`, not the `FileSystem`
   provider, which has no `lstat`/symlink/mode surface for isomorphic-git. Each operation runs
   inside `GatewayClient.sequence`. Its specs mount `git http-backend` on `FakeGateway`

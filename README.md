@@ -168,8 +168,9 @@ await core.gateway.git.pull(dir); // fetch + fast-forward only
 await core.gateway.git.push(dir); // current branch to its upstream, fast-forward only
 ```
 
-- `pull` never merges or rebases. A clean tree just proceeds, and local changes the incoming commits
-  do not touch are kept. If they do touch them, it throws `GatewayDirtyWorkingTreeError` with the
+- `pull` never merges or rebases. A clean tree just proceeds, and unstaged edits and untracked files
+  on paths the incoming commits do not touch are kept. Anything staged refuses the pull (the checkout
+  would drop it), naming the paths. A pull interrupted after its checkout is finished on the next call. If they do touch them, it throws `GatewayDirtyWorkingTreeError` with the
   `paths` and changes nothing. If both sides have moved on it throws `GatewayWorkingCopyError`
   (`diverged`).
 - `push` is never forced, never deletes a ref and never sends tags. An upstream that has moved on
