@@ -147,7 +147,7 @@ Failures are typed, all extending `Err.GatewayError` (`status`, `code`):
 | `GatewayUnexpectedResponseError` | any other status, a redirect (`code: "redirect-refused"`, not followed), or a 2xx body that is not JSON |
 | `GatewayConfigError` | an unusable `gatewayUrl`, or a URL or request path that resolves off the gateway's origin |
 | `GatewayDirtyWorkingTreeError` (`paths`) | a pull would overwrite local changes (git layer) |
-| `GatewayWorkingCopyError` (`reason`) | the local folder cannot be used: `not-empty`, `not-a-clone`, `detached`, `no-upstream`, `diverged`, `ref-not-found` (git layer) |
+| `GatewayWorkingCopyError` (`reason`) | the local folder cannot be used: `not-empty`, `not-a-clone`, `detached`, `no-upstream`, `diverged`, `ref-not-found`, `unsafe-target` (git layer) |
 
 `gatewayErrorFor(status, body, what)` applies the same mapping to a status seen elsewhere (the git
 layer). The token never appears in a message or a log line, including when the server echoes it.
