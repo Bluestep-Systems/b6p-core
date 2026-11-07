@@ -35,7 +35,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   finishes it. A pull refuses when anything is staged (`GatewayDirtyWorkingTreeError`, with the
   staged paths), because the checkout would drop it. Server push-rejection text is redacted,
   isomorphic-git's protocol errors surface as `GatewayUnexpectedResponseError` (no body quoted), and a
-  failed clone removes every folder it created.
+  failed clone removes every folder it created. A clone target with a `.git` or `git~N` path
+  component (any case) is refused before any request (`GatewayWorkingCopyError`, reason
+  `unsafe-target`).
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.
 - **`core.gateway.tokens`: self-service management of the caller's own gateway tokens**

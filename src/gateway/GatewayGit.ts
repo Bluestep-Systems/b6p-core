@@ -189,6 +189,16 @@ const PROTOCOL_ERROR_CODES = new Set([
   "InternalError",
 ]);
 
+// Whether any component of the resolved path is `.git` or a Windows short name for it (`git~1`),
+// compared case-insensitively. A clone there would put its config inside a git directory, where
+// git runs the commands that config names (core.fsmonitor and the like).
+function hasGitDirComponent(dir: string): boolean {
+  return path
+    .resolve(dir)
+    .split(/[\\/]+/)
+    .some((part) => /^(\.git|git~\d+)$/i.test(part));
+}
+
 // The outermost folder on the way to `dir` that does not exist yet: what a clone into `dir` creates.
 function topmostMissing(dir: string): string {
   let top = path.resolve(dir);
@@ -271,6 +281,12 @@ export class GatewayGit {
    */
   clone(gitUrl: string, dir: string, options: GatewayCloneOptions = {}): Promise<GatewayCloneResult> {
     return this.sequenced(async () => {
+      if (hasGitDirComponent(dir)) {
+        throw new Err.GatewayWorkingCopyError(
+          "The clone target has a .git (or git~N) path component, so nothing was cloned.",
+          "unsafe-target"
+        );
+      }
       await this.client.authHeadersFor(gitUrl);
       const existed = nodeFs.existsSync(dir);
       const topCreated = existed ? undefined : topmostMissing(dir);

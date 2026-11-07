@@ -994,8 +994,9 @@ export namespace Err {
    * The local folder is not in a state the git operation can use. `reason` is `not-empty` (a clone
    * target that has files), `not-a-clone` (no git repository there), `detached` (no current
    * branch), `no-upstream` (the branch tracks nothing), `diverged` (the branch and its upstream
-   * each have commits the other lacks, so a fast-forward is impossible) or `ref-not-found` (the
-   * remote has no such branch or tag).
+   * each have commits the other lacks, so a fast-forward is impossible), `ref-not-found` (the
+   * remote has no such branch or tag) or `unsafe-target` (a clone target with a `.git` or `git~N`
+   * path component, which would put the clone's config inside a git directory).
    * @lastreviewed null
    */
   export class GatewayWorkingCopyError extends GatewayError {
@@ -1003,10 +1004,17 @@ export namespace Err {
      * Which of the states it was.
      * @lastreviewed null
      */
-    readonly reason: "not-empty" | "not-a-clone" | "detached" | "no-upstream" | "diverged" | "ref-not-found";
+    readonly reason:
+      | "not-empty"
+      | "not-a-clone"
+      | "detached"
+      | "no-upstream"
+      | "diverged"
+      | "ref-not-found"
+      | "unsafe-target";
     constructor(
       message: string,
-      reason: "not-empty" | "not-a-clone" | "detached" | "no-upstream" | "diverged" | "ref-not-found"
+      reason: "not-empty" | "not-a-clone" | "detached" | "no-upstream" | "diverged" | "ref-not-found" | "unsafe-target"
     ) {
       super(message, null, reason);
       this.name = "GatewayWorkingCopyError";
