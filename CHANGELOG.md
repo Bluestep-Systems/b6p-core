@@ -17,7 +17,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   http only on loopback). Failures are typed `Err.Gateway*` errors (auth, scope, not permitted, not
   found, non-fast-forward, too large, unavailable, unexpected, config), also available to a git
   layer through `gatewayErrorFor`. `authHeadersFor(url)` hands the header to a git client, for
-  gateway URLs only. The token never appears in an error message or a log line.
+  gateway URLs only. A request path that resolves off the gateway origin is refused unsent, and a
+  redirect is never followed (`redirect-refused`). The token never appears in an error message or a log
+  line.
 - **`core.gateway.git`: pure-JS git over the gateway** (ClickUp 86bczx1wd). `GatewayGit` clones a
   knowledge base or marketplace repo from its listing's `gitUrl` (optionally at a branch or tag),
   reports `status` (dirty paths, ahead/behind), fast-forwards with `pull`, and `push`es the
@@ -29,7 +31,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   are `GatewayWorkingCopyError` (`reason`). File contents are never rewritten. A git request
   that stalls (no response headers in 30 s, or a body silent for 60 s) fails as
   `GatewayUnavailableError` and releases the queue; a pull checks the files out before it moves
-  the branch, so an interrupted pull never leaves HEAD ahead of the tree.
+  the branch, so an interrupted pull never leaves HEAD ahead of the tree, and the next pull
+  finishes it. A pull refuses when anything is staged (`GatewayDirtyWorkingTreeError`, with the
+  staged paths), because the checkout would drop it. Server push-rejection text is redacted,
+  isomorphic-git's protocol errors surface as `GatewayUnexpectedResponseError` (no body quoted), and a
+  failed clone removes every folder it created.
 - **`core.gateway.marketplace`: list and pull marketplace repos** (ClickUp 86bczx3r8).
   `list()` reads `GET /api/v1/registry/repos` (name, description, default branch, tags, `gitUrl`;
   a body of the wrong shape is `GatewayUnexpectedResponseError`), `get(name)` throws
