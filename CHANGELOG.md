@@ -68,12 +68,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- **Overlapping secret writes no longer drop each other** (ClickUp 86bczx1wj). Each
+- **Overlapping persistence writes no longer drop each other** (ClickUp 86bczx1wj). Each
   `SharedFilePersistence.setSecret` / `deleteSecret` / `clearSecrets` loads the whole `secrets.enc`,
-  changes one key and saves the whole file. Two that overlapped in one process each loaded the same
-  file, and the later save undid the earlier change: `SessionManager` re-saving `sessions` after a
-  web response could write back a stale `bearerAuth`. They now run one at a time per secrets file,
-  each re-loading first. The file format and the atomic write-and-rename are unchanged. Across
+  changes one key and saves the whole file, and `set` / `delete` / `clearPublic` do the same with
+  `state.json`. Two that overlapped in one process each loaded the same file, and the later save
+  undid the earlier change: `SessionManager` re-saving `sessions` after a web response could write
+  back a stale `bearerAuth`, and concurrent public writes could lose a key. They now run one at a
+  time per file, each re-loading first. The file format and the atomic write-and-rename are unchanged. Across
   processes (the CLI beside the extension) writes are still last-writer-wins.
 
 ## [0.8.1] - 2026-10-20

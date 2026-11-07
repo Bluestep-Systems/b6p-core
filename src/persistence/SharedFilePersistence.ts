@@ -27,9 +27,10 @@ import { lockdownDir } from "./dirLockdown";
  * Concurrency model: last-writer-wins. Reads always re-load from disk so a
  * change made by one process is visible to the other. Writes go to a temp
  * file and atomically rename into place to avoid partial-write corruption.
- * Within one process, secret mutations (`setSecret`, `deleteSecret`,
- * `clearSecrets`) run one at a time per secrets file, each re-loading inside
- * that turn, so overlapping mutations no longer drop each other's changes.
+ * Within one process, mutations of each file (`set`/`delete`/`clearPublic` on
+ * the state file; `setSecret`/`deleteSecret`/`clearSecrets` on the secrets file)
+ * run one at a time, each re-loading inside that turn, so overlapping mutations
+ * no longer drop each other's changes.
  * Across processes there is still no lock: a write by another process that
  * lands between this process's load and save is overwritten.
  *
@@ -82,21 +83,23 @@ export class SharedFilePersistence implements Persistence {
 
   async set<T>(key: string, value: T): Promise<void> {
     await this.waitBootstrap();
-    const state = await this.loadState();
-    state[key] = value;
-    await this.saveState(state);
+    await this.mutateState((state) => {
+      state[key] = value;
+      return state;
+    });
   }
 
   async delete(key: string): Promise<void> {
     await this.waitBootstrap();
-    const state = await this.loadState();
-    delete state[key];
-    await this.saveState(state);
+    await this.mutateState((state) => {
+      delete state[key];
+      return state;
+    });
   }
 
   async clearPublic(): Promise<void> {
     await this.waitBootstrap();
-    await this.saveState({});
+    await this.mutateState(() => ({}));
   }
 
   // ── Secret state ──────────────────────────────────────────────────
@@ -156,6 +159,18 @@ export class SharedFilePersistence implements Persistence {
 
   // ── Internal: state ───────────────────────────────────────────────
 
+  /**
+   * Run one load → change → save of the public state file as a single turn of that file's
+   * in-process queue (see {@link mutateSecrets}), so overlapping `set`/`delete`/`clearPublic` calls
+   * no longer drop each other's changes. In-process only; no cross-process lock.
+   * @lastreviewed null
+   */
+  private mutateState(change: (state: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
+    return enqueueFileMutation(this.statePath, async () => {
+      await this.saveState(change(await this.loadState()));
+    });
+  }
+
   private async loadState(): Promise<Record<string, unknown>> {
     return (await readJsonFile<Record<string, unknown>>(this.statePath)) ?? {};
   }
@@ -176,16 +191,9 @@ export class SharedFilePersistence implements Persistence {
    * @lastreviewed null
    */
   private mutateSecrets(change: (secrets: Record<string, string>) => Record<string, string>): Promise<void> {
-    const run = async (): Promise<void> => {
+    return enqueueFileMutation(this.secretsPath, async () => {
       await this.saveSecrets(change(await this.loadSecrets()));
-    };
-    const tail = SECRET_MUTATIONS.get(this.secretsPath) ?? Promise.resolve();
-    const result = tail.then(run, run);
-    SECRET_MUTATIONS.set(
-      this.secretsPath,
-      result.catch(() => undefined)
-    );
-    return result;
+    });
   }
 
   private async loadSecrets(): Promise<Record<string, string>> {
@@ -270,11 +278,26 @@ export class SharedFilePersistence implements Persistence {
 }
 
 /**
- * The tail of each secrets file's in-process mutation queue, keyed by path, so two
- * {@link SharedFilePersistence} instances over the same directory share one queue.
+ * The tail of each file's in-process mutation queue (`secrets.enc`, `state.json`), keyed by path,
+ * so two {@link SharedFilePersistence} instances over the same directory share one queue.
  * @lastreviewed null
  */
-const SECRET_MUTATIONS = new Map<string, Promise<void>>();
+const FILE_MUTATIONS = new Map<string, Promise<void>>();
+
+/**
+ * Run `mutation` after every mutation already queued for `filePath`. A failed one does not stall
+ * the queue.
+ * @lastreviewed null
+ */
+function enqueueFileMutation(filePath: string, mutation: () => Promise<void>): Promise<void> {
+  const tail = FILE_MUTATIONS.get(filePath) ?? Promise.resolve();
+  const result = tail.then(mutation, mutation);
+  FILE_MUTATIONS.set(
+    filePath,
+    result.catch(() => undefined)
+  );
+  return result;
+}
 
 // ── File helpers ────────────────────────────────────────────────────
 

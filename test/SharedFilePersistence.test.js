@@ -198,6 +198,22 @@ async function test(name, fn) {
     assert.strictEqual(await p.getSecret("kept"), undefined);
   });
 
+  await test("overlapping public set/delete calls on different keys all survive", async () => {
+    renameImpl = realRename;
+    const p = new SharedFilePersistence(tmpDir());
+    await p.set("gone", 1);
+    await Promise.all([
+      ...Array.from({ length: 12 }, (_, i) => p.set(`k${i}`, { i })),
+      p.delete("gone"),
+    ]);
+    for (let i = 0; i < 12; i++) {
+      assert.deepStrictEqual(await p.get(`k${i}`), { i }, `k${i} was lost`);
+    }
+    assert.strictEqual(await p.get("gone"), undefined);
+    await Promise.all([p.set("before", 1), p.clearPublic()]);
+    assert.strictEqual(await p.get("before"), undefined, "clearPublic ran after the earlier set");
+  });
+
   if (failures > 0) {
     console.error(`\n${failures} test(s) failed.`);
     process.exit(1);
