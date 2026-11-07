@@ -8,7 +8,7 @@ import type { PlatformContext } from "./PlatformContext";
 import { ScriptService } from "./script/ScriptService";
 import { UpdateService } from "./update/UpdateService";
 import { GatewayService } from "./gateway/GatewayService";
-import type { GatewayTokenSource } from "./providers";
+import type { GatewayTokenSource, GatewayTokenStore } from "./providers";
 import { Gateway } from "./constants/Gateway";
 import { SettingsKeys } from "./constants/SettingsKeys";
 
@@ -27,6 +27,23 @@ function gatewayTokenFrom(auth: AuthProvider<AuthParams>): GatewayTokenSource {
     return { token: () => auth.storedToken() };
   }
   return { token: async () => undefined };
+}
+
+/**
+ * Where a rotated replacement of the stored token is written: {@link BearerAuthProvider.replaceStoredToken}.
+ * Any other {@link AuthProvider} stores no `b6pt_` token, so the gateway never presented one and
+ * there is nothing to replace; the write is refused.
+ * @lastreviewed null
+ */
+function gatewayTokenStoreFrom(auth: AuthProvider<AuthParams>): GatewayTokenStore {
+  if (auth instanceof BearerAuthProvider) {
+    return { replace: (expected, next) => auth.replaceStoredToken(expected, next) };
+  }
+  return {
+    replace: async () => {
+      throw new Error("The configured auth provider stores no gateway token to replace.");
+    },
+  };
 }
 
 /**
@@ -88,7 +105,8 @@ export class B6PCore {
   readonly script: ScriptService;
 
   /**
-   * Web-global's gateway: knowledge bases and marketplace repos, over the `b6pt_` token.
+   * Web-global's gateway: knowledge bases, marketplace repos and the caller's own tokens, over the
+   * `b6pt_` token.
    * @lastreviewed null
    */
   readonly gateway: GatewayService;
@@ -151,6 +169,7 @@ export class B6PCore {
     this.gateway = new GatewayService({
       ...platform,
       gatewayToken: gatewayTokenFrom(this.auth),
+      gatewayTokenStore: gatewayTokenStoreFrom(this.auth),
       gatewayUrl: async () => {
         const configured = await persistence.get<unknown>(`settings.${SettingsKeys.GATEWAY_URL}`);
         return configured === undefined || configured === null || configured === ""

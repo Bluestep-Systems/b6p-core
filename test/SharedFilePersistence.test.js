@@ -25,6 +25,7 @@ let renameImpl = realRename;
 fsp.rename = (...args) => renameImpl(...args);
 
 const { SharedFilePersistence } = require("../dist/persistence/SharedFilePersistence.js");
+const { BearerAuthProvider } = require("../dist/auth/BearerAuthProvider.js");
 
 function tmpDir() {
   return path.join(os.tmpdir(), `b6p-sfp-test-${Date.now()}-${Math.floor(Math.random() * 1e9)}`);
@@ -152,6 +153,65 @@ async function test(name, fn) {
       () => p.set("k", { v: 1 }),
       (e) => e.code === "EPERM" && /held open by another process/.test(e.message)
     );
+  });
+
+  // ── Secret mutations are serialized in-process (review rev2 #1) ──────
+  // Each setSecret/deleteSecret is a load → modify → save of the whole secrets.enc. Unserialized, two
+  // overlapping mutations each load the same blob and the later save drops the earlier one's change
+  // (a pre-existing lost update; SessionManager re-saves `sessions` after every web response).
+
+  await test("overlapping setSecret calls on different keys all survive", async () => {
+    renameImpl = realRename;
+    const p = new SharedFilePersistence(tmpDir());
+    await Promise.all(Array.from({ length: 12 }, (_, i) => p.setSecret(`k${i}`, `v${i}`)));
+    for (let i = 0; i < 12; i++) {
+      assert.strictEqual(await p.getSecret(`k${i}`), `v${i}`, `k${i} was lost`);
+    }
+  });
+
+  await test("a token rotation's replaceStoredToken is never undone by a concurrent session save (40 runs)", async () => {
+    renameImpl = realRename;
+    const noop = () => {};
+    const logger = { info: noop, warn: noop, error: noop, debug: noop };
+    for (let run = 0; run < 40; run++) {
+      const p = new SharedFilePersistence(tmpDir());
+      await p.setSecret("bearerAuth", JSON.stringify({ scheme: "bearer", token: "b6pt_old" }));
+      const auth = new BearerAuthProvider(p, {}, logger);
+      const sessionSaves = Array.from({ length: 4 }, (_, i) =>
+        new Promise((resolve) => setTimeout(resolve, i)).then(() => p.setSecret("sessions", JSON.stringify({ i })))
+      );
+      await Promise.all([auth.replaceStoredToken("b6pt_old", `b6pt_new_${run}`), ...sessionSaves]);
+      assert.strictEqual(await auth.storedToken(), `b6pt_new_${run}`, `run ${run}: the replacement was overwritten`);
+      assert.ok(await p.getSecret("sessions"), `run ${run}: the session was lost`);
+    }
+  });
+
+  await test("deleteSecret and clearSecrets are serialized with setSecret", async () => {
+    renameImpl = realRename;
+    const p = new SharedFilePersistence(tmpDir());
+    await p.setSecret("gone", "x");
+    await Promise.all([p.deleteSecret("gone"), p.setSecret("kept", "y")]);
+    assert.strictEqual(await p.getSecret("gone"), undefined);
+    assert.strictEqual(await p.getSecret("kept"), "y");
+    await Promise.all([p.setSecret("before", "1"), p.clearSecrets()]);
+    assert.strictEqual(await p.getSecret("before"), undefined, "clearSecrets ran after the earlier setSecret");
+    assert.strictEqual(await p.getSecret("kept"), undefined);
+  });
+
+  await test("overlapping public set/delete calls on different keys all survive", async () => {
+    renameImpl = realRename;
+    const p = new SharedFilePersistence(tmpDir());
+    await p.set("gone", 1);
+    await Promise.all([
+      ...Array.from({ length: 12 }, (_, i) => p.set(`k${i}`, { i })),
+      p.delete("gone"),
+    ]);
+    for (let i = 0; i < 12; i++) {
+      assert.deepStrictEqual(await p.get(`k${i}`), { i }, `k${i} was lost`);
+    }
+    assert.strictEqual(await p.get("gone"), undefined);
+    await Promise.all([p.set("before", 1), p.clearPublic()]);
+    assert.strictEqual(await p.get("before"), undefined, "clearPublic ran after the earlier set");
   });
 
   if (failures > 0) {

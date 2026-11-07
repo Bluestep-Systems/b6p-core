@@ -707,7 +707,9 @@ export type GatewayErrorCode =
   | "not-found"
   | "non-fast-forward"
   | "too-large"
-  | "forge-unavailable";
+  | "forge-unavailable"
+  | "scope-escalation"
+  | "alias-taken";
 
 /**
  * The JSON body of a gateway error response. On git routes the body is best-effort, so every
@@ -797,4 +799,153 @@ export interface GatewayMarketplaceRepo {
  */
 export interface GatewayMarketplaceRepoList {
   repos: GatewayMarketplaceRepo[];
+}
+
+/**
+ * One of the caller's own access tokens, as `GET /api/v1/tokens` lists it. The secret is never
+ * listed.
+ * @lastreviewed null
+ */
+export interface GatewayTokenRecord {
+  id: string;
+  /**
+   * Unique among this user's tokens.
+   * @lastreviewed null
+   */
+  alias: string;
+  scopes: string[];
+  /**
+   * ISO 8601.
+   * @lastreviewed null
+   */
+  createdAt: string;
+  /**
+   * ISO 8601, or `null` for a token that never expires.
+   * @lastreviewed null
+   */
+  expiresAt: string | null;
+  /**
+   * ISO 8601, or `null` when the token has not been used.
+   * @lastreviewed null
+   */
+  lastUsedAt: string | null;
+  /**
+   * Whether this is the token that made the request (the one b6p has stored).
+   * @lastreviewed null
+   */
+  current: boolean;
+}
+
+/**
+ * Body of `GET /api/v1/tokens`.
+ * @lastreviewed null
+ */
+export interface GatewayTokenList {
+  tokens: GatewayTokenRecord[];
+}
+
+/**
+ * A listed token, as `core.gateway.tokens.list()` returns it.
+ * @lastreviewed null
+ */
+export interface GatewayTokenSummary extends GatewayTokenRecord {
+  /**
+   * `true` when {@link GatewayTokenRecord.expiresAt} is `null`.
+   * @lastreviewed null
+   */
+  neverExpires: boolean;
+}
+
+/**
+ * What `core.gateway.tokens.create()` mints.
+ * @lastreviewed null
+ */
+export interface GatewayTokenCreateRequest {
+  /**
+   * Unique among this user's tokens.
+   * @lastreviewed null
+   */
+  alias: string;
+  /**
+   * Must be a subset of the presenting token's scopes, or the gateway refuses with `scope-escalation`.
+   * @lastreviewed null
+   */
+  scopes: readonly string[];
+  /**
+   * ISO 8601 expiry. Leave it out for the gateway's default (90 days); `null` mints a token that
+   * never expires.
+   * @lastreviewed null
+   */
+  expiresAt?: string | null;
+}
+
+/**
+ * Body of `201` from `POST /api/v1/tokens` and `POST /api/v1/tokens/{id}/rotate`. It carries the
+ * secret, which the gateway shows only this once.
+ * @lastreviewed null
+ */
+export interface GatewayMintedTokenBody {
+  id: string;
+  /**
+   * The `b6pt_…` secret. Not retrievable again.
+   * @lastreviewed null
+   */
+  token: string;
+  alias: string;
+  scopes: string[];
+  /**
+   * ISO 8601, or `null` for a token that never expires.
+   * @lastreviewed null
+   */
+  expiresAt: string | null;
+}
+
+/**
+ * A freshly minted token, secret included. Core never logs it; showing it is the consumer's job.
+ * @lastreviewed null
+ */
+export interface GatewayMintedToken extends GatewayMintedTokenBody {
+  /**
+   * `true` when {@link GatewayMintedTokenBody.expiresAt} is `null`.
+   * @lastreviewed null
+   */
+  neverExpires: boolean;
+}
+
+/**
+ * Result of `core.gateway.tokens.revoke()`.
+ * @lastreviewed null
+ */
+export interface GatewayTokenRevokeResult {
+  id: string;
+  alias: string;
+  /**
+   * `true` when the revoked token was the one b6p has stored. Core leaves the stored (now dead)
+   * token in place; the consumer decides what to do about it.
+   * @lastreviewed null
+   */
+  revokedCurrent: boolean;
+}
+
+/**
+ * Result of `core.gateway.tokens.rotate()`.
+ * @lastreviewed null
+ */
+export interface GatewayTokenRotateResult {
+  /**
+   * The token that was rotated, now revoked.
+   * @lastreviewed null
+   */
+  replaced: { id: string; alias: string };
+  /**
+   * Its replacement: same alias, scopes and lifetime policy, with a new secret.
+   * @lastreviewed null
+   */
+  token: GatewayMintedToken;
+  /**
+   * `true` when the rotated token was the one b6p has stored; the replacement is then stored in
+   * its place. (When storing fails, `rotate()` throws `Err.GatewayTokenStoreError` instead.)
+   * @lastreviewed null
+   */
+  rotatedCurrent: boolean;
 }

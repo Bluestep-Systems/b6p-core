@@ -46,11 +46,12 @@ export namespace Gateway {
     export const KNOWLEDGE_BASES = "/api/v1/knowledge-bases";
     export const REGISTRY_REPOS = "/api/v1/registry/repos";
     export const GIT = "/api/v1/git";
+    export const TOKENS = "/api/v1/tokens";
   }
 
   /**
    * The token scopes the gateway checks. b6p reads with `kb:read` / `registry:read` and pushes a
-   * knowledge base with `kb:push`.
+   * knowledge base with `kb:push`. Managing the caller's own tokens needs `tokens:self`.
    * @lastreviewed null
    */
   export namespace Scopes {
@@ -59,5 +60,6 @@ export namespace Gateway {
     export const REGISTRY_READ = "registry:read";
     export const REGISTRY_PUSH = "registry:push";
     export const MCP = "mcp";
+    export const TOKENS_SELF = "tokens:self";
   }
 }
