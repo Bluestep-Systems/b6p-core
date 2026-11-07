@@ -167,8 +167,14 @@ export function gatewayErrorFor(status: number, bodyText: string, what: string, 
  * {@link GatewayContext.gatewayToken} each time. There is no session, no login and no cookie: this
  * is deliberately not {@link SessionManager}, which bootstraps the web origin's cookie session.
  *
- * Requests run **one at a time**, in call order, so a burst from a caller cannot fan out into
- * parallel token reads or parallel connections (the same discipline `SessionManager` keeps).
+ * REST requests made through this client ({@link request} / {@link getJson}) run **one at a time**,
+ * in call order, so a burst from a caller cannot fan out into parallel token reads or parallel
+ * connections (the same discipline `SessionManager` keeps). {@link sequence} puts a longer task, such
+ * as one of the git layer's operations, in the same queue. {@link authHeadersFor} is not queued: a
+ * request a caller sends itself with that header is outside it unless wrapped in `sequence`.
+ *
+ * Redirects are never followed; a 3xx is an {@link Err.GatewayUnexpectedResponseError} with code
+ * `redirect-refused`. A request path that resolves off the gateway's origin is refused unsent.
  *
  * The token never appears in a thrown message or a log line: the client never formats it, and
  * anything the server says is passed through {@link redactToken} first.
@@ -265,10 +271,16 @@ export class GatewayClient {
 
   private async send(method: string, path: string, options: GatewayRequestOptions): Promise<JsonValue | undefined> {
     const origin = await this.origin();
+    // Neither message quotes the path: it may carry caller or server input.
     if (!path.startsWith("/") || path.startsWith("//")) {
-      throw new Err.GatewayConfigError(`The gateway path "${path}" is not an absolute path.`);
+      throw new Err.GatewayConfigError("A gateway request path is not an absolute path.");
     }
     const url = new URL(path, origin);
+    // URL parsing reads `\` as `/` and drops tabs and newlines, so a path like `/\host/x` resolves to
+    // another host. Checked on the built URL, before any header exists, as in authHeadersFor.
+    if (url.origin !== origin) {
+      throw new Err.GatewayConfigError("A gateway request path resolves off the gateway's origin; no request is sent.");
+    }
     for (const [key, value] of Object.entries(options.query ?? {})) {
       if (value !== undefined) {
         url.searchParams.set(key, value);
@@ -281,7 +293,9 @@ export class GatewayClient {
       [Http.Headers.AUTHORIZATION]: `${AuthTypes.BEARER_PREFIX}${token}`,
       [Http.Headers.ACCEPT]: MimeTypes.APPLICATION_JSON,
     };
-    const init: RequestInit = { method, headers, redirect: "error" };
+    // "manual", not "error": the redirect then arrives as a 3xx this client can name, rather than
+    // a TypeError indistinguishable from the network being down. It is never followed either way.
+    const init: RequestInit = { method, headers, redirect: "manual" };
     if (options.body !== undefined) {
       headers[Http.Headers.CONTENT_TYPE] = MimeTypes.APPLICATION_JSON;
       init.body = JSON.stringify(options.body);
@@ -307,6 +321,14 @@ export class GatewayClient {
     }
 
     this.ctx.logger.debug(`gateway ${what} -> ${response.status}`);
+    if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
+      // Location is not quoted: it is server-supplied and names a place the token was not sent.
+      throw new Err.GatewayUnexpectedResponseError(
+        `${what}: the gateway answered with a redirect (${response.status}), which was not followed.`,
+        response.status,
+        "redirect-refused"
+      );
+    }
     if (!response.ok) {
       throw gatewayErrorFor(response.status, text, what, token);
     }

@@ -288,13 +288,36 @@ test("a redirect to another origin is not followed, so the token never reaches i
     });
     try {
       const dir = path.join(tmp(), "x");
-      await rejectsWith(service.git.clone(fake.gitUrl("knowledge-base", "kb-moved"), dir), Err.GatewayUnavailableError);
+      const error = await rejectsWith(
+        service.git.clone(fake.gitUrl("knowledge-base", "kb-moved"), dir),
+        Err.GatewayUnexpectedResponseError
+      );
+      assert.strictEqual(error.code, "redirect-refused");
+      assert.strictEqual(error.status, 302);
+      assert.ok(!error.message.includes(foreign), "the server-supplied Location is not quoted");
       assert.strictEqual(stats().hits, 0);
       assert.ok(!fs.existsSync(dir));
     } finally {
       await fake.stop();
     }
   });
+});
+
+test("a response whose URL is off the gateway's origin is discarded", async () => {
+  const real = globalThis.fetch.bind(globalThis);
+  const fetchFn = async (url, init) => {
+    const response = await real(url, init);
+    Object.defineProperty(response, "url", { value: "http://127.0.0.1:1/elsewhere" });
+    return response;
+  };
+  await withGit(
+    async (ctx) => {
+      const dir = path.join(tmp(), "x");
+      await rejectsWith(ctx.service.git.clone(ctx.gitUrl, dir), Err.GatewayConfigError);
+      assert.ok(!fs.existsSync(dir));
+    },
+    { fetchFn }
+  );
 });
 
 // ── status ──────────────────────────────────────────────────────────────
@@ -396,7 +419,7 @@ test("a staged or deleted file the incoming commits change is refused too", asyn
     git(dir, "add", "dir/c.txt");
     commitToRemote(ctx.bare, "master", { "b.txt": "bravo 2\n", "dir/c.txt": "charlie 2\n" });
     const error = await rejectsWith(ctx.service.git.pull(dir), Err.GatewayDirtyWorkingTreeError);
-    assert.deepStrictEqual(error.paths, ["b.txt", "dir/c.txt"]);
+    assert.deepStrictEqual(error.paths, ["dir/c.txt"], "the staged path; the unstaged deletion is not what stopped it");
   });
 });
 
@@ -648,6 +671,190 @@ test("a pull whose checkout fails leaves the branch where it was", async () => {
       iso.checkout = realCheckout;
     }
     assert.strictEqual(headOf(dir), before);
+  });
+});
+
+// ── review round 2 ──────────────────────────────────────────────────────
+
+const stagedList = (dir) => git(dir, "diff", "--cached", "--name-status");
+
+async function refusesStaged(setup, expectedPaths) {
+  await withGit(async (ctx) => {
+    const dir = await cloned(ctx);
+    const before = headOf(dir);
+    setup(dir);
+    commitToRemote(ctx.bare, "master", { "a.txt": "alpha 2\n" });
+    const stagedBefore = stagedList(dir);
+    const snapshot = fs
+      .readdirSync(dir)
+      .filter((n) => n !== ".git")
+      .sort()
+      .map((n) => [n, fs.statSync(path.join(dir, n)).isFile() ? read(dir, n) : "<dir>"]);
+    const error = await rejectsWith(ctx.service.git.pull(dir), Err.GatewayDirtyWorkingTreeError);
+    assert.deepStrictEqual(error.paths, expectedPaths);
+    assert.strictEqual(headOf(dir), before);
+    assert.strictEqual(stagedList(dir), stagedBefore, "the index is untouched");
+    const after = fs
+      .readdirSync(dir)
+      .filter((n) => n !== ".git")
+      .sort()
+      .map((n) => [n, fs.statSync(path.join(dir, n)).isFile() ? read(dir, n) : "<dir>"]);
+    assert.deepStrictEqual(after, snapshot, "the working tree is untouched");
+  });
+}
+
+test("pull refuses when an edit is staged, even on a path the incoming commits do not touch", async () => {
+  await refusesStaged(
+    (dir) => {
+      fs.writeFileSync(path.join(dir, "b.txt"), "my staged edit\n");
+      git(dir, "add", "b.txt");
+    },
+    ["b.txt"]
+  );
+});
+
+test("pull refuses when a new file is staged", async () => {
+  await refusesStaged(
+    (dir) => {
+      fs.writeFileSync(path.join(dir, "new.txt"), "new\n");
+      git(dir, "add", "new.txt");
+    },
+    ["new.txt"]
+  );
+});
+
+test("pull refuses when a deletion is staged", async () => {
+  await refusesStaged(
+    (dir) => {
+      git(dir, "rm", "-q", "b.txt");
+    },
+    ["b.txt"]
+  );
+});
+
+test("unstaged edits and untracked files on untouched paths still survive a pull", async () => {
+  await withGit(async (ctx) => {
+    const dir = await cloned(ctx);
+    fs.writeFileSync(path.join(dir, "b.txt"), "unstaged\n");
+    fs.writeFileSync(path.join(dir, "u.txt"), "untracked\n");
+    fs.rmSync(path.join(dir, "dir", "c.txt"));
+    commitToRemote(ctx.bare, "master", { "a.txt": "alpha 2\n" });
+    const result = await ctx.service.git.pull(dir);
+    assert.strictEqual(result.outcome, "fast-forwarded");
+    assert.strictEqual(read(dir, "b.txt"), "unstaged\n");
+    assert.strictEqual(read(dir, "u.txt"), "untracked\n");
+    assert.ok(!fs.existsSync(path.join(dir, "dir", "c.txt")));
+  });
+});
+
+test("an interrupted pull (files and index at the new commit, HEAD still at the old) is finished, not refused", async () => {
+  await withGit(async (ctx) => {
+    const dir = await cloned(ctx);
+    const remoteHead = commitToRemote(ctx.bare, "master", { "a.txt": "alpha 2\n", "added.txt": "x\n" });
+    git(dir, "fetch", "-q", ctx.bare, "master:refs/remotes/origin/master");
+    git(dir, "read-tree", "-u", "--reset", remoteHead); // what a pull killed before its ref write leaves
+    assert.notStrictEqual(headOf(dir), remoteHead);
+    const result = await ctx.service.git.pull(dir);
+    assert.strictEqual(result.outcome, "fast-forwarded");
+    assert.strictEqual(headOf(dir), remoteHead);
+    assert.strictEqual(git(dir, "status", "--porcelain"), "");
+  });
+});
+
+test("a half-finished pull with anything else different is still refused", async () => {
+  await withGit(async (ctx) => {
+    const dir = await cloned(ctx);
+    const remoteHead = commitToRemote(ctx.bare, "master", { "a.txt": "alpha 2\n" });
+    git(dir, "fetch", "-q", ctx.bare, "master:refs/remotes/origin/master");
+    git(dir, "read-tree", "-u", "--reset", remoteHead);
+    fs.writeFileSync(path.join(dir, "b.txt"), "extra edit\n");
+    await rejectsWith(ctx.service.git.pull(dir), Err.GatewayDirtyWorkingTreeError);
+    assert.notStrictEqual(headOf(dir), remoteHead);
+  });
+});
+
+test("a server-supplied push rejection never carries the token into the message", async () => {
+  await withGit(async (ctx) => {
+    const dir = await cloned(ctx);
+    git(dir, "commit", "--allow-empty", "-m", "local");
+    ctx.backend.forgePushRejection = `hook declined for Authorization: Bearer ${TOKEN}`;
+    const error = await rejectsWith(ctx.service.git.push(dir), Err.GatewayError);
+    assert.ok(!error.message.includes(TOKEN), error.message);
+  });
+});
+
+test("a 200 text/html answer to info/refs is a typed GatewayUnexpectedResponseError with no body quoted", async () => {
+  const fake = await FakeGateway.start();
+  fake.grantToken(TOKEN, ["kb:read"]);
+  fake.route({
+    method: "GET",
+    prefix: "/api/v1/git/",
+    handler: (req, res) => {
+      res.writeHead(200, { "Content-Type": "text/html" }).end("<html>LOGIN-PAGE-SECRET-PREVIEW</html>");
+    },
+  });
+  const service = new GatewayService({
+    fs: new MockFileSystem(),
+    sessionManager: null,
+    logger: makeLogger(),
+    prompt: null,
+    progress: null,
+    isDebugMode: () => false,
+    gatewayToken: { token: async () => TOKEN },
+    gatewayUrl: async () => fake.url,
+    fetchFn: globalThis.fetch.bind(globalThis),
+  });
+  try {
+    const error = await rejectsWith(
+      service.git.clone(fake.gitUrl("knowledge-base", "kb-demo"), path.join(tmp(), "x")),
+      Err.GatewayUnexpectedResponseError
+    );
+    assert.ok(!error.message.includes("LOGIN-PAGE-SECRET-PREVIEW"), error.message);
+  } finally {
+    await fake.stop();
+  }
+});
+
+test("an info/refs body that stalls right after the service line fails as GatewayUnavailableError on a fetching status", async () => {
+  let stall = false;
+  const real = globalThis.fetch.bind(globalThis);
+  const fetchFn = (url, init) => {
+    if (!stall) {
+      return real(url, init);
+    }
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("001e# service=git-upload-pack\n"));
+      },
+    });
+    return Promise.resolve(new Response(body, { status: 200 }));
+  };
+  await withGit(
+    async (ctx) => {
+      const dir = await cloned(ctx);
+      stall = true;
+      await rejectsWith(ctx.service.git.status(dir, { fetch: true }), Err.GatewayUnavailableError);
+    },
+    { fetchFn, gitOptions: FAST }
+  );
+});
+
+test("a failed clone removes every folder it created, parents included, and nothing that existed", async () => {
+  await withGit(async (ctx) => {
+    ctx.fake.revokeToken(TOKEN);
+    const base = tmp();
+    fs.writeFileSync(path.join(base, "keep.txt"), "keep");
+    const dir = path.join(base, "p1", "p2", "clone");
+    await rejectsWith(ctx.service.git.clone(ctx.gitUrl, dir), Err.GatewayAuthError);
+    assert.deepStrictEqual(fs.readdirSync(base), ["keep.txt"]);
+  });
+  await withGit(async (ctx) => {
+    ctx.fake.failNext({ status: 502, body: { error: "forge-unavailable", message: "down" } });
+    const base = tmp();
+    fs.mkdirSync(path.join(base, "existing"));
+    const dir = path.join(base, "existing", "n", "clone");
+    await rejectsWith(ctx.service.git.clone(ctx.gitUrl, dir), Err.GatewayUnavailableError);
+    assert.deepStrictEqual(fs.readdirSync(path.join(base, "existing")), []);
   });
 });
 
