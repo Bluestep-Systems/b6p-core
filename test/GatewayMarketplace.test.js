@@ -153,6 +153,18 @@ test("an unsafe repo name blocks only a pull that would use it as a folder", asy
   const names = [
     "..",
     ".",
+    ".git",
+    ".GIT",
+    ".Git",
+    ".hidden",
+    "GIT~1",
+    "git~12",
+    "a\x01b",
+    "a\x1fb",
+    "\x7f",
+    "COM\u00b9",
+    "LPT\u00b2",
+    "com\u00b3.txt",
     "a/b",
     "a\\b",
     "C:",
@@ -181,6 +193,10 @@ test("an unsafe repo name blocks only a pull that would use it as a folder", asy
       const base = tmp();
       await rejectsWith(market.pull(name, { cwd: base }), Err.GatewayUnexpectedResponseError);
       assert.deepStrictEqual(fs.readdirSync(base), [], `nothing created for ${JSON.stringify(name)}`);
+      assert.ok(
+        !fake.requests.some((r) => r.path.startsWith("/api/v1/git")),
+        `no clone request sent for ${JSON.stringify(name)}`
+      );
     });
   }
   // an explicit dir needs no safe name
@@ -316,6 +332,56 @@ test("an annotated tag that has not moved is up to date", async () => {
   });
 });
 
+test("a full ref name is normalised: a second pull with the same ref works", async () => {
+  await withMarket(async ({ market, core }) => {
+    commitToRemote(core, "dev", { "dev.txt": "dev\n" });
+    const onBranch = path.join(tmp(), "dev");
+    const first = await pullAt(market, "core", onBranch, { ref: "refs/heads/dev" });
+    assert.strictEqual(first.ref, "dev");
+    assert.strictEqual(first.branch, "dev");
+    assert.strictEqual((await pullAt(market, "core", onBranch, { ref: "refs/heads/dev" })).action, "up-to-date");
+    const onTag = path.join(tmp(), "tag");
+    assert.strictEqual((await pullAt(market, "core", onTag, { ref: "refs/tags/v1" })).ref, "v1");
+    assert.strictEqual((await pullAt(market, "core", onTag, { ref: "refs/tags/v1" })).action, "up-to-date");
+  });
+});
+
+test("a damaged or non-standard .git is a typed gateway error, not a raw one", async () => {
+  await withMarket(async ({ market }) => {
+    const dir = tmp();
+    fs.writeFileSync(path.join(dir, ".git"), "gitdir: /nowhere\n");
+    const error = await rejectsWith(pullAt(market, "core", dir), Err.GatewayError);
+    assert.ok(error instanceof Err.GatewayWorkingCopyError, error.name);
+    const broken = tmp();
+    fs.mkdirSync(path.join(broken, ".git"));
+    fs.writeFileSync(path.join(broken, ".git", "HEAD"), "garbage\n");
+    await rejectsWith(pullAt(market, "core", broken), Err.GatewayError);
+  });
+});
+
+test("a branch clone whose upstream is not origin/<ref> is refused and left untouched", async () => {
+  await withMarket(async ({ market, core }) => {
+    commitToRemote(core, "other", { "o.txt": "o\n" });
+    const dir = path.join(tmp(), "core");
+    await pullAt(market, "core", dir);
+    const head = git(dir, "rev-parse", "HEAD");
+    git(dir, "config", "branch.master.merge", "refs/heads/other");
+    const error = await rejectsWith(pullAt(market, "core", dir), Err.GatewayCloneMismatchError);
+    assert.strictEqual(error.reason, "different-ref");
+    assert.strictEqual(git(dir, "rev-parse", "HEAD"), head);
+  });
+});
+
+test("a nested annotated tag (a tag of a tag) is peeled fully", async () => {
+  await withMarket(async ({ market, core }) => {
+    git(core, "tag", "-a", "v3", "-m", "nested", "refs/tags/v2");
+    const dir = path.join(tmp(), "nested");
+    const first = await pullAt(market, "core", dir, { ref: "v3" });
+    assert.strictEqual(first.head, git(core, "rev-parse", "v2^{commit}"));
+    assert.strictEqual((await pullAt(market, "core", dir, { ref: "v3" })).action, "up-to-date");
+  });
+});
+
 test("a clone with its own commits reports ahead and keeps them", async () => {
   await withMarket(async ({ market }) => {
     const dir = path.join(tmp(), "core");
@@ -354,11 +420,14 @@ test("a clone on another ref than the one asked for is refused and left untouche
 
     const onTag = path.join(tmp(), "tag");
     await pullAt(market, "core", onTag, { ref: "v1" });
+    const tagBefore = git(onTag, "rev-parse", "HEAD");
     error = await rejectsWith(pullAt(market, "core", onTag, { ref: "v2" }), Err.GatewayCloneMismatchError);
     assert.strictEqual(error.reason, "different-ref");
     error = await rejectsWith(pullAt(market, "core", onTag), Err.GatewayCloneMismatchError);
     assert.strictEqual(error.reason, "different-ref");
     assert.strictEqual(git(dir, "rev-parse", "HEAD"), before);
+    assert.strictEqual(git(onTag, "rev-parse", "HEAD"), tagBefore);
+    assert.strictEqual(git(onTag, "status", "--porcelain"), "");
   });
 });
 

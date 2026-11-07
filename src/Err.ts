@@ -1014,13 +1014,15 @@ export namespace Err {
 
   /**
    * A marketplace pull found a clone it must not update. `reason` is `different-repo` (the
-   * folder's `origin` is not this repo's `gitUrl`) or `different-ref` (the clone is on another
-   * branch or tag than the one asked for). Nothing was changed.
+   * folder's `origin` is not this repo's `gitUrl`), `different-ref` (the clone is on another branch
+   * or tag than the one asked for, or its branch tracks something other than that ref), `tag-moved`
+   * (the tag checked out now points at another commit on the gateway) or `tag-gone` (the gateway
+   * no longer has the tag). Nothing was changed.
    * @lastreviewed null
    */
   export class GatewayCloneMismatchError extends GatewayError {
     /**
-     * Which of the two it was.
+     * Which of the four it was.
      * @lastreviewed null
      */
     readonly reason: "different-repo" | "different-ref" | "tag-moved" | "tag-gone";

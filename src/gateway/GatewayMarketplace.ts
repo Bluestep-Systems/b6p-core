@@ -1,6 +1,5 @@
 import * as nodeFs from "node:fs";
 import * as path from "node:path";
-import git from "isomorphic-git";
 import { Gateway } from "../constants/Gateway";
 import { Err } from "../Err";
 import type { GatewayMarketplaceRepo, JsonValue } from "../types";
@@ -36,8 +35,8 @@ export interface GatewayMarketplacePullOptions {
  */
 export interface GatewayMarketplacePullResult {
   /**
-   * `cloned` (a new working clone), `fast-forwarded`, `up-to-date` (nothing new upstream, which is
-   * always so for a tag), or `ahead` (the clone has commits upstream lacks; nothing to pull).
+   * `cloned` (a new working clone), `fast-forwarded`, `up-to-date` (nothing new upstream; for a tag, the
+   * gateway's tag still points at the checked-out commit), or `ahead` (the clone has commits upstream lacks; nothing to pull).
    * @lastreviewed null
    */
   action: "cloned" | "fast-forwarded" | "up-to-date" | "ahead";
@@ -79,20 +78,22 @@ function isRecord(value: JsonValue | undefined): value is { [key: string]: JsonV
 
 /**
  * A folder name taken from the listing must be one plain path segment on every platform: no
- * separators, drive or reserved characters, surrounding whitespace, trailing dot, or Windows
- * device name (`CON`, `NUL`, `COM1`, `LPT1`, ...), so a hostile or odd name cannot place a clone
- * outside the folder the consumer chose.
+ * separators, drive or reserved characters, control characters, surrounding whitespace, leading
+ * dot (so never `.git` in any case, nor another dotfile), trailing dot, Windows 8.3 alias of
+ * `.git` (`git~1`), or Windows device name (`CON`, `NUL`, `COM1`, `COM\u00b9`, `LPT1`, ...), so a
+ * hostile or odd name cannot place a clone outside the folder the consumer chose or turn the
+ * consumer's cwd into a repository.
  * @lastreviewed null
  */
 function isPlainSegment(segment: string): boolean {
   return (
     segment !== "" &&
-    segment !== "." &&
-    segment !== ".." &&
-    !/[\\/:*?"<>|\0]/.test(segment) &&
+    !segment.startsWith(".") &&
+    !/[\\/:*?"<>|\u0000-\u001f\u007f]/.test(segment) &&
     segment === segment.trim() &&
     !segment.endsWith(".") &&
-    !/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i.test(segment)
+    !/^git~[0-9]+$/i.test(segment) &&
+    !/^(con|prn|aux|nul|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])(\..*)?$/i.test(segment)
   );
 }
 
@@ -124,6 +125,15 @@ function parseRepo(value: JsonValue | undefined, index: number): GatewayMarketpl
     throw bad("no gitUrl");
   }
   return { name, description, defaultBranch, tags, gitUrl };
+}
+
+/**
+ * `refs/heads/x` and `refs/tags/x` are accepted and mean `x`, so the same options work on a second
+ * pull (the clone's own branch is the short name).
+ * @lastreviewed null
+ */
+function shortRef(ref: string): string {
+  return ref.replace(/^refs\/(heads|tags)\//, "");
 }
 
 /**
@@ -212,17 +222,21 @@ export class GatewayMarketplace {
   }
 
   /**
-   * Make `dir` (default: `./<name>`) a working clone of the repo at `ref` (default: the repo's
-   * default branch). A missing or empty folder is cloned. A folder that already holds a clone of
-   * the same `gitUrl` is fast-forwarded when it is on a branch; a clone on a tag is already up to
-   * date. Nothing is merged, rebased or overwritten, and nothing is pushed.
+   * Make `options.dir` (default: `<cwd>/<name>`, relative paths resolved against `options.cwd`) a
+   * working clone of the repo at `options.ref` (default: the repo's default branch; `refs/heads/x`
+   * and `refs/tags/x` are accepted and mean `x`). A missing or empty folder is cloned. A folder that
+   * already holds a clone of the same `gitUrl` is fast-forwarded when it is on that branch and
+   * tracks it; a clone on a tag is `up-to-date` only while the gateway's tag still points at the
+   * checked-out commit. Nothing is merged, rebased or overwritten, and nothing is pushed.
    *
    * @param name the repo's name from {@link list}
-   * @param dir the local folder, an OS path (relative paths resolve against the process's cwd)
    * @throws {Err.GatewayNotFoundError} no such repo
-   * @throws {Err.GatewayCloneMismatchError} `dir` is a clone of another repo, or is on another ref
+   * @throws {Err.GatewayUnexpectedResponseError} the name cannot be a folder name (with no `dir`)
+   * @throws {Err.GatewayCloneMismatchError} `different-repo`, `different-ref`, `tag-moved` (the tag now
+   *   names another commit on the gateway) or `tag-gone` (the gateway no longer has it)
    * @throws {Err.GatewayDirtyWorkingTreeError} the incoming commits change files with local changes
-   * @throws {Err.GatewayWorkingCopyError} `not-empty` (files, but no clone), `ref-not-found`, `diverged`, ...
+   * @throws {Err.GatewayWorkingCopyError} `not-empty` (files, but no clone), `not-a-clone` (a `.git` that is
+   *     not a usable repository), `ref-not-found`, `diverged`, ...
    * @lastreviewed null
    */
   async pull(name: string, options: GatewayMarketplacePullOptions): Promise<GatewayMarketplacePullResult> {
@@ -235,7 +249,7 @@ export class GatewayMarketplace {
       );
     }
     const target = path.resolve(options.cwd, options.dir ?? repo.name);
-    const ref = options.ref ?? repo.defaultBranch;
+    const ref = shortRef(options.ref ?? repo.defaultBranch);
     if (!nodeFs.existsSync(path.join(target, ".git"))) {
       const cloned = await this.gitLayer.clone(repo.gitUrl, target, { ref });
       return {
@@ -249,8 +263,8 @@ export class GatewayMarketplace {
       };
     }
 
-    const origin = await git.getConfig({ fs: nodeFs, dir: target, path: "remote.origin.url" });
-    if (typeof origin !== "string" || !sameUrl(origin, repo.gitUrl)) {
+    const found = await this.gitLayer.inspect(target, ref);
+    if (found.origin === null || !sameUrl(found.origin, repo.gitUrl)) {
       throw new Err.GatewayCloneMismatchError(
         `${target} is a clone of a different repository than marketplace repo ${repo.name}, so it was left as it is.`,
         "different-repo",
@@ -258,14 +272,10 @@ export class GatewayMarketplace {
         repo.name
       );
     }
-    const branch = (await git.currentBranch({ fs: nodeFs, dir: target })) ?? null;
-    const head = await git.resolveRef({ fs: nodeFs, dir: target, ref: "HEAD" });
+    const { branch, head } = found;
     if (branch === null) {
       // A detached head is a tag checkout. Keep it only if it is the tag that was asked for.
-      const tagHead = await git
-        .resolveRef({ fs: nodeFs, dir: target, ref: `refs/tags/${ref}` })
-        .catch((): null => null);
-      if (options.ref === undefined || tagHead === null || (await this.peeled(target, tagHead)) !== head) {
+      if (options.ref === undefined || found.tagCommit !== head) {
         throw this.differentRef(target, repo.name, ref, "a tag or commit");
       }
       // Tags can move: ask the gateway, rather than trusting the local copy of the tag.
@@ -284,6 +294,9 @@ export class GatewayMarketplace {
     }
     if (branch !== ref) {
       throw this.differentRef(target, repo.name, ref, `branch ${branch}`);
+    }
+    if (found.upstream !== ref) {
+      throw this.differentRef(target, repo.name, ref, `branch ${branch} tracking ${found.upstream ?? "nothing"}`);
     }
     const pulled = await this.gitLayer.pull(target);
     return {
@@ -304,15 +317,5 @@ export class GatewayMarketplace {
       dir,
       repo
     );
-  }
-
-  // An annotated tag points at a tag object; the checkout is the commit it names.
-  private async peeled(dir: string, oid: string): Promise<string> {
-    try {
-      const tag = await git.readTag({ fs: nodeFs, dir, oid });
-      return tag.tag.object;
-    } catch {
-      return oid;
-    }
   }
 }

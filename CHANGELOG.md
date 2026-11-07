@@ -42,7 +42,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `GatewayNotFoundError` for an absent repo, and `pull(name, { cwd, dir?, ref? })` (core never reads `process.cwd()`) makes a plain working
   clone of a branch or tag (default branch, `./<name>`), or fast-forwards an existing clone of the
   same repo. A malformed listing entry is skipped, and a name is checked as a folder name (no separators, drive or reserved characters, device names) only when `dir` is omitted. A clone of another repo, on another ref, or on a tag that moved on the gateway is `GatewayCloneMismatchError` and is left
-  untouched. It never reads or changes script sources or pins, and there is no push.
+  untouched; a refused tag is `tag-moved` or `tag-gone`. A listing name with a leading dot (`.git`), `git~N`, control characters or a Windows device name is never used as a folder. `ref` accepts `refs/heads/x` / `refs/tags/x`. It never reads or changes script sources or pins, and there is no push. `GatewayGit` gained `inspect(dir, tag?)` and `remoteTagCommit(gitUrl, tag)` for it.
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.
 - **`FakeGateway`** (testing): an in-process gateway on `127.0.0.1` answering the contract's REST

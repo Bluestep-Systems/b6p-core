@@ -66,6 +66,7 @@ export type {
   GatewayCloneOptions,
   GatewayCloneResult,
   GatewayGitOptions,
+  GatewayGitInspection,
   GatewayGitStatus,
   GatewayGitStatusOptions,
   GatewayPullResult,

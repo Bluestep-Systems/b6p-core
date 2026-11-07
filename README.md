@@ -147,7 +147,7 @@ Failures are typed, all extending `Err.GatewayError` (`status`, `code`):
 | `GatewayUnexpectedResponseError` | any other status, a redirect (`code: "redirect-refused"`, not followed), or a 2xx body that is not JSON |
 | `GatewayConfigError` | an unusable `gatewayUrl`, or a URL or request path that resolves off the gateway's origin |
 | `GatewayDirtyWorkingTreeError` (`paths`) | a pull would overwrite local changes (git layer) |
-| `GatewayCloneMismatchError` (`reason`, `dir`, `repo`) | a marketplace pull found a clone of another repo, or on another ref (marketplace) |
+| `GatewayCloneMismatchError` (`reason`, `dir`, `repo`) | a marketplace pull found a clone it must not update: `different-repo`, `different-ref`, `tag-moved` (the tag now names another commit) or `tag-gone` (the gateway no longer has it) |
 | `GatewayWorkingCopyError` (`reason`) | the local folder cannot be used: `not-empty`, `not-a-clone`, `detached`, `no-upstream`, `diverged`, `ref-not-found` (git layer) |
 
 `gatewayErrorFor(status, body, what)` applies the same mapping to a status seen elsewhere (the git
@@ -167,6 +167,8 @@ await core.gateway.git.clone(kb.gitUrl, dir, { ref: "master" }); // dir missing 
 const status = await core.gateway.git.status(dir, { fetch: true }); // branch, dirty, ahead, behind
 await core.gateway.git.pull(dir); // fetch + fast-forward only
 await core.gateway.git.push(dir); // current branch to its upstream, fast-forward only
+await core.gateway.git.inspect(dir, "v1"); // origin url, branch, head, upstream, local tag commit (typed `not-a-clone` if damaged)
+await core.gateway.git.remoteTagCommit(kb.gitUrl, "v1"); // the commit a tag names on the gateway now, or null
 ```
 
 - `pull` never merges or rebases. A clean tree just proceeds, and unstaged edits and untracked files
@@ -197,6 +199,7 @@ await core.gateway.marketplace.pull("core", { cwd, dir, ref: "v1.1.0" }); // a t
 `cwd` is the consumer's own working directory (core never reads `process.cwd()`); `dir` is relative to it.
 `list` leaves out a malformed entry rather than failing for every repo (`get` of that name is
 `GatewayUnexpectedResponseError`), and a name is checked as a folder name only when `dir` is omitted.
+`ref` may be a short name or `refs/heads/x` / `refs/tags/x` (normalised to `x`). A folder name from the listing must be a plain segment: no leading dot (so never `.git`), `git~N`, control or reserved characters, or Windows device names.
 `pull` clones into a missing or empty folder. A folder that already holds a clone of the same
 `gitUrl` on a branch is fast-forwarded (`action`: `fast-forwarded`, `up-to-date` or `ahead`); a tag
 checkout is `up-to-date` when the gateway's tag still points at the checked-out commit, else
