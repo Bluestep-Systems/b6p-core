@@ -36,7 +36,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   staged paths), because the checkout would drop it. Server push-rejection text is redacted,
   isomorphic-git's protocol errors surface as `GatewayUnexpectedResponseError` (no body quoted), and a
   failed clone removes every folder it created. A clone target with a `.git` or `git~N` path
-  component (any case) is refused before any request (`GatewayWorkingCopyError`, reason
+  component (any case, and the NTFS/HFS+ aliases: trailing dots or spaces, Unicode-ignorable
+  characters) is refused before any request (`GatewayWorkingCopyError`, reason
   `unsafe-target`).
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.
