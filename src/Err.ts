@@ -1015,6 +1015,28 @@ export namespace Err {
   }
 
   /**
+   * A request that mints or rotates a token (code `outcome-unknown`) failed in a way that does
+   * not say whether the gateway acted: the connection dropped, no answer came in time, or a
+   * `502`/`503`/`504` came back. The token may have been minted (create) or rotated (rotate, in
+   * which case the old one is revoked), and any new secret was never received. It extends
+   * {@link GatewayUnavailableError}, so a generic handler still sees "unavailable", but it is a
+   * distinct type so a consumer can tell it apart from a request that never reached the gateway.
+   * @lastreviewed null
+   */
+  export class GatewayOutcomeUnknownError extends GatewayUnavailableError {
+    /**
+     * Which operation's outcome is unknown.
+     * @lastreviewed null
+     */
+    readonly operation: "create" | "rotate";
+    constructor(message: string, operation: "create" | "rotate", status: number | null) {
+      super(message, status, "outcome-unknown");
+      this.name = "GatewayOutcomeUnknownError";
+      this.operation = operation;
+    }
+  }
+
+  /**
    * `403 scope-escalation`: a token was asked for with a scope the presenting token does not
    * hold. A new token's scopes never exceed the presenting token's.
    * @lastreviewed null

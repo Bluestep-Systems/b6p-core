@@ -176,9 +176,12 @@ export class BearerAuthProvider implements AuthProvider<BearerAuthParams> {
    * The check is an in-process compare-then-write, **not** atomic across processes: it reads, then
    * writes, with awaits between, and the persistence layer holds no cross-process lock. It catches
    * a token that something else (another b6p process, `auth update`) stored before the read; a
-   * write by another process that lands between this read and this write is overwritten.
+   * write by another process that lands between this read and this write is overwritten. The
+   * value is read back after the write, so an overwrite that lands before that read-back is
+   * reported (thrown) rather than reported as stored.
    *
-   * @throws {Error} when `next` is empty, the stored token is no longer `expected`, or the write fails
+   * @throws {Error} when `next` is empty, the stored token is no longer `expected`, the write fails,
+   *   or the read-back finds something other than `next`
    * @lastreviewed null
    */
   async replaceStoredToken(expected: string, next: string): Promise<void> {
@@ -191,6 +194,10 @@ export class BearerAuthProvider implements AuthProvider<BearerAuthParams> {
     }
     const creds: BearerAuthParams = { scheme: BEARER_SCHEME, token: next };
     await this.persistence.setSecret(PERSISTENCE_KEY, JSON.stringify(creds));
+    // Read it back: another process sharing the store can write its stale copy over this one.
+    if ((await this.readStored())?.token !== next) {
+      throw new Error("The stored token was overwritten right after the replacement was written; it is not stored.");
+    }
     this.logger.info("Token replaced");
   }
 }

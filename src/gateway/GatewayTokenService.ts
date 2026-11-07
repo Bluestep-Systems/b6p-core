@@ -70,13 +70,19 @@ export class GatewayTokenService {
     if (request.expiresAt === null) {
       body.expiresAt = null;
     } else if (request.expiresAt !== undefined) {
-      if (typeof request.expiresAt !== "string" || Number.isNaN(Date.parse(request.expiresAt))) {
-        throw new Err.GatewayInvalidArgumentError("The token's expiry is not a date.");
+      if (!isIsoDateTime(request.expiresAt)) {
+        throw new Err.GatewayInvalidArgumentError(
+          "The token's expiry is not an ISO 8601 date-time with a time zone (Z or an offset)."
+        );
       }
       body.expiresAt = request.expiresAt;
     }
     const what = `${Http.Methods.POST} ${Gateway.Paths.TOKENS}`;
-    const answer = await this.client.request(Http.Methods.POST, Gateway.Paths.TOKENS, { body });
+    const answer = await outcomeUnknownOnUnavailable(
+      () => this.client.request(Http.Methods.POST, Gateway.Paths.TOKENS, { body }),
+      "create",
+      "a token may have been minted, and its secret was never received"
+    );
     const parsed = parseMinted(answer, what, "the token may have been minted");
     if (parsed.minted) {
       return parsed.minted;
@@ -137,7 +143,11 @@ export class GatewayTokenService {
       const target = pick(await listVia(seq.request), wanted);
       const path = `${Gateway.Paths.TOKENS}/${encodeURIComponent(target.id)}/rotate`;
       const what = `${Http.Methods.POST} ${path}`;
-      const answer = await seq.request(Http.Methods.POST, path);
+      const answer = await outcomeUnknownOnUnavailable(
+        () => seq.request(Http.Methods.POST, path),
+        "rotate",
+        `the token "${target.alias}" may have been rotated, in which case the old one is revoked and its replacement was never received`
+      );
       const parsed = parseMinted(answer, what, "the token may have been rotated");
       const secret = parsed.minted ? parsed.minted.token : parsed.secret;
       const replaced = { id: target.id, alias: target.alias };
@@ -256,6 +266,62 @@ function pick(tokens: readonly GatewayTokenSummary[], wanted: string): GatewayTo
     );
   }
   return matches[0];
+}
+
+/**
+ * Send a mint or rotate request. A {@link Err.GatewayUnavailableError} there (a dropped connection,
+ * a timeout, or `502`/`503`/`504`) does not say whether the gateway acted, so it becomes
+ * {@link Err.GatewayOutcomeUnknownError}; every other error passes through.
+ * @lastreviewed null
+ */
+async function outcomeUnknownOnUnavailable(
+  send: () => Promise<JsonValue | undefined>,
+  operation: "create" | "rotate",
+  consequence: string
+): Promise<JsonValue | undefined> {
+  try {
+    return await send();
+  } catch (error) {
+    if (error instanceof Err.GatewayUnavailableError) {
+      throw new Err.GatewayOutcomeUnknownError(
+        `${error.message} The outcome is unknown: ${consequence}.`,
+        operation,
+        error.status
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * Strict ISO 8601 date-time with a time zone: `YYYY-MM-DDTHH:MM[:SS[.fff]]` then `Z` or `±HH:MM`.
+ * The calendar fields must exist (no month 13, no 30 February). A plain date is refused: the
+ * contract types `expiresAt` as an instant, and a date alone would leave its time zone to guesswork.
+ * @lastreviewed null
+ */
+const ISO_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(Z|[+-](\d{2}):(\d{2}))$/;
+
+function isIsoDateTime(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const m = ISO_DATE_TIME.exec(value);
+  if (!m) {
+    return false;
+  }
+  const [year, month, day, hour, minute] = [m[1], m[2], m[3], m[4], m[5]].map(Number);
+  const second = m[6] === undefined ? 0 : Number(m[6]);
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) {
+    return false;
+  }
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (day < 1 || day > daysInMonth) {
+    return false;
+  }
+  if (m[7] !== "Z" && (Number(m[8]) > 14 || Number(m[9]) > 59)) {
+    return false;
+  }
+  return !Number.isNaN(Date.parse(value));
 }
 
 function isObject(value: JsonValue | undefined): value is JsonObject {

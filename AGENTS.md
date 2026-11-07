@@ -61,9 +61,15 @@ are load-bearing rather than stylistic — each records something this repo undi
   still `expected` (an in-process compare-then-write, not atomic across processes; do not claim
   more). There is never a second stored token. Rotation runs list + rotate + store as ONE
   `GatewayClient.sequence()` unit with one token read, so `current`, the token presented and
-  `expected` agree and no queued request presents the revoked token. A minted secret is never
-  dropped: a store failure throws `GatewayTokenStoreError` (`replacement`), an off-contract answer
-  `GatewayOffContractTokenError` (`secret`, still stored for the stored token), both non-enumerable.
+  `expected` agree and no queued request presents the revoked token. A minted secret that
+  *reaches* core is never dropped: a store failure (including a read-back that finds another
+  writer's value) throws `GatewayTokenStoreError` (`replacement`), an off-contract answer
+  `GatewayOffContractTokenError` (`secret`, still stored for the stored token), both
+  non-enumerable. A secret whose answer never arrives (dropped connection, timeout, 502/503/504 on
+  the mint or rotate POST) is lost; core says so with `GatewayOutcomeUnknownError` (outcome
+  unknown, the old token may be revoked) and must not report it as a plain unavailable error.
+  `SharedFilePersistence` serializes secret mutations in-process (one queue per secrets file);
+  across processes it is still last-writer-wins, which is why the store reads back.
   Never quote a user-supplied id-or-alias in a message; it may be a pasted secret.
 - **`core.gateway` is the second subsystem** (`GatewayService`, `src/gateway/`). `GatewayContext`
   extends `PlatformContext` with `gatewayToken` (a `GatewayTokenSource`), `gatewayTokenStore` (a

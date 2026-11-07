@@ -205,7 +205,8 @@ await core.gateway.tokens.rotate("laptop"); // → { replaced, token, rotatedCur
   containing `b6pt_` anywhere (a pasted secret) is refused (`GatewayInvalidArgumentError`) without
   being sent. Nothing is revoked or rotated in any of these cases, and no message quotes the value.
 - `create` refuses an empty or whitespace alias, an empty scope list or an expiry that is not a
-  date before sending (`GatewayInvalidArgumentError`). A new token's scopes must be a subset of the
+  strict ISO 8601 date-time with a time zone (`2027-02-01T00:00:00Z`, `…+05:30`; a plain date,
+  `March 7` or `1` is refused) before sending (`GatewayInvalidArgumentError`). A new token's scopes must be a subset of the
   stored token's.
 - **Rotating the stored token** (`current`) stores the replacement in its place: there is still one
   stored token. If storing fails after the gateway has rotated (so the old token is already
@@ -215,10 +216,16 @@ await core.gateway.tokens.rotate("laptop"); // → { replaced, token, rotatedCur
   (an in-process compare-then-write, not atomic across processes). The list, the rotate and the
   store run as one entry in the client's queue with one read of the stored token, so a request
   queued behind a rotation presents the replacement, never the revoked token.
-- **A minted secret is never dropped.** When a create or rotate answer carries the secret but is
-  otherwise off-contract, the call throws `GatewayOffContractTokenError`, whose non-enumerable
-  `secret` holds it; for a rotation of the stored token it is still offered to the store, and
-  `stored` says whether that worked.
+- **A minted secret that reaches core is never dropped.** When a create or rotate answer carries
+  the secret but is otherwise off-contract, the call throws `GatewayOffContractTokenError`, whose
+  non-enumerable `secret` holds it; for a rotation of the stored token it is still offered to the
+  store, and `stored` says whether that worked. The store reads the token back after writing, so
+  another writer's overwrite (for example a second b6p process) is `GatewayTokenStoreError`, not
+  success.
+- **An answer that never arrives** (a dropped connection, a timeout, or `502`/`503`/`504` on the
+  create or rotate request) is `GatewayOutcomeUnknownError` (a `GatewayUnavailableError`,
+  `operation` `create` or `rotate`): the token may have been minted or rotated, and for a rotation
+  the old one may already be revoked. Any new secret is lost; the error says the outcome is unknown.
 - **Revoking the stored token** is allowed. The result says `revokedCurrent: true` and the stored
   (now dead) token is left in place; what to do next is the consumer's call.
 - Core never logs a secret or puts one in an error message. Warning about a token that never

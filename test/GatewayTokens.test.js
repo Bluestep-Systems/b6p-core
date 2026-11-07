@@ -20,7 +20,9 @@ const {
   Err,
   FakeGateway,
   Gateway,
+  GatewayClient,
   GatewayService,
+  GatewayTokenService,
   MockFileSystem,
   gatewayErrorFor,
 } = require("../dist/index.js");
@@ -70,7 +72,7 @@ let promptCalls = 0;
 function makeProviders(token, options = {}) {
   const pub = {};
   const store = token === undefined ? {} : { bearerAuth: JSON.stringify({ scheme: "bearer", token }) };
-  const state = { failSetSecret: false, setSecretDelayMs: 0 };
+  const state = { failSetSecret: false, setSecretDelayMs: 0, foreignOverwrite: false };
   const persistence = {
     get: async (k) => pub[k],
     set: async (k, v) => {
@@ -87,7 +89,12 @@ function makeProviders(token, options = {}) {
       if (state.failSetSecret) {
         throw new Error("secret storage is unavailable");
       }
+      const before = store[k];
       store[k] = v;
+      if (state.foreignOverwrite && k === "bearerAuth") {
+        // Another process (the CLI beside the extension) writes the old blob back right after.
+        store[k] = before;
+      }
     },
     deleteSecret: async (k) => {
       delete store[k];
@@ -289,6 +296,12 @@ test("create refuses a bad alias, scope list or expiry before sending anything",
       { alias: "ok", scopes: [] },
       { alias: "ok", scopes: [""] },
       { alias: "ok", scopes: [Gateway.Scopes.KB_READ], expiresAt: "next tuesday" },
+      { alias: "ok", scopes: [Gateway.Scopes.KB_READ], expiresAt: "March 7" },
+      { alias: "ok", scopes: [Gateway.Scopes.KB_READ], expiresAt: "1" },
+      { alias: "ok", scopes: [Gateway.Scopes.KB_READ], expiresAt: "2026-13-01T00:00:00Z" },
+      { alias: "ok", scopes: [Gateway.Scopes.KB_READ], expiresAt: "2026-02-30T00:00:00Z" },
+      { alias: "ok", scopes: [Gateway.Scopes.KB_READ], expiresAt: "2026-12-01T00:00:00" },
+      { alias: "ok", scopes: [Gateway.Scopes.KB_READ], expiresAt: "2026-12-01" },
     ];
     for (const request of cases) {
       await rejectsWith(core.gateway.tokens.create(request), Err.GatewayInvalidArgumentError);
@@ -660,6 +673,118 @@ test("an id that would resolve off-origin is encoded onto the gateway path, so t
     assert.strictEqual(del.path, `${Gateway.Paths.TOKENS}/%5C%5Cevil.example%2Fx`);
     assert.ok(!fake.issuedTokens().some((t) => t.alias === "hostile"));
   });
+});
+
+// ── review rev2 fixes ───────────────────────────────────────────────────
+
+test("rev2 P1: a foreign overwrite right after the store's write → GatewayTokenStoreError carrying the replacement", async () => {
+  await withCore(async (fake, core, env) => {
+    env.state.foreignOverwrite = true;
+    const error = await rejectsWith(core.gateway.tokens.rotate("laptop"), Err.GatewayTokenStoreError);
+    assert.ok(fake.issuedTokens().some((t) => t.secret === error.replacement.token), "the carried secret is the live token");
+    assert.strictEqual(env.storedToken(), TOKEN, "the foreign write won; the store reports it instead of claiming success");
+  });
+});
+
+test("rev2 P3: create accepts a strict ISO 8601 date-time with Z or an offset", async () => {
+  await withCore(async (_fake, core) => {
+    for (const at of ["2027-02-01T00:00:00Z", "2027-02-01T00:00:00.123Z", "2027-02-01T08:30:00+05:30", "2027-02-01T00:00Z"]) {
+      const minted = await core.gateway.tokens.create({ alias: `a${at.length}${at.slice(-3)}`, scopes: [Gateway.Scopes.KB_READ], expiresAt: at });
+      assert.strictEqual(minted.expiresAt, at);
+    }
+  });
+});
+
+/** A token service over a client with a short timeout, and a fetch that misbehaves only on `matches`. */
+function serviceWith(fake, matches, misbehave) {
+  const base = globalThis.fetch.bind(globalThis);
+  const ctx = {
+    fs: new MockFileSystem(),
+    sessionManager: null,
+    logger: makeLogger(),
+    prompt: null,
+    progress: null,
+    isDebugMode: () => false,
+    gatewayToken: { token: async () => TOKEN },
+    gatewayTokenStore: { replace: async () => {} },
+    gatewayUrl: async () => fake.url,
+    fetchFn: async (url, init) => {
+      if (!matches(init.method, new URL(String(url)).pathname)) {
+        return base(url, init);
+      }
+      return misbehave(base, url, init);
+    },
+  };
+  return new GatewayTokenService(new GatewayClient(ctx, { timeoutMs: 100 }), ctx);
+}
+
+/** Send the request for real (the gateway commits), then drop the connection. */
+const dropAfterSend = async (base, url, init) => {
+  await (await base(url, init)).text();
+  throw new TypeError("fetch failed: other side closed");
+};
+
+/** Send the request for real, then never answer (until the client's timeout aborts). */
+const hangAfterSend = async (base, url, init) => {
+  await (await base(url, init)).text();
+  return new Promise((_resolve, reject) => {
+    init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+  });
+};
+
+const isRotate = (method, path) => method === "POST" && path.endsWith("/rotate");
+const isCreate = (method, path) => method === "POST" && path === Gateway.Paths.TOKENS;
+
+for (const [label, misbehave] of [
+  ["a dropped connection", dropAfterSend],
+  ["a timeout", hangAfterSend],
+]) {
+  test(`rev2 P2: ${label} on the rotate POST → GatewayOutcomeUnknownError (may have been rotated)`, async () => {
+    const fake = await FakeGateway.start();
+    try {
+      fake.grantToken(TOKEN, ALL_SCOPES, { id: "tok_laptop", alias: "laptop" });
+      const error = await rejectsWith(serviceWith(fake, isRotate, misbehave).rotate("laptop"), Err.GatewayOutcomeUnknownError);
+      assert.ok(error instanceof Err.GatewayUnavailableError, "still an unavailable error for generic handlers");
+      assert.strictEqual(error.operation, "rotate");
+      assert.strictEqual(error.code, "outcome-unknown");
+      assert.ok(/may have been rotated/.test(error.message) && /revoked/.test(error.message), error.message);
+      assert.ok(!fake.issuedTokens().some((t) => t.secret === TOKEN), "the gateway did commit the rotation");
+    } finally {
+      for (const secret of fake.issuedSecrets) secrets.add(secret);
+      await fake.stop();
+    }
+  });
+
+  test(`rev2 P2: ${label} on the create POST → GatewayOutcomeUnknownError (may have been minted)`, async () => {
+    const fake = await FakeGateway.start();
+    try {
+      fake.grantToken(TOKEN, ALL_SCOPES, { id: "tok_laptop", alias: "laptop" });
+      const service = serviceWith(fake, isCreate, misbehave);
+      const error = await rejectsWith(
+        service.create({ alias: "ci", scopes: [Gateway.Scopes.KB_READ] }),
+        Err.GatewayOutcomeUnknownError
+      );
+      assert.strictEqual(error.operation, "create");
+      assert.ok(/may have been minted/.test(error.message), error.message);
+    } finally {
+      for (const secret of fake.issuedSecrets) secrets.add(secret);
+      await fake.stop();
+    }
+  });
+}
+
+test("rev2 P2: a request that never reached the gateway stays a plain GatewayUnavailableError", async () => {
+  const fake = await FakeGateway.start();
+  try {
+    fake.grantToken(TOKEN, ALL_SCOPES, { id: "tok_laptop", alias: "laptop" });
+    const service = serviceWith(fake, () => true, async () => {
+      throw new TypeError("fetch failed: ECONNREFUSED");
+    });
+    const error = await rejectsWith(service.list(), Err.GatewayUnavailableError);
+    assert.ok(!(error instanceof Err.GatewayOutcomeUnknownError));
+  } finally {
+    await fake.stop();
+  }
 });
 
 // ── Run ─────────────────────────────────────────────────────────────────
