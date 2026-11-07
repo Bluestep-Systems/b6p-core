@@ -195,7 +195,17 @@ function parseRef(raw: string): ParsedRef {
  * @lastreviewed null
  */
 function isPlainSegment(segment: string): boolean {
-  return segment !== "." && segment !== ".." && !/[\\/:*?"<>|\0]/.test(segment) && segment === segment.trim();
+  if (segment.length === 0 || segment !== segment.trim()) {
+    return false;
+  }
+  // Hidden names (".", "..", ".git" in any case), Windows trailing dots, and any path or reserved character.
+  if (segment.startsWith(".") || segment.endsWith(".") || /[\\/:*?"<>|\u0000-\u001f\u007f]/.test(segment)) {
+    return false;
+  }
+  // Windows 8.3 short name of ".git" (GIT~1) and reserved device names, with or without an extension
+  // (superscript digits count: COM¹ is a device).
+  const stem = segment.split(".")[0];
+  return !/^git~\d+$/i.test(stem) && !/^(con|prn|aux|nul|(com|lpt)[1-9\u00b9\u00b2\u00b3])$/i.test(stem);
 }
 
 /**
@@ -299,9 +309,9 @@ export class GatewayKb {
   async pull(ref: string, options: GatewayKbPullOptions): Promise<GatewayKbPullResult> {
     const kb = await this.resolve(ref);
     const folder = options.dir ?? (kb.tenant === null ? kb.name : `${kb.tenant}-${kb.name}`);
-    if (options.dir === undefined && !isPlainSegment(folder)) {
+    if (options.dir === undefined && ![kb.name, kb.tenant ?? "x", folder].every(isPlainSegment)) {
       throw new Err.GatewayKnowledgeBaseError(
-        `The knowledge base name "${kb.name}" cannot be used as a folder name.`,
+        `The knowledge base "${kb.ref}" has a name or tenant that cannot be used as a folder name.`,
         "unsafe-name",
         kb.ref
       );

@@ -356,6 +356,47 @@ test("pull of an unknown KB or an unusable name fails before touching the disk",
   });
 });
 
+test("pull refuses a listed name or tenant that is not a safe folder name, creating nothing and cloning nothing", async () => {
+  const hostile = [
+    ".git",
+    ".GIT",
+    ".hidden",
+    "GIT~1",
+    "git~12",
+    "CON",
+    "nul.txt",
+    "COM1",
+    "COM\u00b9",
+    "LPT\u00b2",
+    "trailing.",
+    "trailing ",
+    "a\u0001b",
+    "a\u007fb",
+    "a\u001fb",
+    "a:b",
+    "a\\b",
+  ];
+  for (const bad of hostile) {
+    await withKb(async ({ fake, kb }) => {
+      const cwd = tmp();
+      fake.knowledgeBases.push(entry(fake, { name: bad, ref: `global/${bad}` }));
+      fake.knowledgeBases.push(entry(fake, { name: "ok", tenant: bad, ref: `tenant/${bad}/ok` }));
+      const before = fake.requests.length;
+      for (const ref of [bad, `${bad}/ok`]) {
+        const error = await rejectsWith(kb.pull(ref, { cwd }), Err.GatewayKnowledgeBaseError);
+        // an address with edge whitespace is refused earlier, as a bad address
+        const expected = bad === bad.trim() ? "unsafe-name" : "bad-ref";
+        assert.strictEqual(error.reason, expected, JSON.stringify(ref));
+      }
+      assert.deepStrictEqual(fs.readdirSync(cwd), [], JSON.stringify(bad));
+      assert.ok(
+        fake.requests.slice(before).every((r) => r.path === "/api/v1/knowledge-bases"),
+        `no clone request for ${JSON.stringify(bad)}`
+      );
+    });
+  }
+});
+
 // ── push ────────────────────────────────────────────────────────────────
 
 test("push sends local commits to the live branch and returns {pushed, commit, ref}", async () => {
