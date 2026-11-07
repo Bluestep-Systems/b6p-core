@@ -36,7 +36,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   staged paths), because the checkout would drop it. Server push-rejection text is redacted,
   isomorphic-git's protocol errors surface as `GatewayUnexpectedResponseError` (no body quoted), and a
   failed clone removes every folder it created. A clone target with a `.git` or `git~N` path
-  component (any case) is refused before any request (`GatewayWorkingCopyError`, reason
+  component (any case, and the NTFS/HFS+ aliases: trailing dots or spaces, Unicode-ignorable
+  characters) is refused before any request (`GatewayWorkingCopyError`, reason
   `unsafe-target`).
 - **`core.gateway.kb`: knowledge bases** (ClickUp 86bczx3r4). `GatewayKb.list({ scope?, tenant? })` returns
   the typed entries of `GET /api/v1/knowledge-bases` (a malformed body is

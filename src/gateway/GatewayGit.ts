@@ -189,14 +189,23 @@ const PROTOCOL_ERROR_CODES = new Set([
   "InternalError",
 ]);
 
-// Whether any component of the resolved path is `.git` or a Windows short name for it (`git~1`),
-// compared case-insensitively. A clone there would put its config inside a git directory, where
-// git runs the commands that config names (core.fsmonitor and the like).
+// Whether any component of the resolved path is `.git` or an alias a filesystem resolves to it:
+// the Windows short name (`git~1`), Unicode-ignorable characters inside the name (HFS+ ignores
+// them), and trailing dots or spaces (NTFS drops them). Each component is NFC-normalised, stripped
+// of ignorables and of trailing dots/spaces, then compared case-insensitively. A clone there would
+// put its config inside a git directory, where git runs the commands that config names
+// (core.fsmonitor and the like).
 function hasGitDirComponent(dir: string): boolean {
   return path
     .resolve(dir)
     .split(/[\\/]+/)
-    .some((part) => /^(\.git|git~\d+)$/i.test(part));
+    .some((part) => {
+      const name = part
+        .normalize("NFC")
+        .replace(/[\p{Cf}\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/gu, "")
+        .replace(/[. ]+$/, "");
+      return /^(\.git|git~\d+)$/i.test(name);
+    });
 }
 
 // The outermost folder on the way to `dir` that does not exist yet: what a clone into `dir` creates.
