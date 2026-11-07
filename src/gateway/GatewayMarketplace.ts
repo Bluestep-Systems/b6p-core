@@ -77,6 +77,15 @@ function isRecord(value: JsonValue | undefined): value is { [key: string]: JsonV
 }
 
 /**
+ * Control characters, Unicode format characters and invisible or bidi-ignorable code points
+ * (zero-width, directional marks and overrides, BOM, soft hyphen). They can hide inside a name
+ * (a zero-width joiner before `.git` is `.git` on HFS+) or garble a terminal, so a listing
+ * carrying one is malformed.
+ * @lastreviewed null
+ */
+const INVISIBLE = /[\p{Cc}\p{Cf}\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/u;
+
+/**
  * A folder name taken from the listing must be one plain path segment on every platform: no
  * separators, drive or reserved characters, control characters, surrounding whitespace, leading
  * dot (so never `.git` in any case, nor another dotfile), trailing dot, Windows 8.3 alias of
@@ -89,11 +98,14 @@ function isPlainSegment(segment: string): boolean {
   return (
     segment !== "" &&
     !segment.startsWith(".") &&
-    !/[\\/:*?"<>|\u0000-\u001f\u007f]/.test(segment) &&
+    !/[\\/:*?"<>|]/.test(segment) &&
+    !INVISIBLE.test(segment) &&
     segment === segment.trim() &&
     !segment.endsWith(".") &&
     !/^git~[0-9]+$/i.test(segment) &&
-    !/^(con|prn|aux|nul|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])(\..*)?$/i.test(segment)
+    !/^(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])$/i.test(
+      segment.split(".")[0].trimEnd()
+    )
   );
 }
 
@@ -109,17 +121,17 @@ function parseRepo(value: JsonValue | undefined, index: number): GatewayMarketpl
     throw bad("the wrong shape");
   }
   const { name, description, defaultBranch, tags, gitUrl } = value;
-  if (typeof name !== "string") {
-    throw bad("no name");
+  if (typeof name !== "string" || INVISIBLE.test(name)) {
+    throw bad("no usable name");
   }
-  if (typeof description !== "string") {
-    throw bad("no description");
+  if (typeof description !== "string" || INVISIBLE.test(description)) {
+    throw bad("no usable description");
   }
-  if (typeof defaultBranch !== "string" || defaultBranch === "") {
-    throw bad("no defaultBranch");
+  if (typeof defaultBranch !== "string" || defaultBranch === "" || INVISIBLE.test(defaultBranch)) {
+    throw bad("no usable defaultBranch");
   }
-  if (!Array.isArray(tags) || !tags.every((t): t is string => typeof t === "string")) {
-    throw bad("tags that are not a list of strings");
+  if (!Array.isArray(tags) || !tags.every((t): t is string => typeof t === "string" && !INVISIBLE.test(t))) {
+    throw bad("tags that are not a list of plain strings");
   }
   if (typeof gitUrl !== "string" || gitUrl === "") {
     throw bad("no gitUrl");
@@ -231,6 +243,7 @@ export class GatewayMarketplace {
    *
    * @param name the repo's name from {@link list}
    * @throws {Err.GatewayNotFoundError} no such repo
+   * @throws {Err.GatewayConfigError} the folder is relative and `cwd` is missing or not absolute
    * @throws {Err.GatewayUnexpectedResponseError} the name cannot be a folder name (with no `dir`)
    * @throws {Err.GatewayCloneMismatchError} `different-repo`, `different-ref`, `tag-moved` (the tag now
    *   names another commit on the gateway) or `tag-gone` (the gateway no longer has it)
@@ -248,7 +261,7 @@ export class GatewayMarketplace {
         null
       );
     }
-    const target = path.resolve(options.cwd, options.dir ?? repo.name);
+    const target = this.targetFolder(repo.name, options);
     const ref = shortRef(options.ref ?? repo.defaultBranch);
     if (!nodeFs.existsSync(path.join(target, ".git"))) {
       const cloned = await this.gitLayer.clone(repo.gitUrl, target, { ref });
@@ -308,6 +321,20 @@ export class GatewayMarketplace {
       head: pulled.to,
       from: pulled.from,
     };
+  }
+
+  // Core never reads process.cwd(): a relative folder needs an absolute cwd from the consumer.
+  private targetFolder(name: string, options: GatewayMarketplacePullOptions): string {
+    const folder = options.dir ?? name;
+    if (options.dir !== undefined && path.isAbsolute(folder)) {
+      return path.resolve(folder);
+    }
+    if (typeof options.cwd !== "string" || !path.isAbsolute(options.cwd)) {
+      throw new Err.GatewayConfigError(
+        "A pull into a relative folder needs the consumer's absolute working directory (cwd)."
+      );
+    }
+    return path.resolve(options.cwd, folder);
   }
 
   private differentRef(dir: string, repo: string, ref: string, current: string): Err.GatewayCloneMismatchError {

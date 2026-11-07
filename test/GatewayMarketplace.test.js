@@ -183,15 +183,32 @@ test("an unsafe repo name blocks only a pull that would use it as a folder", asy
     "COM1",
     "lpt9",
     "con.txt",
+    "CONIN$",
+    "conout$",
+    "COM0",
+    "LPT0",
+    "CON .txt",
+    "nul  .x",
+    "\u200c.git",
+    "a\u200bb",
+    "a\u202eb",
+    "a\u2060b",
+    "\ufeffname",
+    "a\u00adb",
     "",
   ];
   for (const name of names) {
     await withMarket(async ({ market, fake }) => {
       fake.repos = [{ ...fake.repos[0], name }];
       const listed = await market.list();
-      assert.strictEqual(listed.length, 1, `list keeps ${JSON.stringify(name)}`);
+      // control and format characters make the entry malformed (skipped); other odd names stay listed
+      const malformed = /[\p{Cc}\p{Cf}]/u.test(name);
+      assert.strictEqual(listed.length, malformed ? 0 : 1, `list for ${JSON.stringify(name)}`);
       const base = tmp();
       await rejectsWith(market.pull(name, { cwd: base }), Err.GatewayUnexpectedResponseError);
+      if (malformed) {
+        await rejectsWith(market.get(name), Err.GatewayUnexpectedResponseError);
+      }
       assert.deepStrictEqual(fs.readdirSync(base), [], `nothing created for ${JSON.stringify(name)}`);
       assert.ok(
         !fake.requests.some((r) => r.path.startsWith("/api/v1/git")),
@@ -329,6 +346,52 @@ test("an annotated tag that has not moved is up to date", async () => {
     const dir = path.join(tmp(), "core");
     await pullAt(market, "core", dir, { ref: "v2" });
     assert.strictEqual((await pullAt(market, "core", dir, { ref: "v2" })).action, "up-to-date");
+  });
+});
+
+test("control and format characters in any listing text field make the entry malformed", async () => {
+  const bad = ["a\u0007b", "a\u200bb", "\ufeff", "a\u202eb"];
+  for (const field of ["description", "defaultBranch"]) {
+    for (const value of bad) {
+      await withMarket(async ({ market, fake }) => {
+        fake.repos = [{ ...fake.repos[0], [field]: value }, fake.repos[1]];
+        assert.deepStrictEqual(
+          (await market.list()).map((r) => r.name),
+          ["extras"],
+          `${field} ${JSON.stringify(value)}`
+        );
+      });
+    }
+  }
+  for (const value of bad) {
+    await withMarket(async ({ market, fake }) => {
+      fake.repos = [{ ...fake.repos[0], tags: ["v1", value] }, fake.repos[1]];
+      assert.deepStrictEqual(
+        (await market.list()).map((r) => r.name),
+        ["extras"]
+      );
+      const error = await rejectsWith(market.get("core"), Err.GatewayUnexpectedResponseError);
+      assert.ok(!error.message.includes(value));
+    });
+  }
+  // ordinary Unicode text is fine
+  await withMarket(async ({ market, fake }) => {
+    fake.repos = [{ ...fake.repos[0], description: "Caf\u00e9 \u65e5\u672c\u8a9e" }];
+    assert.strictEqual((await market.list()).length, 1);
+  });
+});
+
+test("core never reads process.cwd(): a relative dir or a missing/relative cwd is refused", async () => {
+  await withMarket(async ({ market, fake }) => {
+    const base = tmp();
+    await rejectsWith(market.pull("core", { dir: "rel" }), Err.GatewayConfigError);
+    await rejectsWith(market.pull("core", {}), Err.GatewayConfigError);
+    await rejectsWith(market.pull("core", { cwd: "relative" }), Err.GatewayConfigError);
+    await rejectsWith(market.pull("core", { cwd: "", dir: "x" }), Err.GatewayConfigError);
+    assert.ok(!fake.requests.some((r) => r.path.startsWith("/api/v1/git")));
+    // an absolute dir needs no cwd
+    const abs = path.join(base, "abs");
+    assert.strictEqual((await market.pull("core", { dir: abs })).dir, abs);
   });
 });
 

@@ -199,7 +199,7 @@ await core.gateway.marketplace.pull("core", { cwd, dir, ref: "v1.1.0" }); // a t
 `cwd` is the consumer's own working directory (core never reads `process.cwd()`); `dir` is relative to it.
 `list` leaves out a malformed entry rather than failing for every repo (`get` of that name is
 `GatewayUnexpectedResponseError`), and a name is checked as a folder name only when `dir` is omitted.
-`ref` may be a short name or `refs/heads/x` / `refs/tags/x` (normalised to `x`). A folder name from the listing must be a plain segment: no leading dot (so never `.git`), `git~N`, control or reserved characters, or Windows device names.
+`ref` may be a short name or `refs/heads/x` / `refs/tags/x` (normalised to `x`). A folder name from the listing must be a plain segment: no leading dot (so never `.git`), `git~N`, control or reserved characters, or Windows device names (`CON`, `CONIN$`, `COM0`..., also `CON .txt`), and no Unicode control, format or invisible characters (those make the whole listing entry malformed, in any text field). `cwd` must be absolute and is required unless `dir` is absolute: a relative folder without it is `GatewayConfigError`.
 `pull` clones into a missing or empty folder. A folder that already holds a clone of the same
 `gitUrl` on a branch is fast-forwarded (`action`: `fast-forwarded`, `up-to-date` or `ahead`); a tag
 checkout is `up-to-date` when the gateway's tag still points at the checked-out commit, else
