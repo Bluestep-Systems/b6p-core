@@ -59,7 +59,9 @@ are load-bearing rather than stylistic — each records something this repo undi
   extends `PlatformContext` with `gatewayToken` (a `GatewayTokenSource`), `gatewayUrl()` (core
   config `settings.gatewayUrl`, default `https://gateway.bluestep.net`) and `fetchFn`. Knowledge-base
   and marketplace operations go beside `client` on `GatewayService`, over that one client, so all
-  gateway requests share its sequential queue. Errors are `Err.Gateway*`; a git layer maps statuses
+  REST requests made through the client share its sequential queue (`authHeadersFor` is not queued).
+  The client never follows a redirect (a 3xx is `redirect-refused`) and refuses a path that resolves
+  off the gateway origin. Errors are `Err.Gateway*`; a git layer maps statuses
   with `gatewayErrorFor` rather than its own table.
 - **A prompt that overwrites or deletes puts its safe option first and passes
   `{ destructive: true, safeOption }`.** Prompt implementations answer `options[0]` on an empty

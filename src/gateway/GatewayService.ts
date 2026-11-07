@@ -6,8 +6,8 @@ import type { GatewayContext } from "./GatewayContext";
  * and marketplace repos. It sits beside `core.script` as `core.gateway`.
  *
  * Today it holds only the HTTP {@link client}; the knowledge-base and marketplace operations are
- * added beside it as their own members, each built over that one client so every gateway request
- * shares its one-at-a-time queue.
+ * added beside it as their own members, each built over that one client so every REST request made
+ * through it shares its one-at-a-time queue.
  * @lastreviewed null
  */
 export class GatewayService {

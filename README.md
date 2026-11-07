@@ -124,7 +124,8 @@ input) is the consumer's to explain.
 `core.gateway.client` ([`GatewayClient`](src/gateway/GatewayClient.ts)) talks to web-global's gateway
 with the same `b6pt_` access token `BearerAuthProvider` already stores: it reads the stored token on
 every request (never prompting) and sends it as `Authorization: Bearer <token>`. There is no session
-or login on this origin. Requests run one at a time.
+or login on this origin. REST requests through the client run one at a time; redirects are never
+followed, and a request path that resolves off the gateway's origin is refused before sending.
 
 ```typescript
 await core.setConfig("gatewayUrl", "https://gateway.bluestep.net"); // the default; https only, except loopback
@@ -143,8 +144,8 @@ Failures are typed, all extending `Err.GatewayError` (`status`, `code`):
 | `GatewayConflictError` | `409 non-fast-forward` |
 | `GatewayTooLargeError` | `413 too-large` |
 | `GatewayUnavailableError` | `502`/`503`/`504`, a network failure or a timeout |
-| `GatewayUnexpectedResponseError` | any other status, or a 2xx body that is not JSON |
-| `GatewayConfigError` | an unusable `gatewayUrl`, or a URL off the gateway's origin |
+| `GatewayUnexpectedResponseError` | any other status, a redirect (`code: "redirect-refused"`, not followed), or a 2xx body that is not JSON |
+| `GatewayConfigError` | an unusable `gatewayUrl`, or a URL or request path that resolves off the gateway's origin |
 
 `gatewayErrorFor(status, body, what)` applies the same mapping to a status seen elsewhere (the git
 layer). The token never appears in a message or a log line, including when the server echoes it.
