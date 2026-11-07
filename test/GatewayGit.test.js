@@ -858,6 +858,26 @@ test("a failed clone removes every folder it created, parents included, and noth
   });
 });
 
+// ── unsafe clone targets ────────────────────────────────────────────────
+
+test("clone refuses a target with a .git (or GIT~1) component before any request, creating nothing", async () => {
+  await withGit(async (ctx) => {
+    for (const rel of [".git", ".GIT", path.join("sub", ".git", "x"), "GIT~1", "git~12", path.join(".Git", "a")]) {
+      const base = tmp();
+      const dir = path.join(base, rel);
+      const error = await rejectsWith(ctx.service.git.clone(ctx.gitUrl, dir), Err.GatewayWorkingCopyError);
+      assert.strictEqual(error.reason, "unsafe-target", rel);
+      assert.ok(!error.message.includes(base), "the message does not quote the path");
+      assert.deepStrictEqual(fs.readdirSync(base), [], `nothing was created for ${rel}`);
+    }
+    assert.strictEqual(ctx.fake.requests.length, 0);
+    // names that merely contain git are fine
+    const ok = path.join(tmp(), "my.gitrepo");
+    await ctx.service.git.clone(ctx.gitUrl, ok);
+    assert.strictEqual(read(ok, "a.txt"), "alpha\n");
+  });
+});
+
 // ── Run ─────────────────────────────────────────────────────────────────
 
 (async () => {

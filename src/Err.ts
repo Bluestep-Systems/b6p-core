@@ -993,8 +993,9 @@ export namespace Err {
    * target that has files), `not-a-clone` (no git repository there), `detached` (no current
    * branch), `no-upstream` (the branch tracks nothing), `diverged` (the branch and its upstream
    * each have commits the other lacks, so a fast-forward is impossible), `ref-not-found` (the
-   * remote has no such branch or tag) or `wrong-repository` (the folder is a clone of a different
-   * repository than the one asked for).
+   * remote has no such branch or tag), `wrong-repository` (the folder is a clone of a different
+   * repository than the one asked for) or `unsafe-target` (a clone target with a `.git` or `git~N`
+   * path component, which would put the clone's config inside a git directory).
    * @lastreviewed null
    */
   export class GatewayWorkingCopyError extends GatewayError {
@@ -1009,7 +1010,8 @@ export namespace Err {
       | "no-upstream"
       | "diverged"
       | "ref-not-found"
-      | "wrong-repository";
+      | "wrong-repository"
+      | "unsafe-target";
     constructor(
       message: string,
       reason:
@@ -1020,6 +1022,7 @@ export namespace Err {
         | "diverged"
         | "ref-not-found"
         | "wrong-repository"
+        | "unsafe-target"
     ) {
       super(message, null, reason);
       this.name = "GatewayWorkingCopyError";
