@@ -11,8 +11,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **A push first checks the org's server version** (`GET /appinfo/version`) and picks a route
   (`PushResult.route`: `mode` `server` | `draft-only`, `reason`, `serverVersion`, `required`). One
-  floor, `MIN_SERVER_VERSION`, is `null` until the first web release containing web #1961 and #1957
-  exists (it must be set before release). `dev` or a version at or above the floor takes the server
+  floor, `MIN_SERVER_VERSION`, is `26.11.09.00`: the first web release containing web #1961 and
+  #1957. `dev` or a version at or above the floor takes the server
   flow below. Anything else (below the floor, a non-200, a failed request, a non-release string, or
   the floor unset) takes the draft-only route: the sources are PUT to `draft/` with the usual
   platform-only cleanup, and no `compileDraft` or snapshot call is made, because an older server

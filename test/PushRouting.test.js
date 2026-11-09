@@ -304,7 +304,7 @@ test("unreadable version (404, garbage, network failure) -> draft-only, reason u
   }
 });
 
-test("floor unset (the shipped default): release tags are draft-only, dev is still the server", async () => {
+test("floor unset: release tags are draft-only, dev is still the server", async () => {
   assertDraftOnly(await push({ body: "40.01.01.00" }, { floor: null }), "floor-unset", "40.01.01.00", true);
   assertDraftOnly(
     await push({ body: "40.01.01.00" }, { floor: null, snapshot: false }),
@@ -314,10 +314,13 @@ test("floor unset (the shipped default): release tags are draft-only, dev is sti
   );
   const d = await push({ body: "dev" }, { snapshot: false, floor: null });
   assert.strictEqual(d.result.route.mode, "server");
-  const shipped = await push({ body: "40.01.01.00" }, { snapshot: true, floor: undefined });
-  assert.strictEqual(shipped.result.route.reason, "floor-unset", "MIN_SERVER_VERSION is still unset");
-  assert.strictEqual(shipped.result.snapshotRefused.reason, "floor-unset");
-  assert.strictEqual(shipped.result.snapshotRefused.required, null);
+});
+
+test("the shipped floor 26.11.09.00: an older release tag is draft-only and its snapshot refused", async () => {
+  const shipped = await push({ body: "26.11.02.04" }, { snapshot: true, floor: undefined });
+  assert.strictEqual(shipped.result.route.reason, "below-floor");
+  assert.strictEqual(shipped.result.snapshotRefused.reason, "too-old");
+  assert.strictEqual(shipped.result.snapshotRefused.required, "26.11.09.00");
 });
 
 test("draft-only upload failure rethrows the upload error and makes no compile call", async () => {

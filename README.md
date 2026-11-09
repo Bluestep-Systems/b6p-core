@@ -118,8 +118,7 @@ picks a route; it never refuses a push for the version.
 | `dev`, or at or above `MIN_SERVER_VERSION`                                   | the flow above (compile on the platform)                                                   | the flow above, then `takeSnapshot`                                                                    |
 | below the floor, version unreadable or not a release tag, or the floor unset | sources PUT to `draft/` (usual platform-only cleanup); no `compileDraft`, no snapshot work | exactly that plain push, then no publish: `PushResult.snapshotRefused` is set and no snapshot is taken |
 
-`MIN_SERVER_VERSION` is `null` until the first web release containing the flow is tagged, so until
-then every server but a `dev` build takes the draft-only route. Core has no compiler of its own.
+`MIN_SERVER_VERSION` is `26.11.09.00`, the first web release containing the flow. Core has no compiler of its own.
 `PushResult.route` says which route ran.
 
 ### Overwrites and destructive prompts

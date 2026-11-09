@@ -1,6 +1,6 @@
 // Server version floor and route (rulings 42-43 and 46, ClickUp 86bczwj62): core no longer compiles, so a
 // push first confirms the org's server runs the compileDraft/takeSnapshot flow. One constant,
-// MIN_SERVER_VERSION, unset until the first web tag containing it exists. A server below it (or an
+// MIN_SERVER_VERSION, 26.11.09.00 (the first web tag containing #1961 and #1957). A server below it (or an
 // unreadable version, or the floor unset) is not refused: it gets the draft-only route. Covers the pure
 // comparator, resolvePushRoute and snapshotRefusalFor; the end-to-end routing is PushRouting.test.js.
 // Dependency-free; runs the COMPILED classes from dist/ with no network or real filesystem.
@@ -46,8 +46,8 @@ test("whitespace around a tag is ignored", () => {
   assert.strictEqual(meetsMinimumVersion("26.11.09.00\n", FLOOR), true);
   assert.strictEqual(parseReleaseTag("nope"), null);
 });
-test("the one real floor is unset until the first web tag with #1961 and #1957 is cut", () => {
-  assert.strictEqual(MIN_SERVER_VERSION, null);
+test("the one real floor is the first web tag with #1961 and #1957", () => {
+  assert.strictEqual(MIN_SERVER_VERSION, "26.11.09.00");
 });
 
 // ── Gate ──
@@ -126,10 +126,17 @@ test("floor unset: draft-only for every release tag, server only on dev", async 
   assert.strictEqual((await route({ body: "dev" }, null)).route.mode, "server");
   assert.strictEqual((await route({ status: 404 }, null)).route.reason, "unknown");
 });
-test("the real default floor is the unset one", async () => {
-  const f = fetcher({ body: "30.01.01.00" });
-  const r = await resolvePushRoute({ origin: "https://org.bluestep.net", fetchFn: f.fn });
-  assert.strictEqual(r.reason, "floor-unset");
+test("the real default floor is 26.11.09.00", async () => {
+  const at = await resolvePushRoute({
+    origin: "https://org.bluestep.net",
+    fetchFn: fetcher({ body: "26.11.09.00" }).fn,
+  });
+  assert.strictEqual(at.reason, "at-or-above-floor");
+  const below = await resolvePushRoute({
+    origin: "https://org.bluestep.net",
+    fetchFn: fetcher({ body: "26.11.02.04" }).fn,
+  });
+  assert.deepStrictEqual(below, draftOnly("below-floor", "26.11.02.04", "26.11.09.00"));
   const d = await resolvePushRoute({ origin: "https://org.bluestep.net", fetchFn: fetcher({ body: "dev" }).fn });
   assert.strictEqual(d.mode, "server");
 });

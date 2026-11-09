@@ -105,7 +105,7 @@ server's contract** (`src/script/ServerCompile.ts`, `push.ts`). Core never PUTs 
 build folder, reads no `X-Bluestep-Compile` header, and parses a publish refusal from the error's
 `extensions.reason` / `extensions.publish`, never its message. A tripped gate or withheld emit is a
 `PushResult.compile` result, not an exception. `MIN_SERVER_VERSION` (`data/ServerVersion.ts`) _routes_
-every push and stays `null` until the first web release containing the flow is tagged: a `dev` server or
+every push and is `26.11.09.00`, the first web release containing the flow: a `dev` server or
 one at or above it takes the flow above; any other (below it, unreadable version, floor unset) takes the
 **draft-only route** (sources PUT to `draft/`, no GraphQL compile or snapshot call), and a snapshot push
 there is not an error but a result, `PushResult.snapshotRefused` (ruling 46). A plain push is never

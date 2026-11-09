@@ -4,13 +4,13 @@ import { ApiEndpoints } from "../constants";
  * Earliest server release whose push flow core 0.9.0 speaks: WebDAV never compiles, GraphQL
  * `compileDraft` compiles the draft, and `takeSnapshot` recompiles and publishes (web #1961 and
  * #1957). A server at or above it (or a `dev` build) gets the server flow; any other server gets a
- * draft-only push, and a snapshot push to it takes no snapshot (ruling 46). `null` until that
- * release is cut; while unset, every server but a `dev` build gets the draft-only route.
- * //HUMAN-REVIEW-NEEDED set this to the first web release tag containing web #1961 and #1957
- * (2731b31060, 3c44dc71fc) before #23 releases.
+ * draft-only push, and a snapshot push to it takes no snapshot (ruling 46). `26.11.09.00` is the
+ * first web release tag containing web #1961 and #1957 (2731b31060, 3c44dc71fc). The type keeps
+ * `null` ("unset": every server but a `dev` build gets the draft-only route) for tests and a future
+ * floor that is not yet tagged.
  * @lastreviewed null
  */
-export const MIN_SERVER_VERSION: string | null = null;
+export const MIN_SERVER_VERSION: string | null = "26.11.09.00";
 
 /** What the server reports on a local build: always current. @lastreviewed null */
 const DEV_VERSION = "dev";
