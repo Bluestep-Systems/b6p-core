@@ -98,6 +98,11 @@ last push or pull here, or that was never synced here. New files and files alrea
 ask. Declining throws `Err.OverwriteDeclinedError` (a `UserCancelledError`) with the files in
 `paths`, before anything is written. To confirm without a prompt, pass their draft-relative paths:
 
+Before uploading anything, a push asks the org's server for its version (`/appinfo/version`) and
+throws `Err.ServerVersionUnsupportedError` (`serverVersion`, `required`, `operation`, `reason`:
+`too-old` | `unknown` | `floor-unset`) if the server may not compile BSJS itself. A plain push needs
+`MIN_SERVER_VERSION_PUSH`, a snapshot push `MIN_SERVER_VERSION_SNAPSHOT`; a `dev` build always passes.
+
 ```typescript
 await core.script.push({ rootPath, overwrite: ["scripts/app.ts"] });
 ```

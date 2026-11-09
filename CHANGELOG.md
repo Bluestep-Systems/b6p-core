@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A push first checks the org's server version** (`GET /appinfo/version`), since core no longer
+  compiles and a server without compile on save would hold sources with no compiled output. A plain
+  push needs `MIN_SERVER_VERSION_PUSH` (`26.11.09.00`); `push --snapshot` needs
+  `MIN_SERVER_VERSION_SNAPSHOT`, which is unset until web's CU-86bd0nkme is released (so a snapshot
+  push to any server but a `dev` build is refused, and this must be set before release). `dev`
+  counts as current; a non-200, a failed request or a non-release string counts as unknown and
+  refuses. Refusals throw the new `Err.ServerVersionUnsupportedError` (`serverVersion`, `required`,
+  `operation`, `reason`: `too-old` | `unknown` | `floor-unset`) before anything is uploaded. New
+  exports: `assertServerVersion`, `meetsMinimumVersion`, `parseReleaseTag` and the two floor
+  constants (CU-86bczwj62).
+
 ### Changed
 
 - **BREAKING: core no longer compiles or type-checks; `push` uploads sources only.** The platform

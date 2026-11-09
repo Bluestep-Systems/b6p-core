@@ -4,6 +4,7 @@ import { FolderNames, Http, SpecialFiles } from "../constants";
 import { B6PUri } from "../B6PUri";
 import { GlobMatcher } from "../data/GlobMatcher";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
+import { assertServerVersion } from "../data/ServerVersion";
 import { ScriptFactory } from "./ScriptFactory";
 import { SnapshotHistoryRecorder } from "./SnapshotHistoryRecorder";
 import type { ScriptContext } from "./ScriptContext";
@@ -356,6 +357,14 @@ export async function executePush(opts: {
       keptPlatformOnly: [],
     };
   }
+
+  // Core uploads sources only, so the org's server must compile them itself. Ask once, before anything
+  // is uploaded or any prompt is shown; a refusal changes nothing.
+  await assertServerVersion({
+    origin: new URL(targetUrl).origin,
+    fetchFn: (url, init) => sessionManager.fetch(url, init),
+    operation: snapshot ? "snapshot" : "push",
+  });
 
   // Build a parser from the target URL so the ScriptRoot can resolve
   // upstairs URLs (mirrors what executePull does on the pull side).

@@ -35,6 +35,13 @@ export { IdUtility } from "./data/IdUtility";
 export { OrgWorker } from "./data/OrgWorker";
 export { ScriptKey } from "./data/ScriptKey";
 export { ScriptUrlParser } from "./data/ScriptUrlParser";
+export {
+  MIN_SERVER_VERSION_PUSH,
+  MIN_SERVER_VERSION_SNAPSHOT,
+  assertServerVersion,
+  meetsMinimumVersion,
+  parseReleaseTag,
+} from "./data/ServerVersion";
 
 // ─── Auth + sessions ─────────────────────────────────────────────────
 export { BearerAuthProvider } from "./auth/BearerAuthProvider";
