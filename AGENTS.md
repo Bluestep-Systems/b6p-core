@@ -104,17 +104,21 @@ changing this.
 server's contract** (`src/script/ServerCompile.ts`, `push.ts`). Core never PUTs into `snapshot/` or a
 build folder, reads no `X-Bluestep-Compile` header, and parses a publish refusal from the error's
 `extensions.reason` / `extensions.publish`, never its message. A tripped gate or withheld emit is a
-`PushResult.compile` result, not an exception. `MIN_SERVER_VERSION` (`data/ServerVersion.ts`) gates
-every push and stays `null` until the first web release containing the flow is tagged.
+`PushResult.compile` result, not an exception. `MIN_SERVER_VERSION` (`data/ServerVersion.ts`) _routes_
+every push and stays `null` until the first web release containing the flow is tagged: a `dev` server or
+one at or above it takes the flow above; any other (below it, unreadable version, floor unset) takes the
+**draft-only route** (sources PUT to `draft/`, no GraphQL compile or snapshot call), and a snapshot push
+there is not an error but a result, `PushResult.snapshotRefused` (ruling 46). A plain push is never
+refused, and core has no local compiler to fall back on.
 
 ## Documentation, in the same change
 
-| File | Update when |
-|------|-------------|
-| `README.md` | public API, install or usage changes |
+| File                    | Update when                                             |
+| ----------------------- | ------------------------------------------------------- |
+| `README.md`             | public API, install or usage changes                    |
 | `AGENTS.md` (this file) | architecture, subsystem, conventions or process changes |
-| `test/README.md` | how tests are written or run changes |
-| `CHANGELOG.md` | any user-visible change, fix, or breaking change |
+| `test/README.md`        | how tests are written or run changes                    |
+| `CHANGELOG.md`          | any user-visible change, fix, or breaking change        |
 
 `CLAUDE.md` is a one-line bridge to this file; do not put rules there. Outdated documentation is worse
 than none — if uncertain, leave a `//HUMAN-REVIEW-NEEDED` note.
@@ -126,7 +130,7 @@ with the review date. Modifying an already-reviewed block resets its tag to `nul
 not cover the new text.
 
 `test/JsdocLastReviewed.test.js` enforces this as a **ratchet, and only half of it**: it fails when a
-file gains net-new *untagged* blocks beyond the tolerated count in
+file gains net-new _untagged_ blocks beyond the tolerated count in
 `test/jsdoc-lastreviewed.baseline.json`. It **cannot catch a modified block** — a rewritten block
 keeps its old count and its stale review date, so resetting that date is reviewer diligence, not
 something CI verifies. Moving an untagged grandfathered block between files reads as new in the

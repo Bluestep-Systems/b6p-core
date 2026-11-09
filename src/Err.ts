@@ -794,42 +794,6 @@ export namespace Err {
   }
 
   /**
-   * Thrown, before anything is uploaded, when a push needs a server that compiles BSJS itself and
-   * the org's server is older than that, reports a version core cannot read, or cannot be asked.
-   * @lastreviewed null
-   */
-  export class ServerVersionUnsupportedError extends Error {
-    /** The version the server reported, or `null` when it could not be read. @lastreviewed null */
-    readonly serverVersion: string | null;
-    /** The earliest release the operation needs, or `null` when that is not yet known. @lastreviewed null */
-    readonly required: string | null;
-    /** The operation that was refused. @lastreviewed null */
-    readonly operation: "push" | "snapshot";
-    /**
-     * Why it was refused: `too-old` (a readable version below the floor), `unknown` (no readable
-     * version) or `floor-unset` (the floor for this operation is not yet known).
-     * @lastreviewed null
-     */
-    readonly reason: "too-old" | "unknown" | "floor-unset";
-    constructor(
-      message: string,
-      details: {
-        serverVersion: string | null;
-        required: string | null;
-        operation: "push" | "snapshot";
-        reason: "too-old" | "unknown" | "floor-unset";
-      }
-    ) {
-      super(message);
-      this.name = "ServerVersionUnsupportedError";
-      this.serverVersion = details.serverVersion;
-      this.required = details.required;
-      this.operation = details.operation;
-      this.reason = details.reason;
-    }
-  }
-
-  /**
    * Thrown when the platform refuses a snapshot publish (`takeSnapshot`): nothing was written to
    * `snapshot/` and the published script is unchanged. The draft's sources are saved and its compile
    * was committed either way. Read `reason` and `publish`, never the message.

@@ -36,7 +36,14 @@ export { IdUtility } from "./data/IdUtility";
 export { OrgWorker } from "./data/OrgWorker";
 export { ScriptKey } from "./data/ScriptKey";
 export { ScriptUrlParser } from "./data/ScriptUrlParser";
-export { MIN_SERVER_VERSION, assertServerVersion, meetsMinimumVersion, parseReleaseTag } from "./data/ServerVersion";
+export type { PushRoute, SnapshotRefusal } from "./data/ServerVersion";
+export {
+  MIN_SERVER_VERSION,
+  meetsMinimumVersion,
+  parseReleaseTag,
+  resolvePushRoute,
+  snapshotRefusalFor,
+} from "./data/ServerVersion";
 
 // ─── Auth + sessions ─────────────────────────────────────────────────
 export { BearerAuthProvider } from "./auth/BearerAuthProvider";

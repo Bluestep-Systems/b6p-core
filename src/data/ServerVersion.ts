@@ -1,12 +1,11 @@
 import { ApiEndpoints } from "../constants";
-import { Err } from "../Err";
 
 /**
  * Earliest server release whose push flow core 0.9.0 speaks: WebDAV never compiles, GraphQL
  * `compileDraft` compiles the draft, and `takeSnapshot` recompiles and publishes (web #1961 and
- * #1957). Core has no compiler of its own, so every push, plain or snapshot, needs it. `null`
- * until that release is cut; while unset, a push to any server but a `dev` build is refused with
- * reason `floor-unset`.
+ * #1957). A server at or above it (or a `dev` build) gets the server flow; any other server gets a
+ * draft-only push, and a snapshot push to it takes no snapshot (ruling 46). `null` until that
+ * release is cut; while unset, every server but a `dev` build gets the draft-only route.
  * //HUMAN-REVIEW-NEEDED set this to the first web release tag containing web #1961 and #1957
  * (2731b31060, 3c44dc71fc) before #23 releases.
  * @lastreviewed null
@@ -52,25 +51,71 @@ export function meetsMinimumVersion(serverVersion: string, floor: string): boole
 }
 
 /**
- * Asks the org's server for its version and refuses the operation when it predates server-side
- * compiling. Called once per push, before anything is uploaded.
- * @param opts.origin The org's origin (same as the push's)
- * @param opts.fetchFn The session's `fetch`, so the request shares the push's origin and session
- * @param opts.operation Which push is asking; reported on the error, and the same floor applies
- * @param opts.floor Overrides {@link MIN_SERVER_VERSION} (`null` means unset); used by tests
- * @throws an {@link Err.ServerVersionUnsupportedError} when the server is too old, its version
- *   cannot be read, or the floor is not yet known
+ * Which route a push takes, and why (ruling 46).
+ *  - `server`: sources go to `draft/`, then the platform compiles (`compileDraft`) and, for a
+ *    snapshot push, publishes (`takeSnapshot`); reason `dev` or `at-or-above-floor`.
+ *  - `draft-only`: sources go to `draft/` and nothing else happens, because the server does not
+ *    support server-side compile; reason `below-floor`, `unknown` (the version could not be read,
+ *    or is not a release tag) or `floor-unset`.
  * @lastreviewed null
  */
-export async function assertServerVersion(opts: {
+export interface PushRoute {
+  /** What the push does after the sources are saved. @lastreviewed null */
+  readonly mode: "server" | "draft-only";
+  /** Why this mode was chosen. @lastreviewed null */
+  readonly reason: "dev" | "at-or-above-floor" | "below-floor" | "unknown" | "floor-unset";
+  /** The version the server reported (trimmed), or `null` when it could not be read. @lastreviewed null */
+  readonly serverVersion: string | null;
+  /** The floor compared against, or `null` while it is unset. @lastreviewed null */
+  readonly required: string | null;
+}
+
+/**
+ * Why a snapshot push took no snapshot: the server does not support server-side compile.
+ * `too-old` (a readable version below the floor), `unknown` (no readable version) or `floor-unset`
+ * (the floor is not yet known). The sources were still saved to the draft.
+ * @lastreviewed null
+ */
+export interface SnapshotRefusal {
+  /** Why the server is not trusted to compile and publish. @lastreviewed null */
+  readonly reason: "too-old" | "unknown" | "floor-unset";
+  /** The version the server reported, or `null` when it could not be read. @lastreviewed null */
+  readonly serverVersion: string | null;
+  /** The earliest release that supports a snapshot, or `null` when that is not yet known. @lastreviewed null */
+  readonly required: string | null;
+}
+
+/**
+ * The snapshot refusal a route implies: `null` on the server route, otherwise why the draft-only
+ * route cannot take a snapshot.
+ * @lastreviewed null
+ */
+export function snapshotRefusalFor(route: PushRoute): SnapshotRefusal | null {
+  if (route.mode === "server") {
+    return null;
+  }
+  const reason =
+    route.reason === "below-floor" ? "too-old" : route.reason === "floor-unset" ? "floor-unset" : "unknown";
+  return { reason, serverVersion: route.serverVersion, required: route.required };
+}
+
+/**
+ * Asks the org's server for its version and picks the push's route: the server flow when it is a
+ * `dev` build or at or above the floor, otherwise draft-only. Never throws and never refuses a
+ * push: a version that cannot be read picks draft-only, which every server supports. Called once
+ * per push, before anything is uploaded.
+ * @param opts.origin The org's origin (same as the push's)
+ * @param opts.fetchFn The session's `fetch`, so the request shares the push's origin and session
+ * @param opts.floor Overrides {@link MIN_SERVER_VERSION} (`null` means unset); used by tests
+ * @lastreviewed null
+ */
+export async function resolvePushRoute(opts: {
   origin: string | URL;
   fetchFn: (url: string | URL, init?: RequestInit) => Promise<Response>;
-  operation: "push" | "snapshot";
   floor?: string | null;
-}): Promise<void> {
-  const { origin, fetchFn, operation } = opts;
+}): Promise<PushRoute> {
+  const { origin, fetchFn } = opts;
   const required = opts.floor !== undefined ? opts.floor : MIN_SERVER_VERSION;
-  const label = operation === "snapshot" ? "a snapshot push" : "a push";
 
   const url = new URL(origin);
   url.pathname = ApiEndpoints.APPINFO_VERSION;
@@ -86,36 +131,17 @@ export async function assertServerVersion(opts: {
     serverVersion = null;
   }
 
-  if (serverVersion !== null && serverVersion !== DEV_VERSION && parseReleaseTag(serverVersion) === null) {
-    // Reported something that is not a release tag: unreadable, not trusted.
-    throw new Err.ServerVersionUnsupportedError(
-      `The server at ${url.origin} reported the version "${serverVersion}", which is not a release version, ` +
-        `so it cannot be confirmed to compile scripts itself, which ${label} needs.`,
-      { serverVersion, required, operation, reason: "unknown" }
-    );
-  }
-  if (serverVersion === null) {
-    throw new Err.ServerVersionUnsupportedError(
-      `The version of the server at ${url.origin} could not be read, so it cannot be confirmed to compile ` +
-        `scripts itself, which ${label} needs.`,
-      { serverVersion: null, required, operation, reason: "unknown" }
-    );
-  }
   if (serverVersion === DEV_VERSION) {
-    return;
+    return { mode: "server", reason: "dev", serverVersion, required };
+  }
+  if (serverVersion === null || parseReleaseTag(serverVersion) === null) {
+    // Nothing readable, or something that is not a release tag: not trusted to compile.
+    return { mode: "draft-only", reason: "unknown", serverVersion, required };
   }
   if (required === null) {
-    throw new Err.ServerVersionUnsupportedError(
-      `The server at ${url.origin} is version ${serverVersion}, and the release that first supports ${label} ` +
-        `is not yet known.`,
-      { serverVersion, required: null, operation, reason: "floor-unset" }
-    );
+    return { mode: "draft-only", reason: "floor-unset", serverVersion, required };
   }
-  if (!meetsMinimumVersion(serverVersion, required)) {
-    throw new Err.ServerVersionUnsupportedError(
-      `The server at ${url.origin} is version ${serverVersion}; ${label} needs ${required} or later, ` +
-        `which compiles scripts on the server.`,
-      { serverVersion, required, operation, reason: "too-old" }
-    );
-  }
+  return meetsMinimumVersion(serverVersion, required)
+    ? { mode: "server", reason: "at-or-above-floor", serverVersion, required }
+    : { mode: "draft-only", reason: "below-floor", serverVersion, required };
 }

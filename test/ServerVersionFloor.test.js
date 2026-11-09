@@ -1,20 +1,18 @@
-// Server version floor (rulings 42-43, ClickUp 86bczwj62): core no longer compiles or uploads `.build`,
-// so a push (plain or snapshot) must first confirm the org's server runs the compileDraft/takeSnapshot
-// flow. One constant, MIN_SERVER_VERSION, unset until the first web tag containing it exists. Covers the pure comparator and
-// the gate, including through executePush against a fake context: a refusal must upload nothing.
+// Server version floor and route (rulings 42-43 and 46, ClickUp 86bczwj62): core no longer compiles, so a
+// push first confirms the org's server runs the compileDraft/takeSnapshot flow. One constant,
+// MIN_SERVER_VERSION, unset until the first web tag containing it exists. A server below it (or an
+// unreadable version, or the floor unset) is not refused: it gets the draft-only route. Covers the pure
+// comparator, resolvePushRoute and snapshotRefusalFor; the end-to-end routing is PushRouting.test.js.
 // Dependency-free; runs the COMPILED classes from dist/ with no network or real filesystem.
 
 const assert = require("node:assert");
-const path = require("path");
-const { B6PUri } = require("../dist/B6PUri.js");
-const { Err } = require("../dist/Err.js");
 const {
   parseReleaseTag,
   meetsMinimumVersion,
-  assertServerVersion,
+  resolvePushRoute,
+  snapshotRefusalFor,
   MIN_SERVER_VERSION,
 } = require("../dist/data/ServerVersion.js");
-const { executePush } = require("../dist/script/push.js");
 
 let failures = 0;
 const tests = [];
@@ -65,114 +63,82 @@ function fetcher(answer) {
   return { fn, calls };
 }
 
-async function gate(answer, operation, floor = FLOOR) {
+async function route(answer, floor = FLOOR) {
   const f = fetcher(answer);
-  try {
-    await assertServerVersion({ origin: "https://org.bluestep.net/files/1/draft", fetchFn: f.fn, operation, floor });
-    return { error: null, calls: f.calls };
-  } catch (e) {
-    return { error: e, calls: f.calls };
-  }
+  const r = await resolvePushRoute({ origin: "https://org.bluestep.net/files/1/draft", fetchFn: f.fn, floor });
+  return { route: r, calls: f.calls };
 }
-
-function expectRefusal(r, reason, serverVersion) {
-  assert.ok(r.error instanceof Err.ServerVersionUnsupportedError, String(r.error));
-  assert.strictEqual(r.error.reason, reason);
-  assert.strictEqual(r.error.serverVersion, serverVersion);
-}
+const draftOnly = (reason, serverVersion, required = FLOOR) => ({
+  mode: "draft-only",
+  reason,
+  serverVersion,
+  required,
+});
 
 test("asks /appinfo/version on the origin", async () => {
-  const r = await gate({ body: FLOOR }, "push");
-  assert.strictEqual(r.error, null);
+  const r = await route({ body: FLOOR });
   assert.deepStrictEqual(r.calls, ["https://org.bluestep.net/appinfo/version"]);
+  assert.deepStrictEqual(r.route, {
+    mode: "server",
+    reason: "at-or-above-floor",
+    serverVersion: FLOOR,
+    required: FLOOR,
+  });
 });
-test("too-old plain push is refused with both versions", async () => {
-  const r = await gate({ body: "26.11.02.05\n" }, "push");
-  expectRefusal(r, "too-old", "26.11.02.05");
-  assert.strictEqual(r.error.required, FLOOR);
-  assert.strictEqual(r.error.operation, "push");
+test("below the floor is draft-only with both versions, never an error", async () => {
+  const r = await route({ body: "26.11.02.05\n" });
+  assert.deepStrictEqual(r.route, draftOnly("below-floor", "26.11.02.05"));
+  assert.deepStrictEqual(snapshotRefusalFor(r.route), {
+    reason: "too-old",
+    serverVersion: "26.11.02.05",
+    required: FLOOR,
+  });
 });
-test("current and dev pass", async () => {
-  assert.strictEqual((await gate({ body: "26.11.16.00" }, "push")).error, null);
-  assert.strictEqual((await gate({ body: "dev" }, "push")).error, null);
+test("current and dev take the server route, which refuses no snapshot", async () => {
+  const cur = await route({ body: "26.11.16.00" });
+  assert.strictEqual(cur.route.mode, "server");
+  assert.strictEqual(snapshotRefusalFor(cur.route), null);
+  const dev = await route({ body: "dev" });
+  assert.deepStrictEqual(dev.route, { mode: "server", reason: "dev", serverVersion: "dev", required: FLOOR });
+  assert.strictEqual(snapshotRefusalFor(dev.route), null);
 });
-test("404, 500, empty body, garbage and network failure are unknown", async () => {
-  expectRefusal(await gate({ status: 404, body: "no" }, "push"), "unknown", null);
-  expectRefusal(await gate({ status: 500 }, "push"), "unknown", null);
-  expectRefusal(await gate({ body: "  " }, "push"), "unknown", null);
-  expectRefusal(await gate({ body: "banana" }, "push"), "unknown", "banana");
-  expectRefusal(await gate(new Error("ECONNRESET"), "push"), "unknown", null);
-});
-test("floor unset refuses plain and snapshot pushes except on dev", async () => {
-  for (const operation of ["push", "snapshot"]) {
-    const r = await gate({ body: "30.01.01.00" }, operation, null);
-    expectRefusal(r, "floor-unset", "30.01.01.00");
-    assert.strictEqual(r.error.required, null);
-    assert.strictEqual(r.error.operation, operation);
-    assert.strictEqual((await gate({ body: "dev" }, operation, null)).error, null);
-    expectRefusal(await gate({ status: 404 }, operation, null), "unknown", null);
+test("404, 500, empty body, garbage and network failure are draft-only, unknown", async () => {
+  for (const [answer, seen] of [
+    [{ status: 404, body: "no" }, null],
+    [{ status: 500 }, null],
+    [{ body: "  " }, null],
+    [{ body: "banana" }, "banana"],
+    [new Error("ECONNRESET"), null],
+  ]) {
+    const r = await route(answer);
+    assert.deepStrictEqual(r.route, draftOnly("unknown", seen));
+    assert.strictEqual(snapshotRefusalFor(r.route).reason, "unknown");
   }
 });
-test("the real default floor is the unset one: a release tag is refused, dev passes", async () => {
+test("floor unset: draft-only for every release tag, server only on dev", async () => {
+  const r = await route({ body: "30.01.01.00" }, null);
+  assert.deepStrictEqual(r.route, draftOnly("floor-unset", "30.01.01.00", null));
+  assert.deepStrictEqual(snapshotRefusalFor(r.route), {
+    reason: "floor-unset",
+    serverVersion: "30.01.01.00",
+    required: null,
+  });
+  assert.strictEqual((await route({ body: "dev" }, null)).route.mode, "server");
+  assert.strictEqual((await route({ status: 404 }, null)).route.reason, "unknown");
+});
+test("the real default floor is the unset one", async () => {
   const f = fetcher({ body: "30.01.01.00" });
-  await assert.rejects(
-    () => assertServerVersion({ origin: "https://org.bluestep.net", fetchFn: f.fn, operation: "snapshot" }),
-    (e) => e instanceof Err.ServerVersionUnsupportedError && e.reason === "floor-unset"
+  const r = await resolvePushRoute({ origin: "https://org.bluestep.net", fetchFn: f.fn });
+  assert.strictEqual(r.reason, "floor-unset");
+  const d = await resolvePushRoute({ origin: "https://org.bluestep.net", fetchFn: fetcher({ body: "dev" }).fn });
+  assert.strictEqual(d.mode, "server");
+});
+test("a later floor applies to snapshot and plain pushes alike", async () => {
+  assert.deepStrictEqual(
+    (await route({ body: "26.11.02.05" }, "26.11.23.00")).route,
+    draftOnly("below-floor", "26.11.02.05", "26.11.23.00")
   );
-  const d = fetcher({ body: "dev" });
-  await assertServerVersion({ origin: "https://org.bluestep.net", fetchFn: d.fn, operation: "push" });
-});
-test("snapshot push uses the same floor once set", async () => {
-  expectRefusal(await gate({ body: "26.11.02.05" }, "snapshot", "26.11.23.00"), "too-old", "26.11.02.05");
-  assert.strictEqual((await gate({ body: "26.11.23.00" }, "snapshot", "26.11.23.00")).error, null);
-});
-
-// ── executePush: a refusal uploads nothing ──
-async function pushWith(answer, snapshot) {
-  const requests = [];
-  const ctx = {
-    fs: { exists: async () => true },
-    prompt: { error() {}, info() {}, warn() {}, confirm: async () => undefined, inputBox: async () => undefined },
-    logger: { info() {}, warn() {}, error() {}, debug() {} },
-    sessionManager: {
-      fetch: async (url, init) => {
-        requests.push(`${(init && init.method) || "GET"} ${url}`);
-        if (answer instanceof Error) {
-          throw answer;
-        }
-        return new Response(answer.body ?? "", { status: answer.status ?? 200 });
-      },
-    },
-    progress: { withProgress: async () => assert.fail("must not upload") },
-  };
-  let error = null;
-  try {
-    await executePush({
-      ctx,
-      targetUrl: "https://org.bluestep.net/files/100001/draft",
-      rootPath: path.join(path.parse(process.cwd()).root, "ws", "U100001", "MyScript"),
-      snapshot,
-    });
-  } catch (e) {
-    error = e;
-  }
-  return { error, requests };
-}
-test("executePush: a refused server version stops before any other request", async () => {
-  const r = await pushWith({ body: "26.11.02.05" }, false);
-  assert.ok(r.error instanceof Err.ServerVersionUnsupportedError);
-  assert.deepStrictEqual(r.requests, ["GET https://org.bluestep.net/appinfo/version"]);
-});
-test("executePush: unreachable version endpoint refuses as unknown", async () => {
-  const r = await pushWith(new Error("down"), false);
-  assert.ok(r.error instanceof Err.ServerVersionUnsupportedError);
-  assert.strictEqual(r.error.reason, "unknown");
-});
-test("executePush: a push refuses while the floor is unset", async () => {
-  const r = await pushWith({ body: "40.01.01.00" }, true);
-  assert.ok(r.error instanceof Err.ServerVersionUnsupportedError);
-  assert.strictEqual(r.error.reason, "floor-unset");
-  assert.strictEqual(r.requests.length, 1);
+  assert.strictEqual((await route({ body: "26.11.23.00" }, "26.11.23.00")).route.mode, "server");
 });
 
 (async () => {

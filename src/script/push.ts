@@ -4,7 +4,7 @@ import { FolderNames, Http, SpecialFiles } from "../constants";
 import { B6PUri } from "../B6PUri";
 import { GlobMatcher } from "../data/GlobMatcher";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
-import { assertServerVersion } from "../data/ServerVersion";
+import { resolvePushRoute, snapshotRefusalFor, type PushRoute, type SnapshotRefusal } from "../data/ServerVersion";
 import { ScriptFactory } from "./ScriptFactory";
 import { SnapshotHistoryRecorder } from "./SnapshotHistoryRecorder";
 import type { ScriptContext } from "./ScriptContext";
@@ -111,8 +111,24 @@ export interface PushResult {
    */
   pushed: boolean;
   /**
+   * Which route the push took: `server` (compile, and publish for a snapshot) or `draft-only` (the
+   * server does not support server-side compile, so the sources were saved to `draft/` and nothing
+   * else happened), with why and the versions compared. `null` when the push stopped before the
+   * server's version was asked (draft folder missing).
+   * @lastreviewed null
+   */
+  route: PushRoute | null;
+  /**
+   * Set when a snapshot push was asked for but the server does not support server-side compile: the
+   * sources were saved to the draft, no snapshot was taken and nothing was published. A result, not
+   * an error, because the sources did go up. `null` for a plain push and on the server route.
+   * @lastreviewed null
+   */
+  snapshotRefused: SnapshotRefusal | null;
+  /**
    * What the platform's `compileDraft` came to, after the sources went up. `null` when the push
-   * did not run (`pushed: false`).
+   * did not run (`pushed: false`) and on the draft-only route, which never asks the platform to
+   * compile.
    * @lastreviewed null
    */
   compile: DraftCompileOutcome | null;
@@ -260,6 +276,8 @@ export async function confirmOverwrites(opts: {
  * @param opts.entries The files to upload, in order
  * @param opts.confirmed Files whose overwrite is already confirmed; `upload()` skips its prompt for them
  * @param opts.snapshot Whether to publish after a compile that left something to publish
+ * @param opts.draftOnly The server does not support server-side compile (ruling 46): upload the
+ *   sources and make no GraphQL call; `compile` and `publish` come back `null`
  * @param opts.afterUpload Runs after every upload succeeded and before the compile (the deletion of
  *   platform-only files belongs here: it changes the draft's sources); its result is returned
  * @param opts.sleep Waits between retries; tests inject a recorder
@@ -276,11 +294,12 @@ export async function uploadAndCompile<R = void>(opts: {
   entries: { filePath: string; file: ScriptFile }[];
   confirmed: Set<ScriptFile>;
   snapshot: boolean;
+  draftOnly?: boolean;
   afterUpload?: () => Promise<R>;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<{
   written: number;
-  compile: DraftCompileOutcome;
+  compile: DraftCompileOutcome | null;
   publish: PublishOutcome | null;
   afterUpload: R | undefined;
 }> {
@@ -319,7 +338,7 @@ export async function uploadAndCompile<R = void>(opts: {
     });
   } catch (e) {
     const error = (failure as { error: unknown } | null)?.error ?? e;
-    if (written > 0) {
+    if (written > 0 && !opts.draftOnly) {
       try {
         const compile = await compileDraft(scriptRoot, sleepOpts);
         logger.warn(`Compiled the draft after a failed push: ${compile.status}`);
@@ -333,6 +352,10 @@ export async function uploadAndCompile<R = void>(opts: {
   }
 
   const afterUpload = opts.afterUpload ? await opts.afterUpload() : undefined;
+
+  if (opts.draftOnly) {
+    return { written, compile: null, publish: null, afterUpload };
+  }
 
   const compile = await compileDraft(scriptRoot, sleepOpts);
   let publish: PublishOutcome | null = null;
@@ -357,12 +380,17 @@ export async function uploadAndCompile<R = void>(opts: {
  * snapshot push whose compile left something to publish, publishes it (`takeSnapshot`); see
  * {@link uploadAndCompile}. A compile the platform's gate or `noEmitOnError` held back is returned in
  * `compile`, with the sources saved and nothing published.
+ *
+ * The org's version is read once first ({@link resolvePushRoute}). A server that is `dev` or at or
+ * above the floor takes the flow above. Any other server (below the floor, version unreadable, floor
+ * unset) takes the draft-only route: the sources go to `draft/` (with the usual platform-only
+ * cleanup) and no compile or snapshot call is made, because an older server lacks them. A snapshot
+ * push on that route is not refused, it saves the draft and reports `snapshotRefused`.
  * @param opts.overwrite Draft-relative paths whose overwrite the caller confirms up front, so the
  *   push doesn't ask about them (e.g. a consumer's flag, after the user approved the files a
  *   declined push listed). Other at-risk files still ask.
  * @param opts.sleep Waits between the platform-call retries; tests inject a recorder
  * @throws an {@link Err.OverwriteDeclinedError} when an overwrite is not confirmed
- * @throws an {@link Err.ServerVersionUnsupportedError} when the org's server is below the floor
  * @throws an {@link Err.PublishRefusedError} when the platform refuses a snapshot publish
  * @throws an {@link Err.ServerCompileRequestError} when a compile or publish request fails
  * @lastreviewed null
@@ -375,6 +403,8 @@ export async function executePush(opts: {
   message?: string;
   overwrite?: string[];
   sleep?: (ms: number) => Promise<void>;
+  /** Overrides the version floor (`null` means unset); tests only. @lastreviewed null */
+  serverVersionFloor?: string | null;
 }): Promise<PushResult> {
   const { ctx, targetUrl, rootPath, snapshot, message, overwrite } = opts;
   const { fs, prompt, logger, sessionManager } = ctx;
@@ -382,6 +412,8 @@ export async function executePush(opts: {
 
   const notPushed: PushResult = {
     pushed: false,
+    route: null,
+    snapshotRefused: null,
     compile: null,
     publish: null,
     historyRecorded: false,
@@ -394,13 +426,15 @@ export async function executePush(opts: {
     return notPushed;
   }
 
-  // Core uploads sources only, so the org's server must compile them itself. Ask once, before anything
-  // is uploaded or any prompt is shown; a refusal changes nothing.
-  await assertServerVersion({
+  // Ask once, before anything is uploaded or any prompt is shown. Never refuses: a server without
+  // server-side compile still takes the sources.
+  const route = await resolvePushRoute({
     origin: new URL(targetUrl).origin,
     fetchFn: (url, init) => sessionManager.fetch(url, init),
-    operation: snapshot ? "snapshot" : "push",
+    floor: opts.serverVersionFloor,
   });
+  const draftOnly = route.mode === "draft-only";
+  const snapshotRefused = snapshot ? snapshotRefusalFor(route) : null;
 
   // Build a parser from the target URL so the ScriptRoot can resolve
   // upstairs URLs (mirrors what executePull does on the pull side).
@@ -422,7 +456,7 @@ export async function executePush(opts: {
 
   if (allFiles.length === 0) {
     prompt.info("No files to push — draft folder is empty.");
-    return notPushed;
+    return { ...notPushed, route, snapshotRefused };
   }
 
   // One ScriptFile per file for the whole push: the confirmation pass and the upload share them,
@@ -446,6 +480,7 @@ export async function executePush(opts: {
     entries,
     confirmed,
     snapshot,
+    draftOnly,
     sleep: opts.sleep,
     // Deleting platform-only files changes the draft's sources, so it runs before the compile.
     afterUpload: () => cleanupUnusedUpstairsPaths({ ctx, targetUrl, draftPath, gitignoreMatcher, buildFolders }),
@@ -464,7 +499,14 @@ export async function executePush(opts: {
     }
   }
 
-  if (!compileAllowsPublish(compile.status) && compile.status !== "SKIPPED_GIT_MANAGED") {
+  if (compile === null) {
+    // Draft-only route: the sources are saved; the server has no server-side compile.
+    prompt.warn(
+      snapshot
+        ? "No snapshot was taken: the server does not support server-side compile. The sources were saved to the draft."
+        : "The sources were saved to the draft; the server does not support server-side compile, so they were not compiled."
+    );
+  } else if (!compileAllowsPublish(compile.status) && compile.status !== "SKIPPED_GIT_MANAGED") {
     // The sources are saved but the platform did not build (or publish) them: say what and why.
     prompt.warn(
       `${snapshot ? "Snapshot push" : "Push"}: the sources were saved on the platform, but its compile of the ` +
@@ -484,7 +526,7 @@ export async function executePush(opts: {
     prompt.info(snapshot ? "Snapshot complete!" : "Push complete!");
   }
 
-  return { pushed: true, compile, publish, historyRecorded, keptPlatformOnly };
+  return { pushed: true, route, snapshotRefused, compile, publish, historyRecorded, keptPlatformOnly };
 }
 
 /**

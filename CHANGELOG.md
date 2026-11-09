@@ -9,16 +9,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **A push first checks the org's server version** (`GET /appinfo/version`), since core no longer
-  compiles and a server without the compile flow would hold sources with no compiled output. One
-  floor, `MIN_SERVER_VERSION`, covers plain and snapshot pushes; it is `null` until the first web
-  release containing web #1961 and #1957 exists (so a push to any server but a `dev` build is
-  refused with `floor-unset`, and it must be set before release). `dev` counts as current; a non-200,
-  a failed request or a non-release string counts as unknown and refuses. Refusals throw the new
-  `Err.ServerVersionUnsupportedError` (`serverVersion`, `required`, `operation`, `reason`:
-  `too-old` | `unknown` | `floor-unset`) before anything is uploaded. New exports:
-  `assertServerVersion`, `meetsMinimumVersion`, `parseReleaseTag`, `MIN_SERVER_VERSION`
-  (CU-86bczwj62).
+- **A push first checks the org's server version** (`GET /appinfo/version`) and picks a route
+  (`PushResult.route`: `mode` `server` | `draft-only`, `reason`, `serverVersion`, `required`). One
+  floor, `MIN_SERVER_VERSION`, is `null` until the first web release containing web #1961 and #1957
+  exists (it must be set before release). `dev` or a version at or above the floor takes the server
+  flow below. Anything else (below the floor, a non-200, a failed request, a non-release string, or
+  the floor unset) takes the draft-only route: the sources are PUT to `draft/` with the usual
+  platform-only cleanup, and no `compileDraft` or snapshot call is made, because an older server
+  lacks them. A plain push is never refused. A snapshot push on the draft-only route saves the draft
+  and takes no snapshot: the server does not support server-side compile, and
+  `PushResult.snapshotRefused` (`reason` `too-old` | `unknown` | `floor-unset`, `serverVersion`,
+  `required`) says so. That is a result, not an error, because the sources were saved. New exports:
+  `resolvePushRoute`, `snapshotRefusalFor`, `meetsMinimumVersion`, `parseReleaseTag`,
+  `MIN_SERVER_VERSION` and the types `PushRoute`, `SnapshotRefusal` (CU-86bczwj62).
 - **Compile and publish go through the platform.** After the sources are PUT to `draft/`, a push
   calls the GraphQL `compileDraft` input and returns its outcome as `PushResult.compile`
   (`DraftCompileOutcome`: `status`, error and warning counts, files written and deleted,
@@ -53,7 +56,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `isSnapshot` option of `ScriptFile.upload`, `getReasonToNotPush`, `collectOverwriteCandidates`
   and `ScriptRoot.getPushableNodes` (the skip rule now looks at `draft/` only), and the two floor
   constants `MIN_SERVER_VERSION_PUSH` / `MIN_SERVER_VERSION_SNAPSHOT` (replaced by one
-  `MIN_SERVER_VERSION`). `PushResult` gains `compile` and `publish` (ClickUp 86bczwj62).
+  `MIN_SERVER_VERSION`). `PushResult` gains `compile`, `publish`, `route` and `snapshotRefused` (ClickUp 86bczwj62).
+- **BREAKING: a snapshot push to a server without server-side compile saves the draft and takes no
+  snapshot** (see the version check above). Nothing is thrown for the version: there is no
+  `Err.ServerVersionUnsupportedError` and no `assertServerVersion`, and core bundles no fallback
+  compiler.
 - **BREAKING: core no longer compiles or type-checks; `push` uploads sources only.** The platform
   now compiles BSJS server-side, on save and again when a snapshot is published, so the in-process
   TypeScript compiler is gone (ClickUp 86bczwj62). Hold the release until that server-side
@@ -81,7 +88,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ([b6p-cli#35](https://github.com/Bluestep-Systems/b6p-cli/issues/35), ClickUp 86bcn314g). The
   platform sends files last saved before about May 2026 with `W/"<ms>-<id>"`, which matched none of
   the ETag patterns, so `ScriptFile.download()` threw `Err.EtagParsingError` (`Could not parse
-  upstairs etag`) and the pull ended there, before `declarations/` was refreshed. A weak numeric
+upstairs etag`) and the pull ended there, before `declarations/` was refreshed. A weak numeric
   ETag is now handled like a strong one: it carries no content hash, so the integrity check is
   skipped (logged at debug), the file is written and its sync record kept. `getUpstairsHash()`
   already returned `null` for it and still does; audit and push read it as indeterminate, as before.
