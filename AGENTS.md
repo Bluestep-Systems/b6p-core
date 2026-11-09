@@ -69,7 +69,7 @@ are load-bearing rather than stylistic — each records something this repo undi
   coalesce `save()` before parallelizing anything.
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
-CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, snapshot history), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
+CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, server compile/publish calls, snapshot history), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
 parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles).
 
 ## Commands
@@ -96,10 +96,16 @@ output settings. Do not reintroduce a linter without wiring it to a **failing** 
 
 **`typescript` is an exact-pinned `devDependency` (7.x) and builds the package only.** This library
 ships no compiler and nothing in `src/` may import `typescript`: the platform compiles BSJS
-server-side, on save and again when a snapshot is published, so `push` uploads sources and never
-emits, uploads `.build` or type-checks. Do not move it back to `dependencies`, do not float the
+server-side, so `push` uploads sources and never emits, uploads `.build` or type-checks. Do not move it back to `dependencies`, do not float the
 pin, and read `b6p-cli/docs/adr/0003-*` (the TypeScript version strategy, superseding 0002) before
 changing this.
+
+**The push flow is PUT `draft/` → `compileDraft` → (snapshot push) `takeSnapshot`, all against the
+server's contract** (`src/script/ServerCompile.ts`, `push.ts`). Core never PUTs into `snapshot/` or a
+build folder, reads no `X-Bluestep-Compile` header, and parses a publish refusal from the error's
+`extensions.reason` / `extensions.publish`, never its message. A tripped gate or withheld emit is a
+`PushResult.compile` result, not an exception. `MIN_SERVER_VERSION` (`data/ServerVersion.ts`) gates
+every push and stays `null` until the first web release containing the flow is tagged.
 
 ## Documentation, in the same change
 

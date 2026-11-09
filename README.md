@@ -79,16 +79,32 @@ given). Read `pushed` first: `false` means nothing was uploaded.
 | Field | Meaning |
 | --- | --- |
 | `pushed` | The upload ran. `false` when the draft folder is missing or empty |
-| `historyRecorded` | A snapshot's history entry was recorded. `false` also when the push stopped early |
-| `liveVerified` | `true`: every `snapshot/` copy the push wrote reads back identical (by ETag). `false`: one is still different, missing or unreadable after one re-send, and the push stops before cleanup and history. `null`: not proven either way (a plain push, an early stop, or a copy served without a content hash, named in a warning) |
-| `liveMismatches` | Draft-relative paths whose live copy was still different, missing or unreadable after one re-send |
+| `compile` | What the platform's `compileDraft` came to: `status` (`COMPILED`, `GATE_TRIPPED`, `EMIT_WITHHELD`, `NOTHING_TO_COMPILE`, `SKIPPED_GIT_MANAGED`, `SKIPPED_EXTERNALLY_BUILT`, `OUTPUT_UPLOAD`, `NOT_PERMITTED`, `COMPILER_UNAVAILABLE`, `WRITE_FAILED`, `INPUT_INCOMPLETE`, `BUSY`, or `UNKNOWN` with `rawStatus` kept), `errors` / `warnings`, `written` / `deleted`, `diagnostics` (+ `diagnosticsOmitted`) and the `gate` block (`tripped`, `withheld`, `problems`). `null` when nothing ran |
+| `publish` | What `takeSnapshot` came to (`published`, counts, diagnostics, `withheld`, `gate`). `null` for a plain push and for a snapshot push whose compile status does not publish (anything but `COMPILED`, `NOTHING_TO_COMPILE`, `SKIPPED_EXTERNALLY_BUILT`) |
+| `historyRecorded` | A snapshot's history entry was recorded. `false` also when nothing was published or the push stopped early |
 | `keptPlatformOnly` | Platform-only files kept because deleting them was not confirmed |
 
-Push uploads sources only. Core does not compile or type-check: the platform compiles BSJS on save
-and again when a snapshot is published, and owns the build folder (`.build` by default), which a
-push neither uploads nor deletes. A snapshot push fails on a refused `snapshot/`
-write, re-uploads a file whose `snapshot/` copy is stale even when `draft/` matches, and reads the
-live copies back afterwards.
+### How a push works
+
+Push uploads sources only, and only to `draft/`. Core does not compile or type-check, never PUTs
+`snapshot/` or a build folder (`.build` by default), and never reads `X-Bluestep-Compile`:
+
+1. Each changed source is PUT to `draft/` (WebDAV writes never compile). Uploads stop at the first
+   failure; if any file went up the draft is still compiled, then the upload error is thrown.
+2. Platform-only files are offered for deletion (declined by default).
+3. `compileDraft` (GraphQL) compiles the whole draft on the platform. `BUSY` is retried 3 times 5 s
+   apart, `INPUT_INCOMPLETE` 3 times 2 s apart, `COMPILER_UNAVAILABLE` and a network failure once.
+   `GATE_TRIPPED` and `EMIT_WITHHELD` are results (`compile.status`), not errors: the sources are saved.
+4. A snapshot push whose compile status is `COMPILED`, `NOTHING_TO_COMPILE` or
+   `SKIPPED_EXTERNALLY_BUILT` then calls `takeSnapshot`, which recompiles and publishes on the
+   platform, and records the history entry. A refusal throws `Err.PublishRefusedError`
+   (`reason`: `GATE_TRIPPED` | `EMIT_WITHHELD` | `ENTRYPOINT_MISSING` | `OUTPUT_SHADOWS` |
+   `COMPILER_UNAVAILABLE` | `BUSY` | `INPUT_INCOMPLETE` | `WRITE_FAILED` | `NOT_PERMITTED` |
+   `UNKNOWN`, with the platform's detail in `publish`); `BUSY` and `INPUT_INCOMPLETE` are retried first.
+   A request that fails without an outcome throws `Err.ServerCompileRequestError` (`phase`, `messages`).
+
+There is no read-back of `snapshot/`: the platform writes it itself. The pieces are exported
+(`compileDraft`, `takeSnapshot`, `uploadAndCompile`, `COMPILE_RETRY`) for consumers and tests.
 
 ### Overwrites and destructive prompts
 
@@ -100,8 +116,9 @@ ask. Declining throws `Err.OverwriteDeclinedError` (a `UserCancelledError`) with
 
 Before uploading anything, a push asks the org's server for its version (`/appinfo/version`) and
 throws `Err.ServerVersionUnsupportedError` (`serverVersion`, `required`, `operation`, `reason`:
-`too-old` | `unknown` | `floor-unset`) if the server may not compile BSJS itself. A plain push needs
-`MIN_SERVER_VERSION_PUSH`, a snapshot push `MIN_SERVER_VERSION_SNAPSHOT`; a `dev` build always passes.
+`too-old` | `unknown` | `floor-unset`) if the server may not run the compile flow above. Every push,
+plain or snapshot, needs `MIN_SERVER_VERSION` (unset until the first web release containing the flow,
+so every non-`dev` server is refused with `floor-unset` until then); a `dev` build always passes.
 
 ```typescript
 await core.script.push({ rootPath, overwrite: ["scripts/app.ts"] });

@@ -2,19 +2,16 @@ import { ApiEndpoints } from "../constants";
 import { Err } from "../Err";
 
 /**
- * Earliest server release that compiles BSJS on save, which a plain push (sources only) relies on.
+ * Earliest server release whose push flow core 0.9.0 speaks: WebDAV never compiles, GraphQL
+ * `compileDraft` compiles the draft, and `takeSnapshot` recompiles and publishes (web #1961 and
+ * #1957). Core has no compiler of its own, so every push, plain or snapshot, needs it. `null`
+ * until that release is cut; while unset, a push to any server but a `dev` build is refused with
+ * reason `floor-unset`.
+ * //HUMAN-REVIEW-NEEDED set this to the first web release tag containing web #1961 and #1957
+ * (2731b31060, 3c44dc71fc) before #23 releases.
  * @lastreviewed null
  */
-export const MIN_SERVER_VERSION_PUSH = "26.11.09.00";
-
-/**
- * Earliest server release whose `takeSnapshot` recompiles, which `push --snapshot` relies on.
- * `null` until web's CU-86bd0nkme is released; while unset, a snapshot push to any server but a
- * `dev` build is refused.
- * //HUMAN-REVIEW-NEEDED set this to the first web release containing CU-86bd0nkme before #23 releases.
- * @lastreviewed null
- */
-export const MIN_SERVER_VERSION_SNAPSHOT: string | null = null;
+export const MIN_SERVER_VERSION: string | null = null;
 
 /** What the server reports on a local build: always current. @lastreviewed null */
 const DEV_VERSION = "dev";
@@ -59,21 +56,20 @@ export function meetsMinimumVersion(serverVersion: string, floor: string): boole
  * compiling. Called once per push, before anything is uploaded.
  * @param opts.origin The org's origin (same as the push's)
  * @param opts.fetchFn The session's `fetch`, so the request shares the push's origin and session
- * @param opts.operation `push` checks {@link MIN_SERVER_VERSION_PUSH}; `snapshot` checks
- *   {@link MIN_SERVER_VERSION_SNAPSHOT}
+ * @param opts.operation Which push is asking; reported on the error, and the same floor applies
+ * @param opts.floor Overrides {@link MIN_SERVER_VERSION} (`null` means unset); used by tests
  * @throws an {@link Err.ServerVersionUnsupportedError} when the server is too old, its version
- *   cannot be read, or the floor for a snapshot is not yet known
+ *   cannot be read, or the floor is not yet known
  * @lastreviewed null
  */
 export async function assertServerVersion(opts: {
   origin: string | URL;
   fetchFn: (url: string | URL, init?: RequestInit) => Promise<Response>;
   operation: "push" | "snapshot";
-  floors?: { push: string; snapshot: string | null };
+  floor?: string | null;
 }): Promise<void> {
   const { origin, fetchFn, operation } = opts;
-  const floors = opts.floors ?? { push: MIN_SERVER_VERSION_PUSH, snapshot: MIN_SERVER_VERSION_SNAPSHOT };
-  const required = operation === "snapshot" ? floors.snapshot : floors.push;
+  const required = opts.floor !== undefined ? opts.floor : MIN_SERVER_VERSION;
   const label = operation === "snapshot" ? "a snapshot push" : "a push";
 
   const url = new URL(origin);

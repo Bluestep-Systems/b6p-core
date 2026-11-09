@@ -8,8 +8,9 @@ export {
   collectOverwriteCandidates,
   confirmOverwrites,
   executePush,
-  verifyLiveSnapshot,
+  uploadAndCompile,
 } from "./script/push";
+export type { OverwriteCandidate, PushResult } from "./script/push";
 export type { PlatformContext } from "./PlatformContext";
 
 // ─── Provider interfaces ─────────────────────────────────────────────
@@ -35,13 +36,7 @@ export { IdUtility } from "./data/IdUtility";
 export { OrgWorker } from "./data/OrgWorker";
 export { ScriptKey } from "./data/ScriptKey";
 export { ScriptUrlParser } from "./data/ScriptUrlParser";
-export {
-  MIN_SERVER_VERSION_PUSH,
-  MIN_SERVER_VERSION_SNAPSHOT,
-  assertServerVersion,
-  meetsMinimumVersion,
-  parseReleaseTag,
-} from "./data/ServerVersion";
+export { MIN_SERVER_VERSION, assertServerVersion, meetsMinimumVersion, parseReleaseTag } from "./data/ServerVersion";
 
 // ─── Auth + sessions ─────────────────────────────────────────────────
 export { BearerAuthProvider } from "./auth/BearerAuthProvider";
@@ -59,6 +54,29 @@ export { ScriptFile } from "./script/ScriptFile";
 export type { ScriptFolder } from "./script/ScriptFolder";
 export type { ScriptContext } from "./script/ScriptContext";
 export { ScriptService } from "./script/ScriptService";
+export {
+  COMPILE_RETRY,
+  KNOWN_DRAFT_COMPILE_STATUSES,
+  KNOWN_PUBLISH_REFUSAL_REASONS,
+  PUBLISHABLE_COMPILE_STATUSES,
+  compileAllowsPublish,
+  compileDraft,
+  parseDraftCompileOutcome,
+  parsePublishOutcome,
+  takeSnapshot,
+} from "./script/ServerCompile";
+export type {
+  CompileDiagnostic,
+  DraftCompileOutcome,
+  DraftCompileStatus,
+  GateProblem,
+  GateReport,
+  PublishOutcome,
+  PublishRefusalReason,
+  RetryPolicy,
+  ServerCompileOptions,
+  ServerCompileTarget,
+} from "./script/ServerCompile";
 export type { AuditResult, DeployConfig, PullResult } from "./script/ScriptService";
 
 // ─── Constants ───────────────────────────────────────────────────────

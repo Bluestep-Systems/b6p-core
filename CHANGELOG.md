@@ -10,18 +10,50 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **A push first checks the org's server version** (`GET /appinfo/version`), since core no longer
-  compiles and a server without compile on save would hold sources with no compiled output. A plain
-  push needs `MIN_SERVER_VERSION_PUSH` (`26.11.09.00`); `push --snapshot` needs
-  `MIN_SERVER_VERSION_SNAPSHOT`, which is unset until web's CU-86bd0nkme is released (so a snapshot
-  push to any server but a `dev` build is refused, and this must be set before release). `dev`
-  counts as current; a non-200, a failed request or a non-release string counts as unknown and
-  refuses. Refusals throw the new `Err.ServerVersionUnsupportedError` (`serverVersion`, `required`,
-  `operation`, `reason`: `too-old` | `unknown` | `floor-unset`) before anything is uploaded. New
-  exports: `assertServerVersion`, `meetsMinimumVersion`, `parseReleaseTag` and the two floor
-  constants (CU-86bczwj62).
+  compiles and a server without the compile flow would hold sources with no compiled output. One
+  floor, `MIN_SERVER_VERSION`, covers plain and snapshot pushes; it is `null` until the first web
+  release containing web #1961 and #1957 exists (so a push to any server but a `dev` build is
+  refused with `floor-unset`, and it must be set before release). `dev` counts as current; a non-200,
+  a failed request or a non-release string counts as unknown and refuses. Refusals throw the new
+  `Err.ServerVersionUnsupportedError` (`serverVersion`, `required`, `operation`, `reason`:
+  `too-old` | `unknown` | `floor-unset`) before anything is uploaded. New exports:
+  `assertServerVersion`, `meetsMinimumVersion`, `parseReleaseTag`, `MIN_SERVER_VERSION`
+  (CU-86bczwj62).
+- **Compile and publish go through the platform.** After the sources are PUT to `draft/`, a push
+  calls the GraphQL `compileDraft` input and returns its outcome as `PushResult.compile`
+  (`DraftCompileOutcome`: `status`, error and warning counts, files written and deleted,
+  `diagnostics` + `diagnosticsOmitted`, and the `gate` block). `BUSY` is retried 3 times 5 s apart,
+  `INPUT_INCOMPLETE` 3 times 2 s apart, `COMPILER_UNAVAILABLE` and a network failure once. A tripped
+  gate (`GATE_TRIPPED`) or a withheld emit (`EMIT_WITHHELD`) is a result with the sources saved, not
+  an exception. If a PUT fails, uploading stops, `compileDraft` is still sent when any file went up,
+  and the PUT error is thrown. New exports: `compileDraft`, `takeSnapshot`, `uploadAndCompile`,
+  `compileAllowsPublish`, `parseDraftCompileOutcome`, `parsePublishOutcome`, `COMPILE_RETRY`,
+  `KNOWN_DRAFT_COMPILE_STATUSES`, `KNOWN_PUBLISH_REFUSAL_REASONS`, `PUBLISHABLE_COMPILE_STATUSES` and
+  the types `DraftCompileOutcome`, `DraftCompileStatus`, `PublishOutcome`, `PublishRefusalReason`,
+  `GateReport`, `GateProblem`, `CompileDiagnostic`, `RetryPolicy`, `ServerCompileOptions`,
+  `ServerCompileTarget`, `PushResult`, `OverwriteCandidate` (CU-86bczwj62).
+- **`Err.PublishRefusedError` (`reason`, `rawReason`, `publish`) and `Err.ServerCompileRequestError`
+  (`phase`, `messages`, `networkFailure`).** The first is thrown when the platform refuses a
+  `takeSnapshot` (`PUBLISH_REFUSED`; `BUSY` and `INPUT_INCOMPLETE` are retried first); core reads
+  the error's `extensions.reason` / `extensions.publish`, never its message. The second is thrown
+  for any other failed compile or publish request (a GraphQL error such as not being allowed to edit
+  the script, or a request that failed twice).
 
 ### Changed
 
+- **BREAKING: a snapshot push now goes through the server.** `push --snapshot` no longer PUTs files
+  into `snapshot/`: it uploads to `draft/`, calls `compileDraft`, and, when the compile status is
+  `COMPILED`, `NOTHING_TO_COMPILE` or `SKIPPED_EXTERNALLY_BUILT`, calls the `takeSnapshot` mutation,
+  which recompiles against sibling snapshots and refuses on a gate trip, a withheld emit, a missing
+  entrypoint output and similar (`Err.PublishRefusedError`). Any other compile status publishes
+  nothing and is returned in `PushResult.compile` (and `PushResult.publish` is `null`). The history
+  entry is recorded only after a publish. Removed with it: `verifyLiveSnapshot`, `LiveSnapshotCheck`,
+  `PushResult.liveVerified` and `liveMismatches` (the platform writes `snapshot/` itself, so there is
+  no copy of ours to read back), `ScriptFile.snapshotUrl`, `ScriptFile.readBackStatus`, the
+  `isSnapshot` option of `ScriptFile.upload`, `getReasonToNotPush`, `collectOverwriteCandidates`
+  and `ScriptRoot.getPushableNodes` (the skip rule now looks at `draft/` only), and the two floor
+  constants `MIN_SERVER_VERSION_PUSH` / `MIN_SERVER_VERSION_SNAPSHOT` (replaced by one
+  `MIN_SERVER_VERSION`). `PushResult` gains `compile` and `publish` (ClickUp 86bczwj62).
 - **BREAKING: core no longer compiles or type-checks; `push` uploads sources only.** The platform
   now compiles BSJS server-side, on save and again when a snapshot is published, so the in-process
   TypeScript compiler is gone (ClickUp 86bczwj62). Hold the release until that server-side

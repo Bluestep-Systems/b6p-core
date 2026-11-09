@@ -291,20 +291,18 @@ export class ScriptRoot {
     return badFiles;
   }
 
-  public async getPushableNodes(snapshot: boolean = false): Promise<ScriptNode[]> {
+  public async getPushableNodes(): Promise<ScriptNode[]> {
     const flattenedDraft = await this.getDraftFolder().flatten();
     const pushableNodes: ScriptNode[] = [];
     for (const f of flattenedDraft) {
-      // A snapshot push skips a file only when its snapshot/ copy matches too (ClickUp 86bbqnrtp).
-      const reason = await f.getReasonToNotPush({ isSnapshot: snapshot });
+      const reason = await f.getReasonToNotPush();
       if (reason) {
         this.ctx.logger.info(`Excluding draft file from push: ${f.path()} (${reason})`);
         continue;
       }
-      const isSnapshotOrNotInBuild = snapshot || !(await f.isInItsRespectiveBuildFolder());
 
       const fileName = f.path();
-      if (isSnapshotOrNotInBuild) {
+      if (!(await f.isInItsRespectiveBuildFolder())) {
         pushableNodes.push(f);
       } else {
         this.ctx.logger.info(`Excluding file in build folder from push: ${fileName}`);

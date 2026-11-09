@@ -1,6 +1,6 @@
 import * as path from "path";
 import { webcrypto } from "node:crypto";
-import { CryptoAlgorithms, FileExtensions, FolderNames, Http, MimeTypes } from "../constants";
+import { CryptoAlgorithms, FileExtensions, Http, MimeTypes } from "../constants";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
 import { Err } from "../Err";
 import { ResponseCodes } from "../network/StatusCodes";
@@ -152,34 +152,6 @@ export class ScriptFile extends ScriptNode {
     return status;
   }
 
-  /**
-   * Reads back one platform copy a push just wrote. Unlike {@link currentIntegrityStatus}, it keeps
-   * the HTTP answer: a copy the platform doesn't serve (`404`) or can't answer for (any other
-   * non-2xx) is a failed read-back, not an unknown one, so the caller can re-send it and fail if it
-   * stays that way (ClickUp 86bbqnrtp). `SessionManager.fetch` returns those answers instead of
-   * throwing, and they carry no ETag, so treating them as "no content hash" let a missing live copy
-   * pass as verified.
-   * @param target The copy's URL, e.g. the {@link snapshotUrl} of this file's draft URL
-   * @returns `"match"` or `"mismatch"` by hash, `"missing"` on `404`, `"unreadable"` on any other
-   *   non-2xx, and `"indeterminate"` on a 2xx whose ETag carries no content hash
-   * @lastreviewed null
-   */
-  public async readBackStatus(target: URL): Promise<"match" | "mismatch" | "missing" | "unreadable" | "indeterminate"> {
-    const response = await this.ctx.sessionManager.fetch(target, { method: Http.Methods.HEAD });
-    if (response.status === ResponseCodes.NOT_FOUND) {
-      return "missing";
-    }
-    if (!response.ok) {
-      this.ctx.logger.debug("read-back of", target.href, "answered", response.status);
-      return "unreadable";
-    }
-    const upstairsHash = this.hashFromEtag(response.headers.get(Http.Headers.ETAG));
-    if (upstairsHash === null) {
-      return "indeterminate";
-    }
-    return upstairsHash === (await this.getHash()) ? "match" : "mismatch";
-  }
-
   public async currentIntegrityMatches(ops?: { upstairsOverride?: URL }): Promise<boolean> {
     return (await this.currentIntegrityStatus(ops)) === "match";
   }
@@ -187,7 +159,7 @@ export class ScriptFile extends ScriptNode {
   /**
    * Whether an upload would overwrite a platform-side version nobody here has seen, which is what
    * the overwrite prompt guards. A file is at risk only when all of these hold:
-   *  - it isn't a snapshot or build-folder file (compiled output is always rewritten);
+   *  - it isn't a snapshot or build-folder file (the platform owns those);
    *  - the platform has a `draft/` copy (its `HEAD` isn't 404);
    *  - that copy differs from the local bytes (writing the same bytes loses nothing);
    *  - it differs from the last sync record, or there is no record (never pulled or pushed here).
@@ -414,17 +386,16 @@ export class ScriptFile extends ScriptNode {
     return newUrl;
   }
 
-  public async getReasonToNotPush(ops?: { upstairsOverride?: URL; isSnapshot?: boolean }): Promise<string | null> {
-    // The answer is cached for the life of this instance and ignores later `ops`. That is safe
-    // because executePush() builds one ScriptFile per file per push, so a draft-only answer from a
-    // plain push can never be served to a snapshot push, which also needs the snapshot/ check.
+  public async getReasonToNotPush(ops?: { upstairsOverride?: URL }): Promise<string | null> {
+    // The answer is cached for the life of this instance and ignores later `ops`; executePush()
+    // builds one ScriptFile per file per push.
     if (this._reasonToNotPush !== undefined) {
       return this._reasonToNotPush;
     }
     return await this.setReasonToNotPush(ops);
   }
 
-  private async setReasonToNotPush(ops?: { upstairsOverride?: URL; isSnapshot?: boolean }): Promise<string | null> {
+  private async setReasonToNotPush(ops?: { upstairsOverride?: URL }): Promise<string | null> {
     if (this.parser.type === "root") {
       this._reasonToNotPush = "Node is the root folder";
     } else if (this.isInDeclarations()) {
@@ -442,28 +413,13 @@ export class ScriptFile extends ScriptNode {
   }
 
   /**
-   * Whether the platform already holds this file's local bytes, so a push may skip it. A plain push
-   * checks the `draft/` copy. A snapshot push also checks the `snapshot/` copy the runtime serves,
-   * with one extra `HEAD` made only when `draft/` already matches.
-   *
-   * Checking `draft/` alone left a snapshot stuck: after a failed `snapshot/` write, `draft/` holds
-   * the new bytes, so every later snapshot push skipped the file and the old version stayed live
-   * (ClickUp 86bbqnrtp). An indeterminate `snapshot/` hash (a copy that doesn't exist yet answers
-   * with no ETag) counts as not matching, so the file is uploaded.
+   * Whether the platform's `draft/` copy already holds this file's local bytes, so a push may skip it.
    * @param ops.upstairsOverride The file's `draft/` URL, when it differs from {@link upstairsUrl}
-   * @param ops.isSnapshot Whether the push also publishes to `snapshot/`
-   * @returns `true` only when every copy the push would write already matches local
    * @lastreviewed null
    */
-  private async platformCopiesMatch(ops?: { upstairsOverride?: URL; isSnapshot?: boolean }): Promise<boolean> {
+  private async platformCopiesMatch(ops?: { upstairsOverride?: URL }): Promise<boolean> {
     const draftUrl = ops?.upstairsOverride ?? (await this.upstairsUrl());
-    if (!(await this.currentIntegrityMatches({ upstairsOverride: draftUrl }))) {
-      return false;
-    }
-    if (!ops?.isSnapshot) {
-      return true;
-    }
-    return await this.currentIntegrityMatches({ upstairsOverride: ScriptFile.snapshotUrl(draftUrl) });
+    return await this.currentIntegrityMatches({ upstairsOverride: draftUrl });
   }
 
   private isInGitFolder(): boolean {
@@ -489,40 +445,19 @@ export class ScriptFile extends ScriptNode {
   }
 
   /**
-   * The `snapshot/` twin of a `draft/` WebDAV URL: where a snapshot push writes the same bytes, and
-   * what the platform runtime reads. Swaps the first `draft` in the pathname for `snapshot`, the
-   * same rule `upload()` has always used. The host (a deploy target override included) and the
-   * input URL are left untouched.
-   * @param draftUrl The file's `draft/` URL
-   * @returns A new URL for the file's `snapshot/` copy
-   * @lastreviewed null
-   */
-  public static snapshotUrl(draftUrl: URL): URL {
-    const snapshotUrl = new URL(draftUrl);
-    snapshotUrl.pathname = snapshotUrl.pathname.replace(new RegExp(FolderNames.DRAFT), FolderNames.SNAPSHOT);
-    return snapshotUrl;
-  }
-
-  /**
-   * Pushes this file to its `draft/` copy and, on a snapshot push, to its `snapshot/` copy too,
-   * unless {@link getReasonToNotPush} says to skip it. Asks before overwriting a `draft/` copy that
-   * changed on the platform since the last push or pull.
+   * Pushes this file to its `draft/` copy, unless {@link getReasonToNotPush} says to skip it. Never
+   * writes `snapshot/` or a build folder: the platform compiles and publishes (see `executePush`).
+   * Asks before overwriting a `draft/` copy that changed on the platform since the last push or pull.
    * @param arg.upstairsUrlOverrideString A URL whose host replaces the file's own (deploy targets)
-   * @param arg.isSnapshot Whether to publish to `snapshot/` as well
    * @param arg.overwriteConfirmed The overwrite was already confirmed for this file (the push's one
    *   up-front confirmation, or the caller's own list), so don't ask again
-   * @returns `undefined` when the file was skipped; otherwise the response of the last write. A
-   *   resolved `Response` means every copy the push targets was written and accepted: any refused
-   *   write throws. `executePush` reads it to pick the files the read-back verifies.
-   * @throws an {@link Err.FileSendError} when the platform refuses either write
+   * @returns `undefined` when the file was skipped; otherwise the response of the write. A resolved
+   *   `Response` means the platform accepted it: a refused write throws.
+   * @throws an {@link Err.FileSendError} when the platform refuses the write
    * @throws an {@link Err.UserCancelledError} when the user declines the overwrite
    * @lastreviewed null
    */
-  async upload(arg?: {
-    upstairsUrlOverrideString?: string;
-    isSnapshot?: boolean;
-    overwriteConfirmed?: boolean;
-  }): Promise<Response | void> {
+  async upload(arg?: { upstairsUrlOverrideString?: string; overwriteConfirmed?: boolean }): Promise<Response | void> {
     if (await this.isFolder()) {
       throw new Err.ScriptOperationError("somehow a folder got created to upload with this method. ");
     }
@@ -533,7 +468,7 @@ export class ScriptFile extends ScriptNode {
     upstairsOverride.pathname = thisUpstairs.pathname;
     // Skip check first: a file that won't be uploaded (ignored, declarations, already in sync) is
     // never asked about.
-    const reason = await this.getReasonToNotPush({ upstairsOverride, isSnapshot: arg?.isSnapshot });
+    const reason = await this.getReasonToNotPush({ upstairsOverride });
 
     if (reason) {
       this.ctx.logger.info(`${reason}; not pushing file:`, this.uri().fsPath);
@@ -558,46 +493,30 @@ export class ScriptFile extends ScriptNode {
         { destructive: true, safeOption: CANCEL }
       );
       if (answer !== OVERWRITE) {
-        const kind = arg?.isSnapshot ? "Snapshot push" : "Push";
-        await this.ctx.prompt.popup(`${kind} cancelled: ${relative} was not overwritten.`);
+        await this.ctx.prompt.popup(`Push cancelled: ${relative} was not overwritten.`);
         // The message is all a non-interactive caller sees, so it says what was kept and why.
         // How to confirm an overwrite depends on the consumer (a flag, a button), so it is left to
         // the consumer, which gets the files in `paths`.
         throw new Err.OverwriteDeclinedError(
-          `${kind} stopped: ${relative} was not overwritten. ${why} Pull or audit it to see the ` +
+          `Push stopped: ${relative} was not overwritten. ${why} Pull or audit it to see the ` +
             `platform version before overwriting it.`,
           [relative]
         );
       }
     }
     this.ctx.logger.info("Destination:", upstairsOverride.toString());
-    if (arg?.isSnapshot && this.parser.type !== FolderNames.DRAFT) {
-      throw new Err.ScriptOperationError(
-        "This should never happen, this is here as a safetycheck and should be removed when we're confident."
-      );
-    }
 
     const draftResp = await this.putTo(upstairsOverride);
-    // The sync record describes the draft/ copy (platformChangeAtRisk compares it with the draft/
-    // ETag), so it is written as soon as that copy lands. Writing it only after the snapshot/ PUT
-    // would make a failed snapshot write look like a platform-side edit on the next push.
+    // The sync record describes the draft/ copy (platformChangeAtRisk compares it with the draft/ ETag).
     await this.touch();
-    if (!arg?.isSnapshot) {
-      this.ctx.logger.info("File sent successfully:", this.uri().fsPath);
-      return draftResp;
-    }
-    // A failed snapshot/ write leaves the previous version live, so it fails the push exactly like
-    // a failed draft/ write. It used to be ignored and reported as success (ClickUp 86bbqnrtp).
-    const snapshotResp = await this.putTo(ScriptFile.snapshotUrl(upstairsOverride));
     this.ctx.logger.info("File sent successfully:", this.uri().fsPath);
-    return snapshotResp;
+    return draftResp;
   }
 
   /**
    * PUTs the local bytes to one WebDAV location, with no prompt, skip check or sync record. It is
-   * the single write both copies of an upload go through, and what the post-publish read-back uses
-   * to re-send a `snapshot/` copy that came back wrong.
-   * @param target The WebDAV URL to write, e.g. a `draft/` URL or its {@link snapshotUrl}
+   * the single write an upload goes through.
+   * @param target The WebDAV URL to write, a `draft/` URL
    * @returns The platform's response, always ok
    * @throws an {@link Err.FileSendError} naming the URL and status when the platform refuses the write
    * @lastreviewed null
