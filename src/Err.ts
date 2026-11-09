@@ -1,3 +1,4 @@
+import type { CompileRoute } from "./data/ServerVersion";
 import type { PublishOutcome, PublishRefusalReason } from "./script/ServerCompile";
 
 /**
@@ -338,6 +339,37 @@ export namespace Err {
     constructor(message: string) {
       super(message);
       this.name = "CompilationError";
+    }
+  }
+
+  // TODO(2026-12-09): remove the local TS 7.1 fallback once every namespace runs web >= MIN_SERVER_VERSION (ruling 44)
+  /**
+   * Thrown by the local fallback compile when TypeScript 7's native compiler cannot be loaded or
+   * started: typically the per-platform package (`@typescript/typescript-<os>-<arch>`) is missing,
+   * there is none for this platform, or its binary cannot be run. Nothing has been uploaded at that
+   * point. Read `serverVersion` and `reason` for why the push needed the local compiler.
+   * @lastreviewed null
+   */
+  export class LocalCompilerUnavailableError extends CompilationError {
+    /**
+     * The version the server reported, or `null` when it could not be read (or the error came from
+     * a compile outside a push).
+     * @lastreviewed null
+     */
+    readonly serverVersion: string | null;
+    /** Why the push took the local path, or `null` outside a push. @lastreviewed null */
+    readonly reason: CompileRoute["reason"] | null;
+    /** What the loader or the process start threw. @lastreviewed null */
+    override readonly cause: unknown;
+    constructor(
+      message: string,
+      details: { serverVersion: string | null; reason: CompileRoute["reason"] | null; cause: unknown }
+    ) {
+      super(message);
+      this.name = "LocalCompilerUnavailableError";
+      this.serverVersion = details.serverVersion;
+      this.reason = details.reason;
+      this.cause = details.cause;
     }
   }
 
@@ -790,42 +822,6 @@ export namespace Err {
       super(message);
       this.name = "OverwriteDeclinedError";
       this.paths = paths;
-    }
-  }
-
-  /**
-   * Thrown, before anything is uploaded, when a push needs a server that compiles BSJS itself and
-   * the org's server is older than that, reports a version core cannot read, or cannot be asked.
-   * @lastreviewed null
-   */
-  export class ServerVersionUnsupportedError extends Error {
-    /** The version the server reported, or `null` when it could not be read. @lastreviewed null */
-    readonly serverVersion: string | null;
-    /** The earliest release the operation needs, or `null` when that is not yet known. @lastreviewed null */
-    readonly required: string | null;
-    /** The operation that was refused. @lastreviewed null */
-    readonly operation: "push" | "snapshot";
-    /**
-     * Why it was refused: `too-old` (a readable version below the floor), `unknown` (no readable
-     * version) or `floor-unset` (the floor for this operation is not yet known).
-     * @lastreviewed null
-     */
-    readonly reason: "too-old" | "unknown" | "floor-unset";
-    constructor(
-      message: string,
-      details: {
-        serverVersion: string | null;
-        required: string | null;
-        operation: "push" | "snapshot";
-        reason: "too-old" | "unknown" | "floor-unset";
-      }
-    ) {
-      super(message);
-      this.name = "ServerVersionUnsupportedError";
-      this.serverVersion = details.serverVersion;
-      this.required = details.required;
-      this.operation = details.operation;
-      this.reason = details.reason;
     }
   }
 

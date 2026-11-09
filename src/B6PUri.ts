@@ -191,11 +191,11 @@ export class B6PUri {
    * of one directory compare equal.
    *
    * The single definition behind every marker-insensitive comparison in the codebase:
-   * `ScriptFolder.contains`/`equals`, path-containment checks in the push, and
-   * `MockFileSystem`'s entry keys. It lives here, beside
+   * `ScriptFolder.contains`/`equals`, `ScriptRoot.selectStaleBundles`'s containment
+   * test, and `MockFileSystem`'s entry keys. It lives here, beside
    * {@link B6PUri.isDirectoryMarked} and {@link B6PUri.asDirectory}, because a
-   * comparison rule that disagrees with the API producing the marker once silently
-   * broke a containment check.
+   * comparison rule that disagrees with the API producing the marker is how the
+   * stale-bundle regression happened.
    *
    * Accepts either a filesystem path or a URL string, and handles each on its own
    * terms:
@@ -239,8 +239,10 @@ export class B6PUri {
    * The result is a directory in every case by construction, so marking it looks
    * right — and an earlier revision did exactly that, via {@link B6PUri.asDirectory}.
    * It caused a real regression: `TsConfig.folder()` is built from `rawUri.dirname`,
-   * so a containment test began comparing against `"…/static" + sep + sep`.
-   * Nothing ever matched, and a check that depended on it silently stopped working.
+   * so `ScriptRoot.findStaleClientBundles` began pushing a marker-terminated
+   * `sourceRoot`, and `selectStaleBundles`'s containment test compared against
+   * `"…/static" + sep + sep`. Nothing ever matched, and `b6p push` silently stopped
+   * warning about stale compiled client bundles.
    *
    * The misclassification the marker was meant to prevent — `ScriptFactory.createNode`
    * treating a parent directory as a `ScriptFile` — is not reachable from any call

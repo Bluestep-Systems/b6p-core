@@ -94,18 +94,30 @@ no matter what. Correctness comes from `check-types` under `strict` + `noUnusedL
 in `tsconfig.base.json` — strictness belongs there, and `tsconfig.json` carries only this package's
 output settings. Do not reintroduce a linter without wiring it to a **failing** exit code.
 
-**`typescript` is an exact-pinned `devDependency` (7.x) and builds the package only.** This library
-ships no compiler and nothing in `src/` may import `typescript`: the platform compiles BSJS
-server-side, so `push` uploads sources and never emits, uploads `.build` or type-checks. Do not move it back to `dependencies`, do not float the
-pin, and read `b6p-cli/docs/adr/0003-*` (the TypeScript version strategy, superseding 0002) before
-changing this.
+**`typescript` is an exact-pinned runtime `dependency` at `7.1.0-beta`, and it is temporary.** It
+also builds the package (one compiler only; do not add a second or float the pin). The push has two
+paths (ruling 44): a server at or above `MIN_SERVER_VERSION` (or a `dev` build) compiles BSJS
+itself; any other server (below the floor, an unreadable version, or the floor unset) gets the
+**local fallback**, the pre-0.9.0 push compiled in-process with TypeScript 7.1's native
+full-program API (`typescript/sync`: `ScriptTranspiler`, the entrypoint check, the stale-bundle
+warning, the type-check, `.build` + `snapshot/` PUTs and the read-back). The API spawns a native
+`tsc` from the per-platform optional dependency `@typescript/typescript-<os>-<arch>`, which also
+carries the lib `.d.ts` files (so there is no `typescriptLibDirs` provider); one process per push,
+closed in `finally`, never two at once. `typescript/sync` is ESM, so it is loaded with dynamic
+`import()`; the binary is found and test-run first (`resolveNativeCompilerPath`) because the API
+spawns it with no `error` listener and a missing binary would crash the process instead of throwing
+`Err.LocalCompilerUnavailableError`. Every fallback-only piece carries
+`// TODO(2026-12-09): remove the local TS 7.1 fallback ...`; remove them all, and move `typescript`
+back to a `devDependency`, once every namespace runs web >= `MIN_SERVER_VERSION`. Read
+`b6p-cli/docs/adr/0003-*` (the TypeScript version strategy, superseding 0002) before changing this.
 
-**The push flow is PUT `draft/` → `compileDraft` → (snapshot push) `takeSnapshot`, all against the
-server's contract** (`src/script/ServerCompile.ts`, `push.ts`). Core never PUTs into `snapshot/` or a
-build folder, reads no `X-Bluestep-Compile` header, and parses a publish refusal from the error's
-`extensions.reason` / `extensions.publish`, never its message. A tripped gate or withheld emit is a
-`PushResult.compile` result, not an exception. `MIN_SERVER_VERSION` (`data/ServerVersion.ts`) gates
-every push and stays `null` until the first web release containing the flow is tagged.
+**The server push flow is PUT `draft/` → `compileDraft` → (snapshot push) `takeSnapshot`, all against
+the server's contract** (`src/script/ServerCompile.ts`, `push.ts`). On that path core never PUTs into
+`snapshot/` or a build folder, reads no `X-Bluestep-Compile` header, and parses a publish refusal
+from the error's `extensions.reason` / `extensions.publish`, never its message. A tripped gate or
+withheld emit is a `PushResult.compile` result, not an exception. `MIN_SERVER_VERSION`
+(`data/ServerVersion.ts`) picks the path for every push (`resolveCompileRoute`, never a refusal) and
+stays `null` until the first web release containing the flow is tagged.
 
 ## Documentation, in the same change
 

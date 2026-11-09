@@ -20,13 +20,17 @@ export class ScriptFolder extends ScriptNode {
 
   public override async upload(_arg?: {
     upstairsUrlOverrideString?: string;
+    isSnapshot?: boolean;
     overwriteConfirmed?: boolean;
   }): Promise<Response | void> {
     this.ctx.logger.info(`ScriptFolder.upload() called on ${this.path()}; no action taken.`);
     return;
   }
 
-  public override async getReasonToNotPush(_arg?: { upstairsOverride?: URL }): Promise<string | null> {
+  public override async getReasonToNotPush(_arg?: {
+    upstairsOverride?: URL;
+    isSnapshot?: boolean;
+  }): Promise<string | null> {
     return `Node (${this.path()}) is a folder`;
   }
 

@@ -9,69 +9,72 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **A push first checks the org's server version** (`GET /appinfo/version`), since core no longer
-  compiles and a server without the compile flow would hold sources with no compiled output. One
-  floor, `MIN_SERVER_VERSION`, covers plain and snapshot pushes; it is `null` until the first web
-  release containing web #1961 and #1957 exists (so a push to any server but a `dev` build is
-  refused with `floor-unset`, and it must be set before release). `dev` counts as current; a non-200,
-  a failed request or a non-release string counts as unknown and refuses. Refusals throw the new
-  `Err.ServerVersionUnsupportedError` (`serverVersion`, `required`, `operation`, `reason`:
-  `too-old` | `unknown` | `floor-unset`) before anything is uploaded. New exports:
-  `assertServerVersion`, `meetsMinimumVersion`, `parseReleaseTag`, `MIN_SERVER_VERSION`
-  (CU-86bczwj62).
-- **Compile and publish go through the platform.** After the sources are PUT to `draft/`, a push
-  calls the GraphQL `compileDraft` input and returns its outcome as `PushResult.compile`
-  (`DraftCompileOutcome`: `status`, error and warning counts, files written and deleted,
-  `diagnostics` + `diagnosticsOmitted`, and the `gate` block). `BUSY` is retried 3 times 5 s apart,
-  `INPUT_INCOMPLETE` 3 times 2 s apart, `COMPILER_UNAVAILABLE` and a network failure once. A tripped
-  gate (`GATE_TRIPPED`) or a withheld emit (`EMIT_WITHHELD`) is a result with the sources saved, not
-  an exception. If a PUT fails, uploading stops, `compileDraft` is still sent when any file went up,
-  and the PUT error is thrown. New exports: `compileDraft`, `takeSnapshot`, `uploadAndCompile`,
-  `compileAllowsPublish`, `parseDraftCompileOutcome`, `parsePublishOutcome`, `COMPILE_RETRY`,
-  `KNOWN_DRAFT_COMPILE_STATUSES`, `KNOWN_PUBLISH_REFUSAL_REASONS`, `PUBLISHABLE_COMPILE_STATUSES` and
-  the types `DraftCompileOutcome`, `DraftCompileStatus`, `PublishOutcome`, `PublishRefusalReason`,
+- **A push picks who compiles from the org's server version** (`GET /appinfo/version`,
+  `resolveCompileRoute`, ruling 44). A `dev` build, or a release at or above `MIN_SERVER_VERSION`,
+  gets the server compile below. Any other server (a release below the floor, a version that cannot
+  be read, or any release while the floor is unset) gets the **local fallback**: the push exactly as
+  0.8.x ran it, now compiled with the bundled TypeScript 7.1. Nothing is refused for its version, so
+  0.9.0 pushes to every org. `MIN_SERVER_VERSION` is `null` until the first web release containing
+  web #1961 and #1957 is tagged, so until then every non-`dev` server takes the fallback. New exports:
+  `resolveCompileRoute`, `meetsMinimumVersion`, `parseReleaseTag`, `MIN_SERVER_VERSION` and the
+  `CompileRoute` type (CU-86bczwj62).
+- **`PushResult.compileMode` (`"server"` | `"local"`) and `PushResult.route`** (`mode`, `reason`:
+  `dev` | `at-or-above-floor` | `below-floor` | `unknown` | `floor-unset`, `serverVersion`,
+  `required`). Both are `null` only when the draft folder is missing.
+- **Server path: compile and publish go through the platform.** After the sources are PUT to
+  `draft/`, a push calls the GraphQL `compileDraft` input and returns its outcome as
+  `PushResult.compile` (`DraftCompileOutcome`: `status`, error and warning counts, files written and
+  deleted, `diagnostics` + `diagnosticsOmitted`, and the `gate` block). `BUSY` is retried 3 times
+  5 s apart, `INPUT_INCOMPLETE` 3 times 2 s apart, `COMPILER_UNAVAILABLE` and a network failure
+  once. A tripped gate (`GATE_TRIPPED`) or a withheld emit (`EMIT_WITHHELD`) is a result with the
+  sources saved, not an exception. If a PUT fails, uploading stops, `compileDraft` is still sent when
+  any file went up, and the PUT error is thrown. A snapshot push whose compile status is `COMPILED`,
+  `NOTHING_TO_COMPILE` or `SKIPPED_EXTERNALLY_BUILT` then calls `takeSnapshot`, which recompiles
+  against sibling snapshots and publishes, or refuses (`Err.PublishRefusedError`); the history entry
+  is recorded only after a publish. On this path core never PUTs `snapshot/` or a build folder, and
+  neither uploads nor deletes files under a tsconfig's build folder. New exports: `compileDraft`,
+  `takeSnapshot`, `uploadAndCompile`, `compileAllowsPublish`, `parseDraftCompileOutcome`,
+  `parsePublishOutcome`, `COMPILE_RETRY`, `KNOWN_DRAFT_COMPILE_STATUSES`,
+  `KNOWN_PUBLISH_REFUSAL_REASONS`, `PUBLISHABLE_COMPILE_STATUSES` and the types
+  `DraftCompileOutcome`, `DraftCompileStatus`, `PublishOutcome`, `PublishRefusalReason`,
   `GateReport`, `GateProblem`, `CompileDiagnostic`, `RetryPolicy`, `ServerCompileOptions`,
-  `ServerCompileTarget`, `PushResult`, `OverwriteCandidate` (CU-86bczwj62).
+  `ServerCompileTarget` (CU-86bczwj62).
 - **`Err.PublishRefusedError` (`reason`, `rawReason`, `publish`) and `Err.ServerCompileRequestError`
-  (`phase`, `messages`, `networkFailure`).** The first is thrown when the platform refuses a
-  `takeSnapshot` (`PUBLISH_REFUSED`; `BUSY` and `INPUT_INCOMPLETE` are retried first); core reads
-  the error's `extensions.reason` / `extensions.publish`, never its message. The second is thrown
-  for any other failed compile or publish request (a GraphQL error such as not being allowed to edit
-  the script, or a request that failed twice).
+  (`phase`, `messages`, `networkFailure`)**, server path only. The first is thrown when the platform
+  refuses a `takeSnapshot` (`PUBLISH_REFUSED`; `BUSY` and `INPUT_INCOMPLETE` are retried first); core
+  reads the error's `extensions.reason` / `extensions.publish`, never its message. The second is
+  thrown for any other failed compile or publish request.
+- **`Err.LocalCompilerUnavailableError` (`serverVersion`, `reason`, `cause`)**, a `CompilationError`
+  thrown by a local-path snapshot push when TypeScript 7.1's native compiler for this platform is
+  missing or cannot run. Nothing is uploaded. New exports for the fallback compiler:
+  `ScriptTranspiler`, `startNativeCompiler`, `resolveNativeCompilerPath` and the types
+  `CompilerApi`, `CompilerApiFactory`.
+- `PushResult.compile` and `PushResult.publish` (server path; `null` on the local path).
 
 ### Changed
 
-- **BREAKING: a snapshot push now goes through the server.** `push --snapshot` no longer PUTs files
-  into `snapshot/`: it uploads to `draft/`, calls `compileDraft`, and, when the compile status is
-  `COMPILED`, `NOTHING_TO_COMPILE` or `SKIPPED_EXTERNALLY_BUILT`, calls the `takeSnapshot` mutation,
-  which recompiles against sibling snapshots and refuses on a gate trip, a withheld emit, a missing
-  entrypoint output and similar (`Err.PublishRefusedError`). Any other compile status publishes
-  nothing and is returned in `PushResult.compile` (and `PushResult.publish` is `null`). The history
-  entry is recorded only after a publish. Removed with it: `verifyLiveSnapshot`, `LiveSnapshotCheck`,
-  `PushResult.liveVerified` and `liveMismatches` (the platform writes `snapshot/` itself, so there is
-  no copy of ours to read back), `ScriptFile.snapshotUrl`, `ScriptFile.readBackStatus`, the
-  `isSnapshot` option of `ScriptFile.upload`, `getReasonToNotPush`, `collectOverwriteCandidates`
-  and `ScriptRoot.getPushableNodes` (the skip rule now looks at `draft/` only), and the two floor
-  constants `MIN_SERVER_VERSION_PUSH` / `MIN_SERVER_VERSION_SNAPSHOT` (replaced by one
-  `MIN_SERVER_VERSION`). `PushResult` gains `compile` and `publish` (ClickUp 86bczwj62).
-- **BREAKING: core no longer compiles or type-checks; `push` uploads sources only.** The platform
-  now compiles BSJS server-side, on save and again when a snapshot is published, so the in-process
-  TypeScript compiler is gone (ClickUp 86bczwj62). Hold the release until that server-side
-  compile is deployed everywhere.
-  - Removed exports: `TsLibResolver`, the `TranspileOutcome` type, `checkEmittedEntrypoint` and the
-    `EmittedEntrypointCheck` type.
-  - Removed `PushResult.typeCheckDiagnostics`. A snapshot push no longer compiles, stops on a
-    missing or empty `scripts/app.js`, warns about stale client bundles, or reports "published
-    without a passing type-check".
-  - Removed `B6PProviders.typescriptLibDirs` (and the matching `ScriptContext` member): there is
-    no compiler left to give a lib directory to.
-  - Removed `ScriptRoot.compileDraftFolder`, `deleteBuildFolder`, `findStaleClientBundles`,
-    `selectStaleBundles`, `getDraftTsConfigPath` and `getDraftBuildFolder`.
-  - A push neither uploads nor deletes files under a tsconfig's build folder (`.build` by default):
-    the platform owns what it compiles there. `PushResult.pushed` is now `false` only when the
-    draft folder is missing or empty.
-- `typescript` moved from `dependencies` to `devDependencies`, pinned to 7.0.2; it builds the
-  package and nothing in `src/` imports it.
+- **The local compile runs on TypeScript `7.1.0-beta`** instead of 5.9.2, through its native
+  full-program API (`typescript/sync`): same inputs, the same `.build` layout (`rootDir` is still the
+  tsconfig's folder), the same type-check and diagnostics text shape (`file (line,col): message`),
+  cross-file `const enum`s still inlined. Output for ES2022/ESNext targets matched 5.9.2 byte for byte
+  in our comparison; known differences: source maps (inline or not) drop `"sourceRoot":""` and map
+  constructor parameter properties differently, and down-levelled targets (ES2015/ES2017) declare
+  helper temporaries as `var _a; var _b;` in a different order. The compiler is a native `tsc`
+  process from the per-platform optional dependency `@typescript/typescript-<os>-<arch>` (which
+  also carries the lib `.d.ts` files), one per push, closed afterwards.
+- `typescript` is an exact `7.1.0-beta` runtime `dependency` (it was `5.9.2`): it serves the local
+  fallback and builds the package. It goes back to a build-only `devDependency` when the fallback is
+  removed (in about a month, once every namespace runs web >= `MIN_SERVER_VERSION`).
+- **BREAKING: `B6PProviders.typescriptLibDirs` (and the matching `ScriptContext` member) and the
+  `TsLibResolver` export are removed.** The native compiler resolves its own lib files.
+- **BREAKING: the local-path-only `PushResult` fields are optional.** `typeCheckDiagnostics`,
+  `liveVerified` and `liveMismatches` are set on the local path and absent on the server path.
+- Removed before release: `Err.ServerVersionUnsupportedError` and `assertServerVersion`, which
+  earlier drafts of this release used to refuse a push to an older server. A push no longer refuses;
+  it takes the local fallback instead.
+- `collectOverwriteCandidates(files, opts?)` takes `opts` optionally, and `confirmOverwrites` gains
+  `writesSnapshotCopies` (the local path's snapshot push sets it so the skip check also compares the
+  `snapshot/` copy; the server path compares `draft/` only).
 
 ## [0.8.1] - 2026-10-20
 

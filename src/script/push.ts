@@ -1,17 +1,19 @@
 import * as path from "path";
 import { XMLParser } from "fast-xml-parser";
-import { FolderNames, Http, SpecialFiles } from "../constants";
+import { FileExtensions, FolderNames, Http, SpecialFiles } from "../constants";
 import { B6PUri } from "../B6PUri";
 import { GlobMatcher } from "../data/GlobMatcher";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
-import { assertServerVersion } from "../data/ServerVersion";
+import { resolveCompileRoute, type CompileRoute } from "../data/ServerVersion";
 import { ScriptFactory } from "./ScriptFactory";
 import { SnapshotHistoryRecorder } from "./SnapshotHistoryRecorder";
 import type { ScriptContext } from "./ScriptContext";
 import type { ScriptRoot } from "./ScriptRoot";
 import type { FileSystem, ProgressTask } from "../providers";
 import { Err } from "../Err";
-import type { ScriptFile } from "./ScriptFile";
+import { ScriptFile } from "./ScriptFile";
+import { TsConfig } from "./TsConfig";
+import { resolveNativeCompilerPath, type TranspileOutcome } from "./ScriptTranspiler";
 import {
   compileAllowsPublish,
   compileDraft,
@@ -111,14 +113,29 @@ export interface PushResult {
    */
   pushed: boolean;
   /**
+   * Which compile the push used (ruling 44b): `server` (the platform compiles; `compile` and
+   * `publish` apply) or `local` (core compiled with its bundled TypeScript 7.1 and uploaded the
+   * sources and `.build` as before 0.9.0; `typeCheckDiagnostics`, `liveVerified` and
+   * `liveMismatches` apply). `null` only when the push stopped before asking the server (the draft
+   * folder is missing).
+   * @lastreviewed null
+   */
+  compileMode: "server" | "local" | null;
+  /**
+   * Why `compileMode` was chosen: the server's reported version, the floor and the reason. `null`
+   * exactly when `compileMode` is.
+   * @lastreviewed null
+   */
+  route: CompileRoute | null;
+  /**
    * What the platform's `compileDraft` came to, after the sources went up. `null` when the push
-   * did not run (`pushed: false`).
+   * did not run (`pushed: false`), and always on the local path.
    * @lastreviewed null
    */
   compile: DraftCompileOutcome | null;
   /**
    * What the platform's `takeSnapshot` came to. `null` for a plain push, for a push that did not
-   * run, and for a snapshot push whose compile ended in a status that does not publish (anything
+   * run, on the local path, and for a snapshot push whose compile ended in a status that does not publish (anything
    * but `COMPILED`, `NOTHING_TO_COMPILE` or `SKIPPED_EXTERNALLY_BUILT`): nothing was published
    * then, and `compile.status` says why. A platform refusal is thrown as an
    * {@link Err.PublishRefusedError} instead.
@@ -140,6 +157,216 @@ export interface PushResult {
    * @lastreviewed null
    */
   keptPlatformOnly: string[];
+  // TODO(2026-12-09): remove the local TS 7.1 fallback once every namespace runs web >= MIN_SERVER_VERSION (ruling 44)
+  /**
+   * Local path only (absent on the server path). Type-check outcome of the pre-publish transpile:
+   *  - `null` — no platform-code type-check ran. A plain (non-snapshot) push
+   *    does not compile; a push that aborted before compiling never got there;
+   *    and a snapshot whose TS all lives under nested client bundles (nothing
+   *    governed by the draft-root tsconfig) has no draft-root code to check.
+   *  - `0` — the draft-root code compiled with zero diagnostics: genuinely
+   *    type-checked.
+   *  - `> 0` — compiled, but N diagnostics were reported. The JavaScript was
+   *    emitted and published anyway (the platform runs the emitted JS on
+   *    GraalVM regardless of type errors, and local declarations may be
+   *    incomplete), so this is a loud warning, not a failure. A machine consumer
+   *    should treat `> 0` as "published without a passing type-check".
+   * @lastreviewed null
+   */
+  typeCheckDiagnostics?: number | null;
+  /**
+   * Local path only (absent on the server path). Whether the live (`snapshot/`) copy of every file this push wrote reads back identical to the
+   * local bytes (compared by ETag, the platform's SHA-512 of the content):
+   *  - `null` — no read-back ran: a plain push, or a push that aborted before uploading.
+   *    Also `null` when no copy was wrong but at least one was served without a content hash
+   *    (ETag), so it could not be compared: those files are named in a warning, and cleanup and
+   *    history still run.
+   *  - `true` — every written file reads back identical. Files skipped as already in sync count as
+   *    verified, since the skip rule compared both copies.
+   *  - `false` — at least one file was still different, missing (`404`) or unreadable (another
+   *    non-2xx) after one re-upload; see `liveMismatches`. The push stopped there: no cleanup ran
+   *    and no history entry was recorded (`historyRecorded` is false), so a consumer that already
+   *    reads that field fails the run.
+   * @lastreviewed null
+   */
+  liveVerified?: boolean | null;
+  /**
+   * Local path only (absent on the server path). Draft-relative paths (`/`-separated, e.g.
+   * `.build/scripts/app.js`) whose live copy failed the
+   * read-back. Empty unless `liveVerified` is false.
+   * @lastreviewed null
+   */
+  liveMismatches?: string[];
+}
+
+// TODO(2026-12-09): remove the local TS 7.1 fallback once every namespace runs web >= MIN_SERVER_VERSION (ruling 44)
+/**
+ * Outcome of {@link verifyLiveSnapshot}. Paths are draft-relative and `/`-separated.
+ * @lastreviewed null
+ */
+export interface LiveSnapshotCheck {
+  /**
+   * Files whose `snapshot/` copy still differs from local, is missing (`404`) or can't be read
+   * (another non-2xx) after one re-upload.
+   * @lastreviewed null
+   */
+  mismatches: string[];
+  /**
+   * Files the platform served (2xx) without a SHA-512 ETag, so neither match nor mismatch can be
+   * said.
+   * @lastreviewed null
+   */
+  indeterminate: string[];
+}
+
+// TODO(2026-12-09): remove the local TS 7.1 fallback once every namespace runs web >= MIN_SERVER_VERSION (ruling 44)
+/**
+ * Outcome of {@link checkEmittedEntrypoint}.
+ * @lastreviewed null
+ */
+export interface EmittedEntrypointCheck {
+  /**
+   * - `"no-source"` — the draft has no `scripts/app.ts` (a JS-only draft): nothing to check.
+   * - `"ok"` — the compiled entrypoint exists and has content.
+   * - `"missing"` — `scripts/app.ts` exists but the compile wrote no `scripts/app.js`.
+   * - `"empty"` — the compiled entrypoint has no code: only comments (the inline source map
+   *   included) and the compiler's empty-module lines, e.g. from a blank `app.ts` or one holding
+   *   only types. The platform serves such a file as an empty `200`.
+   * @lastreviewed null
+   */
+  status: "no-source" | "ok" | "missing" | "empty";
+  /**
+   * Absolute path of the compiled entrypoint the check looked for.
+   * @lastreviewed null
+   */
+  emittedPath: string;
+}
+
+// TODO(2026-12-09): remove the local TS 7.1 fallback once every namespace runs web >= MIN_SERVER_VERSION (ruling 44)
+/**
+ * Statements the compiler writes into a module with no code of its own: the ES module marker a
+ * types-only file compiles to, and the CommonJS preamble. Compared token by token, so spacing and
+ * comments don't matter.
+ * @lastreviewed null
+ */
+const EMPTY_MODULE_STATEMENTS = [
+  "export{};",
+  '"use strict";',
+  "'use strict';",
+  'Object.defineProperty(exports,"__esModule",{value:true});',
+];
+
+// TODO(2026-12-09): remove the local TS 7.1 fallback once every namespace runs web >= MIN_SERVER_VERSION (ruling 44)
+/**
+ * Whether compiled JavaScript has code beyond comments and {@link EMPTY_MODULE_STATEMENTS}. The
+ * compiler always appends an inline source map comment, so a blank `app.ts` never compiles to a
+ * blank file; the TypeScript scanner drops comments and whitespace as trivia.
+ * @param js The compiled file's text
+ * @lastreviewed null
+ */
+async function hasCode(js: string): Promise<boolean> {
+  // ES modules: loaded on first use, and only by the local fallback. The scanner is plain
+  // JavaScript (no native compiler process).
+  const { createScanner } = await import("typescript/ast/scanner");
+  const { LanguageVariant, SyntaxKind } = await import("typescript/ast");
+  const scanner = createScanner(true, LanguageVariant.Standard, js);
+  let tokens = "";
+  for (let kind = scanner.scan(); kind !== SyntaxKind.EndOfFile; kind = scanner.scan()) {
+    tokens += scanner.getTokenText();
+  }
+  for (const statement of EMPTY_MODULE_STATEMENTS) {
+    tokens = tokens.split(statement).join("");
+  }
+  return tokens.length > 0;
+}
+
+// TODO(2026-12-09): remove the local TS 7.1 fallback once every namespace runs web >= MIN_SERVER_VERSION (ruling 44)
+/**
+ * Pre-publish check for a snapshot push: after the compile, the entrypoint the platform runtime
+ * loads must be there. The runtime resolves `scripts/app` to `<build folder>/scripts/app.js`; if
+ * that file is missing or has no code, publishing it breaks the live version (a missing one fails
+ * with `NoSuchFileException .../scripts/app`, one with no code answers an empty `200`), so the push
+ * must stop before any upload (ClickUp 86bbqnrtp).
+ *
+ * Only the entrypoint is checked. A helper module may legitimately compile to almost nothing, so
+ * checking every emitted file would stop good pushes. The transpiler sets `rootDir` to the
+ * tsconfig's folder, which is why `scripts/app.ts` always maps to `<build folder>/scripts/app.js`.
+ * @param opts.draftPath The draft folder
+ * @param opts.buildFolderPath The draft-root tsconfig's build folder ({@link ScriptRoot.getDraftBuildFolder})
+ * @param opts.fs The file system to read
+ * @returns What was found, and the path it looked at
+ * @lastreviewed null
+ */
+export async function checkEmittedEntrypoint(opts: {
+  draftPath: string;
+  buildFolderPath: string;
+  fs: FileSystem;
+}): Promise<EmittedEntrypointCheck> {
+  const { draftPath, buildFolderPath, fs } = opts;
+  const emittedPath = path.join(buildFolderPath, FolderNames.SCRIPTS, "app" + FileExtensions.JAVASCRIPT);
+  const sourceUri = B6PUri.fromFsPath(path.join(draftPath, FolderNames.SCRIPTS, "app" + FileExtensions.TYPESCRIPT));
+  if (!(await fs.exists(sourceUri))) {
+    return { status: "no-source", emittedPath };
+  }
+  const emittedUri = B6PUri.fromFsPath(emittedPath);
+  if (!(await fs.exists(emittedUri))) {
+    return { status: "missing", emittedPath };
+  }
+  const text = Buffer.from(await fs.readFile(emittedUri)).toString("utf-8");
+  return { status: (await hasCode(text)) ? "ok" : "empty", emittedPath };
+}
+
+// TODO(2026-12-09): remove the local TS 7.1 fallback once every namespace runs web >= MIN_SERVER_VERSION (ruling 44)
+/**
+ * How the read-back retry warning describes each failed status.
+ * @lastreviewed null
+ */
+const READ_BACK_PROBLEMS = {
+  mismatch: "doesn't match what was pushed",
+  missing: "is missing (404)",
+  unreadable: "could not be read back",
+} as const;
+
+// TODO(2026-12-09): remove the local TS 7.1 fallback once every namespace runs web >= MIN_SERVER_VERSION (ruling 44)
+/**
+ * Post-publish read-back for a snapshot push: `HEAD`s the `snapshot/` copy of each file the push
+ * wrote and compares its ETag with the local SHA-512. The platform can accept a write (2xx) and
+ * still serve different bytes, e.g. an empty or cut-off file, so a clean upload alone doesn't prove
+ * the live version is right (ClickUp 86bbqnrtp).
+ *
+ * A copy that differs, is missing (`404`) or can't be read (another non-2xx) is re-sent once and
+ * checked again; a re-send the platform refuses leaves it a mismatch. Only a 2xx without a content
+ * hash is indeterminate. Files are checked one at a time, in the order given.
+ * @param files The files this push wrote to `snapshot/`
+ * @param ctx Where the retries are logged
+ * @returns The files still mismatched, and the ones that could not be compared
+ * @lastreviewed null
+ */
+export async function verifyLiveSnapshot(
+  files: ScriptFile[],
+  ctx: Pick<ScriptContext, "logger">
+): Promise<LiveSnapshotCheck> {
+  const check: LiveSnapshotCheck = { mismatches: [], indeterminate: [] };
+  for (const file of files) {
+    const snapshotUrl = ScriptFile.snapshotUrl(await file.upstairsUrl());
+    const relative = file.pathWithRespectToDraftRoot().split(path.sep).join("/");
+    let status = await file.readBackStatus(snapshotUrl);
+    if (status === "mismatch" || status === "missing" || status === "unreadable") {
+      ctx.logger.warn(`Live copy of ${relative} ${READ_BACK_PROBLEMS[status]}; sending it again: ${snapshotUrl}`);
+      try {
+        await file.putTo(snapshotUrl);
+        status = await file.readBackStatus(snapshotUrl);
+      } catch (e) {
+        ctx.logger.warn(`Re-sending ${relative} failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+    if (status === "indeterminate") {
+      check.indeterminate.push(relative);
+    } else if (status !== "match") {
+      check.mismatches.push(relative);
+    }
+  }
+  return check;
 }
 
 /**
@@ -172,13 +399,19 @@ export interface OverwriteCandidate {
  * Reads the platform one file at a time. The skip check it runs is cached on each file, so the
  * upload that follows doesn't repeat it.
  * @param files The push's files, the same instances the upload will use
+ * @param opts.isSnapshot Whether the push also writes `snapshot/` itself (the local fallback's
+ *   snapshot push), so a file is skipped only when that copy matches too
  * @returns The files at risk, in the order given
  * @lastreviewed null
  */
-export async function collectOverwriteCandidates(files: ScriptFile[]): Promise<OverwriteCandidate[]> {
+export async function collectOverwriteCandidates(
+  files: ScriptFile[],
+  // TODO(2026-12-09): remove the local TS 7.1 fallback once every namespace runs web >= MIN_SERVER_VERSION (ruling 44)
+  opts?: { isSnapshot?: boolean }
+): Promise<OverwriteCandidate[]> {
   const candidates: OverwriteCandidate[] = [];
   for (const file of files) {
-    if (await file.getReasonToNotPush()) {
+    if (await file.getReasonToNotPush({ isSnapshot: opts?.isSnapshot })) {
       continue;
     }
     const risk = await file.platformChangeAtRisk();
@@ -197,7 +430,9 @@ export async function collectOverwriteCandidates(files: ScriptFile[]): Promise<O
  * prompt, e.g. from a flag.
  * @param opts.files The push's files, the same instances the upload will use
  * @param opts.ctx Where the prompt goes
- * @param opts.isSnapshot Whether the push is a snapshot push (only changes the wording of messages)
+ * @param opts.isSnapshot Whether the push is a snapshot push (the wording of messages)
+ * @param opts.writesSnapshotCopies Whether the push writes `snapshot/` itself (the local fallback's
+ *   snapshot push); the skip check then also compares that copy
  * @param opts.preConfirmed Draft-relative paths (`/`- or `\`-separated) the caller confirms up front
  * @returns The files whose overwrite is confirmed; `upload()` skips its own prompt for them
  * @throws an {@link Err.OverwriteDeclinedError} listing the files, when the answer is anything but
@@ -208,11 +443,13 @@ export async function confirmOverwrites(opts: {
   files: ScriptFile[];
   ctx: Pick<ScriptContext, "prompt">;
   isSnapshot: boolean;
+  // TODO(2026-12-09): remove the local TS 7.1 fallback once every namespace runs web >= MIN_SERVER_VERSION (ruling 44)
+  writesSnapshotCopies?: boolean;
   preConfirmed?: string[];
 }): Promise<Set<ScriptFile>> {
   const { prompt } = opts.ctx;
   const preConfirmed = new Set((opts.preConfirmed ?? []).map((p) => p.replace(/\\/g, "/").replace(/^\.\//, "")));
-  const candidates = await collectOverwriteCandidates(opts.files);
+  const candidates = await collectOverwriteCandidates(opts.files, { isSnapshot: opts.writesSnapshotCopies });
   const confirmed = new Set(candidates.filter((c) => preConfirmed.has(c.path)).map((c) => c.file));
   const toAsk = candidates.filter((c) => !preConfirmed.has(c.path));
   if (toAsk.length === 0) {
@@ -351,20 +588,29 @@ export async function uploadAndCompile<R = void>(opts: {
  *  - metadata `lastVerifiedHash` updates via touch()
  *  - rich error wrapping
  *
+ * First it asks the org's server for its version ({@link resolveCompileRoute}) and picks the
+ * compile (ruling 44b):
+ *  - **server** (a `dev` build, or at or above `MIN_SERVER_VERSION`): the sources go to `draft/`
+ *    only; then the platform compiles the draft (`compileDraft`) and, for a snapshot push whose
+ *    compile left something to publish, publishes it (`takeSnapshot`); see {@link uploadAndCompile}.
+ *    A compile the platform's gate or `noEmitOnError` held back is returned in `compile`, with the
+ *    sources saved and nothing published.
+ *  - **local** (below the floor, an unreadable version, or the floor unset): the push as it was
+ *    before 0.9.0, compiled with the bundled TypeScript 7.1; see {@link executeLocalPush}.
+ *
  * Before any upload, one confirmation covers every file that would overwrite a platform version
  * nobody here has seen ({@link confirmOverwrites}); declining stops the push with nothing written.
- * The sources go to `draft/` only; then the platform compiles the draft (`compileDraft`) and, for a
- * snapshot push whose compile left something to publish, publishes it (`takeSnapshot`); see
- * {@link uploadAndCompile}. A compile the platform's gate or `noEmitOnError` held back is returned in
- * `compile`, with the sources saved and nothing published.
  * @param opts.overwrite Draft-relative paths whose overwrite the caller confirms up front, so the
  *   push doesn't ask about them (e.g. a consumer's flag, after the user approved the files a
  *   declined push listed). Other at-risk files still ask.
  * @param opts.sleep Waits between the platform-call retries; tests inject a recorder
+ * @param opts.serverVersionFloor Overrides `MIN_SERVER_VERSION` (`null` means unset); used by tests
  * @throws an {@link Err.OverwriteDeclinedError} when an overwrite is not confirmed
- * @throws an {@link Err.ServerVersionUnsupportedError} when the org's server is below the floor
- * @throws an {@link Err.PublishRefusedError} when the platform refuses a snapshot publish
- * @throws an {@link Err.ServerCompileRequestError} when a compile or publish request fails
+ * @throws an {@link Err.PublishRefusedError} when the platform refuses a snapshot publish (server path)
+ * @throws an {@link Err.ServerCompileRequestError} when a compile or publish request fails (server path)
+ * @throws an {@link Err.LocalCompilerUnavailableError} when the local path's snapshot push needs the
+ *   bundled TypeScript compiler and it is missing or cannot run; nothing was uploaded
+ * @throws an {@link Err.CompilationError} when the local compile cannot emit (local path)
  * @lastreviewed null
  */
 export async function executePush(opts: {
@@ -375,32 +621,36 @@ export async function executePush(opts: {
   message?: string;
   overwrite?: string[];
   sleep?: (ms: number) => Promise<void>;
+  serverVersionFloor?: string | null;
 }): Promise<PushResult> {
   const { ctx, targetUrl, rootPath, snapshot, message, overwrite } = opts;
   const { fs, prompt, logger, sessionManager } = ctx;
   const draftPath = path.join(rootPath, FolderNames.DRAFT);
 
-  const notPushed: PushResult = {
-    pushed: false,
-    compile: null,
-    publish: null,
-    historyRecorded: false,
-    keptPlatformOnly: [],
-  };
-
   const draftUri = B6PUri.fromFsPath(draftPath);
   if (!(await fs.exists(draftUri))) {
     prompt.error(`Draft folder not found: ${draftPath}`);
-    return notPushed;
+    return {
+      pushed: false,
+      compileMode: null,
+      route: null,
+      compile: null,
+      publish: null,
+      historyRecorded: false,
+      keptPlatformOnly: [],
+    };
   }
 
-  // Core uploads sources only, so the org's server must compile them itself. Ask once, before anything
-  // is uploaded or any prompt is shown; a refusal changes nothing.
-  await assertServerVersion({
+  // Ask once, before anything is uploaded or any prompt is shown, who compiles.
+  const route = await resolveCompileRoute({
     origin: new URL(targetUrl).origin,
     fetchFn: (url, init) => sessionManager.fetch(url, init),
-    operation: snapshot ? "snapshot" : "push",
+    floor: opts.serverVersionFloor,
   });
+  logger.info(
+    `Server version ${route.serverVersion ?? "unknown"} (floor ${route.required ?? "unset"}): ` +
+      `${route.mode === "server" ? "the server compiles" : "compiling locally"} (${route.reason}).`
+  );
 
   // Build a parser from the target URL so the ScriptRoot can resolve
   // upstairs URLs (mirrors what executePull does on the pull side).
@@ -412,6 +662,21 @@ export async function executePush(opts: {
   const rootUri = B6PUri.fromFsPath(rootPath).asDirectory();
   const scriptRoot = factory.createScriptRoot(rootUri);
   scriptRoot.withParser(parser);
+
+  // TODO(2026-12-09): remove the local TS 7.1 fallback once every namespace runs web >= MIN_SERVER_VERSION (ruling 44)
+  if (route.mode === "local") {
+    return executeLocalPush({ ctx, targetUrl, rootPath, snapshot, message, overwrite, route, scriptRoot, factory });
+  }
+
+  const notPushed: PushResult = {
+    pushed: false,
+    compileMode: "server",
+    route,
+    compile: null,
+    publish: null,
+    historyRecorded: false,
+    keptPlatformOnly: [],
+  };
 
   // Push uploads sources only. BSJS is compiled on the platform, which owns the build folder; core
   // neither compiles nor type-checks, and never writes `snapshot/`.
@@ -484,7 +749,226 @@ export async function executePush(opts: {
     prompt.info(snapshot ? "Snapshot complete!" : "Push complete!");
   }
 
-  return { pushed: true, compile, publish, historyRecorded, keptPlatformOnly };
+  return { pushed: true, compileMode: "server", route, compile, publish, historyRecorded, keptPlatformOnly };
+}
+
+// TODO(2026-12-09): remove the local TS 7.1 fallback once every namespace runs web >= MIN_SERVER_VERSION (ruling 44)
+/**
+ * The local fallback push (ruling 44b): the push as it ran before 0.9.0, for a server that does not
+ * compile scripts itself (below `MIN_SERVER_VERSION`), one whose version could not be read, or any
+ * server but `dev` while the floor is unset. Called by {@link executePush} once it has chosen the
+ * route; not exported.
+ *
+ * A snapshot push compiles the draft locally with the bundled TypeScript 7.1 (one native compiler
+ * process, closed afterwards), stops when the compiled entrypoint `scripts/app.js` is missing or has
+ * no code ({@link checkEmittedEntrypoint}), then uploads the sources and the build folder to
+ * `draft/` and `snapshot/`, reads the live copies back ({@link verifyLiveSnapshot}) and records the
+ * history entry. A plain push uploads to `draft/` without compiling. Both warn about stale client
+ * bundles. If a live copy is still wrong after the read-back, the push stops before cleanup and
+ * history and returns `liveVerified: false`.
+ * @lastreviewed null
+ */
+async function executeLocalPush(opts: {
+  ctx: ScriptContext;
+  targetUrl: string;
+  rootPath: string;
+  snapshot: boolean;
+  message?: string;
+  overwrite?: string[];
+  route: CompileRoute;
+  scriptRoot: ScriptRoot;
+  factory: ScriptFactory;
+}): Promise<PushResult> {
+  const { ctx, targetUrl, rootPath, snapshot, message, overwrite, route, scriptRoot, factory } = opts;
+  const { fs, prompt, logger, progress } = ctx;
+  const draftPath = path.join(rootPath, FolderNames.DRAFT);
+  const base = {
+    compileMode: "local" as const,
+    route,
+    compile: null,
+    publish: null,
+    historyRecorded: false,
+    typeCheckDiagnostics: null,
+    liveVerified: null,
+    liveMismatches: [],
+    keptPlatformOnly: [],
+  };
+
+  // Snapshots transpile TS into the draft build folder so both the source
+  // and emitted JS get uploaded and captured in history. Must run before
+  // flattenDirectory so the emitted files are included in the upload set.
+  // A plain (non-snapshot) push does not compile, so its type-check status is
+  // null rather than a count.
+  let typeCheckDiagnostics: number | null = null;
+  let typeCheckDetail = "";
+  if (snapshot) {
+    let compileOutcome: TranspileOutcome;
+    try {
+      // Checked before compileDraftFolder clears the local build folder, so a missing compiler
+      // changes nothing locally or on the platform.
+      resolveNativeCompilerPath();
+      compileOutcome = await scriptRoot.compileDraftFolder();
+    } catch (e) {
+      if (e instanceof Err.LocalCompilerUnavailableError) {
+        throw new Err.LocalCompilerUnavailableError(
+          `Snapshot not pushed: the server at ${new URL(targetUrl).origin} does not compile scripts itself ` +
+            `(version ${route.serverVersion ?? "unknown"}, ${route.reason}), so this push compiles locally, ` +
+            `and ${e.message.charAt(0).toLowerCase()}${e.message.slice(1)} Nothing was uploaded.`,
+          { serverVersion: route.serverVersion, reason: route.reason, cause: e.cause }
+        );
+      }
+      throw e;
+    }
+    typeCheckDiagnostics = compileOutcome.diagnosticCount;
+    typeCheckDetail = compileOutcome.diagnosticText;
+
+    const buildFolderPath = (await scriptRoot.getDraftBuildFolder()).uri().fsPath;
+    const entrypoint = await checkEmittedEntrypoint({ draftPath, buildFolderPath, fs });
+    if (entrypoint.status === "missing" || entrypoint.status === "empty") {
+      prompt.error(
+        `Snapshot not published: the compiled entrypoint ${entrypoint.emittedPath} ` +
+          `${entrypoint.status === "missing" ? "is missing" : "has no code"} after compiling scripts/app.ts. ` +
+          `The platform runs that file, so publishing it would break the live version. Nothing was ` +
+          `uploaded. Check scripts/app.ts, the compile output and the draft ${TsConfig.NAME}.`
+      );
+      return { ...base, pushed: false, typeCheckDiagnostics };
+    }
+  }
+
+  // Push does NOT transpile client bundles (e.g. a MergeReport `static/script.ts`
+  // → `static/.build/script.js`); the platform serves that emitted JS verbatim
+  // rather than recompiling it. Warn loudly if a bundle's source is newer than
+  // its compiled output so a push can't silently ship stale client JS
+  // (b6p-cli#9). Runs for both plain and snapshot pushes; reflects on-disk state
+  // after any snapshot compile.
+  for (const { bundle, buildFolder } of await scriptRoot.findStaleClientBundles()) {
+    prompt.warn(
+      `Stale client bundle: source(s) under ${bundle} are newer than the compiled output in ${buildFolder}. ` +
+        `b6p push does not transpile client TypeScript — recompile the bundle before pushing, ` +
+        `or you will ship stale client JS.`
+    );
+  }
+
+  const allFiles = await flattenDirectory(draftPath, fs);
+  logger.info(`Found ${allFiles.length} files in draft folder`);
+
+  if (allFiles.length === 0) {
+    prompt.info("No files to push — draft folder is empty.");
+    return { ...base, pushed: false, typeCheckDiagnostics };
+  }
+
+  // One ScriptFile per file for the whole push: the confirmation pass and the upload share them,
+  // and with them each file's cached skip check.
+  const entries = allFiles.map((filePath) => ({
+    filePath,
+    file: factory.createFile(B6PUri.fromFsPath(filePath), scriptRoot),
+  }));
+  const confirmed = await confirmOverwrites({
+    files: entries.map((e) => e.file),
+    ctx,
+    isSnapshot: snapshot,
+    writesSnapshotCopies: snapshot,
+    preConfirmed: overwrite,
+  });
+
+  // Files upload() actually wrote (a resolved Response); skipped files resolve with undefined.
+  const written: ScriptFile[] = [];
+  const uploadTasks: ProgressTask<void>[] = entries.map(({ filePath, file }) => ({
+    execute: async () => {
+      try {
+        if (await file.upload({ isSnapshot: snapshot, overwriteConfirmed: confirmed.has(file) })) {
+          written.push(file);
+        }
+      } catch (e) {
+        if (e instanceof Err.UserCancelledError) {
+          // Surface cancellation to the progress runner so it can stop the batch.
+          throw e;
+        }
+        logger.error(`Failed to push ${filePath}: ${e instanceof Error ? e.message : e}`);
+        throw e;
+      }
+    },
+    description: path.basename(filePath),
+  }));
+
+  await progress.withProgress(uploadTasks, {
+    title: snapshot ? "Pushing Snapshot..." : "Pushing Script...",
+    showItemCount: true,
+    cleanupMessage: "Cleaning up...",
+  });
+
+  // A snapshot push is only done when the runtime serves what was pushed. If a live copy is still
+  // wrong, stop: deleting platform files or recording a restore point would build on a broken publish.
+  let liveVerified: boolean | null = null;
+  if (snapshot) {
+    const live = await verifyLiveSnapshot(written, ctx);
+    if (live.indeterminate.length > 0) {
+      prompt.warn(
+        `Could not verify the live copy of ${live.indeterminate.length} file(s): the platform served them ` +
+          `without a content hash (ETag).\n\n${live.indeterminate.join("\n")}`
+      );
+    }
+    if (live.mismatches.length > 0) {
+      prompt.error(
+        `The live (snapshot/) copy of ${live.mismatches.length} file(s) is missing, unreadable or does not ` +
+          `match what was pushed, ` +
+          `even after sending it again. The live version may be broken or out of date:\n\n` +
+          `${live.mismatches.join("\n")}\n\n` +
+          `No cleanup ran and no snapshot history was recorded. Run the snapshot push again.`
+      );
+      return { ...base, pushed: true, typeCheckDiagnostics, liveVerified: false, liveMismatches: live.mismatches };
+    }
+    // Nothing was wrong, but a copy served without a content hash was never compared.
+    liveVerified = live.indeterminate.length > 0 ? null : true;
+  }
+
+  // Cleanup: delete unused upstairs paths.
+  const gitignorePatterns = await readGitIgnorePatterns(rootPath, fs);
+  const gitignoreMatcher = new GlobMatcher(rootPath, gitignorePatterns);
+  const keptPlatformOnly = await cleanupUnusedUpstairsPaths({
+    ctx,
+    targetUrl,
+    draftPath,
+    gitignoreMatcher,
+  });
+
+  let historyRecorded = true;
+  if (snapshot) {
+    try {
+      await SnapshotHistoryRecorder.record(scriptRoot, message ?? "");
+    } catch (e) {
+      historyRecorded = false;
+      logger.warn(`Failed to record snapshot history: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  // A snapshot that compiled with diagnostics shipped un-type-checked JS. Say so
+  // loudly and do NOT let the run read as a clean success — the platform never
+  // type-checks, so this push was the only gate (ClickUp 86bbeb659).
+  const shippedWithDiagnostics = snapshot && typeCheckDiagnostics !== null && typeCheckDiagnostics > 0;
+  if (shippedWithDiagnostics) {
+    prompt.warn(
+      `Published WITHOUT a passing type-check: the pre-publish transpile reported ` +
+        `${typeCheckDiagnostics} diagnostic(s). The JavaScript was emitted and is now live, but these ` +
+        `were NOT verified — each is either a real type error or a missing platform declaration, and ` +
+        `the platform does not type-check on its side. Review them before relying on this build:\n\n` +
+        typeCheckDetail
+    );
+  }
+
+  if (snapshot && !historyRecorded) {
+    prompt.warn(
+      "Snapshot files uploaded and compiled, but the snapshot history entry could NOT be recorded — " +
+        "the browser IDE's Project History has no restore point for this snapshot. " +
+        "Run the snapshot push again to retry recording it."
+    );
+  } else if (shippedWithDiagnostics) {
+    prompt.info("Snapshot uploaded — but see the type-check warning above.");
+  } else {
+    prompt.info(snapshot ? "Snapshot complete!" : "Push complete!");
+  }
+
+  return { ...base, pushed: true, historyRecorded, typeCheckDiagnostics, liveVerified, keptPlatformOnly };
 }
 
 /**

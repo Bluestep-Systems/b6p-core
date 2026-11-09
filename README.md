@@ -78,16 +78,37 @@ given). Read `pushed` first: `false` means nothing was uploaded.
 
 | Field | Meaning |
 | --- | --- |
-| `pushed` | The upload ran. `false` when the draft folder is missing or empty |
-| `compile` | What the platform's `compileDraft` came to: `status` (`COMPILED`, `GATE_TRIPPED`, `EMIT_WITHHELD`, `NOTHING_TO_COMPILE`, `SKIPPED_GIT_MANAGED`, `SKIPPED_EXTERNALLY_BUILT`, `OUTPUT_UPLOAD`, `NOT_PERMITTED`, `COMPILER_UNAVAILABLE`, `WRITE_FAILED`, `INPUT_INCOMPLETE`, `BUSY`, or `UNKNOWN` with `rawStatus` kept), `errors` / `warnings`, `written` / `deleted`, `diagnostics` (+ `diagnosticsOmitted`) and the `gate` block (`tripped`, `withheld`, `problems`). `null` when nothing ran |
+| `pushed` | The upload ran. `false` when the draft folder is missing or empty (or, on the local path, the compiled entrypoint is missing or empty) |
+| `compileMode` | Which path ran: `"server"` or `"local"` (see below). `null` only when the draft folder is missing |
+| `route` | Why: `{ mode, reason, serverVersion, required }`, `reason` one of `dev`, `at-or-above-floor`, `below-floor`, `unknown`, `floor-unset` |
+| `compile` | What the platform's `compileDraft` came to: `status` (`COMPILED`, `GATE_TRIPPED`, `EMIT_WITHHELD`, `NOTHING_TO_COMPILE`, `SKIPPED_GIT_MANAGED`, `SKIPPED_EXTERNALLY_BUILT`, `OUTPUT_UPLOAD`, `NOT_PERMITTED`, `COMPILER_UNAVAILABLE`, `WRITE_FAILED`, `INPUT_INCOMPLETE`, `BUSY`, or `UNKNOWN` with `rawStatus` kept), `errors` / `warnings`, `written` / `deleted`, `diagnostics` (+ `diagnosticsOmitted`) and the `gate` block (`tripped`, `withheld`, `problems`). `null` when nothing ran, and always on the local path |
 | `publish` | What `takeSnapshot` came to (`published`, counts, diagnostics, `withheld`, `gate`). `null` for a plain push and for a snapshot push whose compile status does not publish (anything but `COMPILED`, `NOTHING_TO_COMPILE`, `SKIPPED_EXTERNALLY_BUILT`) |
 | `historyRecorded` | A snapshot's history entry was recorded. `false` also when nothing was published or the push stopped early |
 | `keptPlatformOnly` | Platform-only files kept because deleting them was not confirmed |
+| `typeCheckDiagnostics` | Local path only: `null` (no type-check ran, e.g. a plain push), `0` (clean) or the count of draft-root diagnostics (published anyway, with a warning) |
+| `liveVerified` / `liveMismatches` | Local path only: whether every `snapshot/` copy read back identical (`null` when no read-back ran or a copy had no content hash), and the files that did not |
 
 ### How a push works
 
-Push uploads sources only, and only to `draft/`. Core does not compile or type-check, never PUTs
-`snapshot/` or a build folder (`.build` by default), and never reads `X-Bluestep-Compile`:
+Before uploading anything, a push asks the org's server for its version (`GET /appinfo/version`,
+`resolveCompileRoute`) and picks one of two paths. Nothing is refused for its version:
+
+- **Server compile** — a `dev` build, or a release at or above `MIN_SERVER_VERSION`.
+- **Local fallback** (temporary, about a month) — a release below the floor, a version that cannot be
+  read, or any release while `MIN_SERVER_VERSION` is still unset (it is, until the first web release
+  with the server flow is tagged). This is the push as it ran before 0.9.0, compiled with the bundled
+  TypeScript `7.1.0-beta` (full program, native `tsc` from `@typescript/typescript-<os>-<arch>`):
+  a snapshot push compiles the draft into its build folder, stops before uploading when
+  `scripts/app.js` is missing or has no code, uploads sources **and** `.build` to `draft/` and
+  `snapshot/`, reads every `snapshot/` copy back (re-sending a wrong one once), cleans up, and
+  records the history entry; a plain push uploads to `draft/` without compiling. Both warn about stale
+  client bundles. Type errors publish anyway and are counted in `typeCheckDiagnostics`. A missing or
+  unrunnable native compiler throws `Err.LocalCompilerUnavailableError` (`serverVersion`, `reason`,
+  `cause`) before anything is uploaded.
+
+On the server path, push uploads sources only, and only to `draft/`. Core does not compile or
+type-check, never PUTs `snapshot/` or a build folder (`.build` by default), and never reads
+`X-Bluestep-Compile`:
 
 1. Each changed source is PUT to `draft/` (WebDAV writes never compile). Uploads stop at the first
    failure; if any file went up the draft is still compiled, then the upload error is thrown.
@@ -113,12 +134,6 @@ version nobody here has seen: the platform has a `draft/` copy that differs from
 last push or pull here, or that was never synced here. New files and files already in sync never
 ask. Declining throws `Err.OverwriteDeclinedError` (a `UserCancelledError`) with the files in
 `paths`, before anything is written. To confirm without a prompt, pass their draft-relative paths:
-
-Before uploading anything, a push asks the org's server for its version (`/appinfo/version`) and
-throws `Err.ServerVersionUnsupportedError` (`serverVersion`, `required`, `operation`, `reason`:
-`too-old` | `unknown` | `floor-unset`) if the server may not run the compile flow above. Every push,
-plain or snapshot, needs `MIN_SERVER_VERSION` (unset until the first web release containing the flow,
-so every non-`dev` server is refused with `floor-unset` until then); a `dev` build always passes.
 
 ```typescript
 await core.script.push({ rootPath, overwrite: ["scripts/app.ts"] });

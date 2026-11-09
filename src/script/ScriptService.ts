@@ -124,7 +124,7 @@ export class ScriptService {
    *   the push doesn't ask about them; see {@link executePush}
    * @returns The push's outcome, or `null` when no target was given
    * @throws an {@link Err.OverwriteDeclinedError} when an overwrite is not confirmed
-   * @throws an {@link Err.ServerVersionUnsupportedError} when the org's server is below the floor
+   * @throws an {@link Err.CompilationError} when the local fallback compile cannot run (servers below the floor)
    * @throws an {@link Err.PublishRefusedError} when the platform refuses a snapshot publish
    * @throws an {@link Err.ServerCompileRequestError} when a compile or publish request fails
    * @lastreviewed null
