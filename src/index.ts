@@ -4,15 +4,13 @@ export type { ReportResult } from "./B6PCore";
 export { B6PUri } from "./B6PUri";
 export { Err } from "./Err";
 export {
-  checkEmittedEntrypoint,
   cleanupUnusedUpstairsPaths,
   collectOverwriteCandidates,
   confirmOverwrites,
   executePush,
   uploadAndCompile,
-  verifyLiveSnapshot,
 } from "./script/push";
-export type { EmittedEntrypointCheck, LiveSnapshotCheck, OverwriteCandidate, PushResult } from "./script/push";
+export type { OverwriteCandidate, PushResult } from "./script/push";
 export type { PlatformContext } from "./PlatformContext";
 
 // ─── Provider interfaces ─────────────────────────────────────────────
@@ -38,8 +36,7 @@ export { IdUtility } from "./data/IdUtility";
 export { OrgWorker } from "./data/OrgWorker";
 export { ScriptKey } from "./data/ScriptKey";
 export { ScriptUrlParser } from "./data/ScriptUrlParser";
-export { MIN_SERVER_VERSION, meetsMinimumVersion, parseReleaseTag, resolveCompileRoute } from "./data/ServerVersion";
-export type { CompileRoute } from "./data/ServerVersion";
+export { MIN_SERVER_VERSION, assertServerVersion, meetsMinimumVersion, parseReleaseTag } from "./data/ServerVersion";
 
 // ─── Auth + sessions ─────────────────────────────────────────────────
 export { BearerAuthProvider } from "./auth/BearerAuthProvider";
@@ -57,8 +54,6 @@ export { ScriptFile } from "./script/ScriptFile";
 export type { ScriptFolder } from "./script/ScriptFolder";
 export type { ScriptContext } from "./script/ScriptContext";
 export { ScriptService } from "./script/ScriptService";
-export { ScriptTranspiler, resolveNativeCompilerPath, startNativeCompiler } from "./script/ScriptTranspiler";
-export type { CompilerApi, CompilerApiFactory, TranspileOutcome } from "./script/ScriptTranspiler";
 export {
   COMPILE_RETRY,
   KNOWN_DRAFT_COMPILE_STATUSES,

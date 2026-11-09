@@ -40,8 +40,7 @@ export class ScriptFactory {
    * `new ScriptFile(uri, sr)` from **both** arms, so the extension test decided
    * nothing. The branch is gone rather than completed: making an extensionless path
    * a {@link ScriptFolder} would be a behaviour change, and the callers that reach
-   * this (`ScriptRoot.compileDraftFolder` over emitted `.js` paths, and
-   * {@link ScriptService.getFactory} consumers) pass paths that already carry an
+   * this ({@link ScriptService.getFactory} consumers) pass paths that already carry an
    * extension or a trailing separator.
    * @lastreviewed null
    */
