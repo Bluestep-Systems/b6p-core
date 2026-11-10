@@ -731,7 +731,8 @@ export interface GatewayErrorBody {
    */
   message?: string;
   /**
-   * The scope the token lacks; present with `scope-missing`.
+   * The scope the token lacks, present with `scope-missing`; or the scope refused, present with the
+   * `403 not-permitted` reason `rewrite-not-permitted` (`kb:rewrite`).
    * @lastreviewed null
    */
   scope?: string;
@@ -744,7 +745,9 @@ export interface GatewayErrorBody {
   /**
    * Why a `403 not-permitted` was refused, when the gateway says: `expiry-exceeds-presenting` (a
    * mint would outlive the presenting token; see {@link presentingExpiresAt}) or
-   * `restricted-mints-disabled` (tokens beyond `mcp` cannot be minted yet). More values may come.
+   * `restricted-mints-disabled` (tokens beyond `mcp` cannot be minted yet) or `rewrite-not-permitted`
+   * (this account may not hold `kb:rewrite`; see {@link scope}). More values may come. An unknown reason
+   * or an off-contract refusal from web-global arrives as `503 registry-unavailable`, never as `400`.
    * @lastreviewed null
    */
   reason?: string;

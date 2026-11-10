@@ -258,6 +258,10 @@ test("403 not-permitted carries the body's reason and presentingExpiresAt; odd v
   const r = gatewayErrorFor(403, '{"error":"not-permitted","reason":"restricted-mints-disabled"}', "x");
   assert.strictEqual(r.reason, "restricted-mints-disabled");
   assert.strictEqual(r.presentingExpiresAt, null);
+  const rw = gatewayErrorFor(403, '{"error":"not-permitted","reason":"rewrite-not-permitted","scope":"kb:rewrite"}', "x");
+  assert.strictEqual(rw.reason, "rewrite-not-permitted");
+  assert.strictEqual(rw.scope, "kb:rewrite");
+  assert.strictEqual(r.scope, null);
   const unknown = gatewayErrorFor(403, '{"error":"not-permitted","reason":"something-new"}', "x");
   assert.strictEqual(unknown.reason, "something-new");
   const junk = gatewayErrorFor(403, '{"error":"not-permitted","reason":"has spaces and b6pt_secret","presentingExpiresAt":"nope"}', "x");

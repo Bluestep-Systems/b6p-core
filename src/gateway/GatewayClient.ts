@@ -184,7 +184,8 @@ export function gatewayErrorFor(status: number, bodyText: string, what: string, 
         msg("this user is not permitted to do this"),
         code,
         body.reason ?? null,
-        body.presentingExpiresAt ?? null
+        body.presentingExpiresAt ?? null,
+        body.scope !== undefined && /^[a-z0-9:_-]{1,64}$/.test(body.scope) ? body.scope : null
       );
     case 400:
       return new Err.GatewayInvalidRequestError(msg("the gateway rejected the request as malformed"), code);
