@@ -893,9 +893,27 @@ export namespace Err {
    * @lastreviewed null
    */
   export class GatewayNotPermittedError extends GatewayError {
-    constructor(message: string, code: string | null) {
+    /**
+     * The `reason` the response body gave (`expiry-exceeds-presenting`, `restricted-mints-disabled`, or a
+     * value this version does not know), or `null` when it gave none.
+     * @lastreviewed null
+     */
+    readonly reason: string | null;
+    /**
+     * With reason `expiry-exceeds-presenting`: when the presenting token expires, ISO 8601; else `null`.
+     * @lastreviewed null
+     */
+    readonly presentingExpiresAt: string | null;
+    constructor(
+      message: string,
+      code: string | null,
+      reason: string | null = null,
+      presentingExpiresAt: string | null = null
+    ) {
       super(message, 403, code);
       this.name = "GatewayNotPermittedError";
+      this.reason = reason;
+      this.presentingExpiresAt = presentingExpiresAt;
     }
   }
 
