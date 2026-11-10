@@ -213,6 +213,15 @@ const MAPPINGS = [
     Err.GatewayConflictError,
     { code: "non-fast-forward" },
   ],
+  [{ status: 400, body: { error: "invalid-request", message: "m" } }, Err.GatewayInvalidRequestError, { code: "invalid-request", status: 400 }],
+  [{ status: 400 }, Err.GatewayInvalidRequestError, { code: null }],
+  [
+    { status: 409, body: { error: "token-limit", message: "m", limit: 50 } },
+    Err.GatewayTokenLimitError,
+    { code: "token-limit", limit: 50 },
+  ],
+  [{ status: 409, body: { error: "token-limit" } }, Err.GatewayTokenLimitError, { limit: null }],
+  [{ status: 409, body: { error: "alias-taken", message: "m" } }, Err.GatewayConflictError, { code: "alias-taken" }],
   [{ status: 413, body: { error: "too-large", message: "m" } }, Err.GatewayTooLargeError, { code: "too-large" }],
   [
     { status: 502, body: { error: "forge-unavailable", message: "m" } },
@@ -239,6 +248,24 @@ for (const [failure, type, expected] of MAPPINGS) {
     });
   });
 }
+
+test("409 conflict text names the branch head only for the git codes", () => {
+  const head = (status, body) => gatewayErrorFor(status, JSON.stringify(body), "x").message;
+  assert.match(head(409, { error: "non-fast-forward" }), /branch head/);
+  assert.match(gatewayErrorFor(409, "", "git push").message, /branch head/);
+  const other = head(409, { error: "alias-taken" });
+  assert.doesNotMatch(other, /branch head/);
+  assert.match(other, /conflicts with the current state/);
+});
+
+test("503 registry-unavailable names web-global; 502 and a bare 503 keep the forge sentence", () => {
+  const registry = gatewayErrorFor(503, '{"error":"registry-unavailable"}', "GET /r");
+  assert.ok(registry instanceof Err.GatewayUnavailableError);
+  assert.match(registry.message, /web-global/);
+  assert.doesNotMatch(registry.message, /forge/);
+  assert.match(gatewayErrorFor(502, '{"error":"forge-unavailable"}', "GET /r").message, /gateway or the forge/);
+  assert.match(gatewayErrorFor(503, "", "GET /r").message, /gateway or the forge/);
+});
 
 test("the fake's own auth: an unknown token is 401 token-invalid", async () => {
   await withFake(async (fake) => {
