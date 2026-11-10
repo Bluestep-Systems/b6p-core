@@ -902,6 +902,32 @@ export namespace Err {
   }
 
   /**
+   * `403 not-permitted` on a token mint, where the token asked for would outlive the token making
+   * the request: the gateway caps a new token's expiry at the presenting token's. Thrown only when
+   * both expiries are known and the requested one is later; a `not-permitted` mint refusal that
+   * cannot be explained that way stays a {@link GatewayNotPermittedError}.
+   * @lastreviewed null
+   */
+  export class GatewayTokenExpiryRefusedError extends GatewayNotPermittedError {
+    /**
+     * The expiry asked for, ISO 8601; `null` for a token that never expires.
+     * @lastreviewed null
+     */
+    readonly requestedExpiresAt: string | null;
+    /**
+     * When the presenting token expires, ISO 8601.
+     * @lastreviewed null
+     */
+    readonly presentingExpiresAt: string;
+    constructor(message: string, requestedExpiresAt: string | null, presentingExpiresAt: string) {
+      super(message, "not-permitted");
+      this.name = "GatewayTokenExpiryRefusedError";
+      this.requestedExpiresAt = requestedExpiresAt;
+      this.presentingExpiresAt = presentingExpiresAt;
+    }
+  }
+
+  /**
    * `404`: the target does not exist, or exists but is not visible to this user. The gateway
    * deliberately does not say which.
    * @lastreviewed null

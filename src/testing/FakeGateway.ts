@@ -19,6 +19,20 @@ import type {
 const DEFAULT_TOKEN_LIFETIME_MS = 90 * 24 * 60 * 60 * 1_000;
 
 /**
+ * Live (unexpired) tokens one user may hold; a mint past it is `409 token-limit`.
+ * @lastreviewed null
+ */
+const LIVE_TOKEN_LIMIT = 50;
+
+/**
+ * Whether `expiresAt` has passed.
+ * @lastreviewed null
+ */
+function isExpired(expiresAt: string | null): boolean {
+  return expiresAt !== null && Date.parse(expiresAt) <= Date.now();
+}
+
+/**
  * Metadata for a token granted with {@link FakeGateway.grantToken}. Everything is optional.
  * @lastreviewed null
  */
@@ -39,10 +53,10 @@ export interface FakeGatewayTokenOptions {
    */
   owner?: string;
   /**
-   * ISO 8601; defaults to now.
+   * ISO 8601; defaults to now. `null` is a token minted before the gateway recorded creation times.
    * @lastreviewed null
    */
-  createdAt?: string;
+  createdAt?: string | null;
   /**
    * ISO 8601 or `null` (never expires); defaults to 90 days after `createdAt`.
    * @lastreviewed null
@@ -61,7 +75,7 @@ export interface FakeGatewayToken {
   alias: string;
   owner: string;
   scopes: string[];
-  createdAt: string;
+  createdAt: string | null;
   expiresAt: string | null;
   lastUsedAt: string | null;
 }
@@ -101,6 +115,13 @@ export interface FakeGatewayFailure {
    * @lastreviewed null
    */
   body?: GatewayErrorBody | string;
+  /**
+   * Serve this failure to the next request with this HTTP method rather than the very next
+   * request, leaving requests of other methods alone. Lets a spec fail a `POST` that a `GET`
+   * (the token list) precedes.
+   * @lastreviewed null
+   */
+  method?: string;
 }
 
 /**
@@ -217,10 +238,10 @@ export class FakeGateway {
    */
   grantToken(token: string, scopes: readonly string[], options: FakeGatewayTokenOptions = {}): void {
     const n = ++this.tokenSerial;
-    const createdAt = options.createdAt ?? new Date().toISOString();
+    const createdAt = options.createdAt === undefined ? new Date().toISOString() : options.createdAt;
     const expiresAt =
       options.expiresAt === undefined
-        ? new Date(Date.parse(createdAt) + DEFAULT_TOKEN_LIFETIME_MS).toISOString()
+        ? new Date(Date.parse(createdAt ?? new Date().toISOString()) + DEFAULT_TOKEN_LIFETIME_MS).toISOString()
         : options.expiresAt;
     this.issuedSecrets.push(token);
     this.tokens.set(token, {
@@ -301,7 +322,8 @@ export class FakeGateway {
         body,
       });
 
-      const failure = this.failures.shift();
+      const at = this.failures.findIndex((f) => f.method === undefined || f.method === req.method);
+      const failure = at < 0 ? undefined : this.failures.splice(at, 1)[0];
       if (failure) {
         sendFailure(res, failure);
         return;
@@ -405,7 +427,7 @@ export class FakeGateway {
           !Array.isArray(scopes) ||
           !scopes.every((s): s is string => typeof s === "string")
         ) {
-          sendJson(res, 400, { error: "bad-request", message: "alias and scopes are required." });
+          sendJson(res, 400, { error: "invalid-request", message: "alias and scopes are required." });
           return;
         }
         if (scopes.some((s) => !caller.scopes.includes(s))) {
@@ -428,7 +450,22 @@ export class FakeGateway {
         } else if (typeof request.expiresAt === "string") {
           expiresAt = request.expiresAt;
         } else {
-          sendJson(res, 400, { error: "bad-request", message: "expiresAt is not a date." });
+          sendJson(res, 400, { error: "invalid-request", message: "expiresAt is not a date." });
+          return;
+        }
+        if (caller.expiresAt !== null && (expiresAt === null || Date.parse(expiresAt) > Date.parse(caller.expiresAt))) {
+          sendJson(res, 403, {
+            error: "not-permitted",
+            message: "A new token may not outlive the token that makes the request.",
+          });
+          return;
+        }
+        if (own.filter((t) => !isExpired(t.expiresAt)).length >= LIVE_TOKEN_LIMIT) {
+          sendJson(res, 409, {
+            error: "token-limit",
+            message: `A user may hold at most ${LIVE_TOKEN_LIMIT} live tokens.`,
+            limit: LIVE_TOKEN_LIMIT,
+          });
           return;
         }
         sendJson(res, 201, this.mint(caller.owner, alias, scopes, createdAt, expiresAt));
@@ -454,7 +491,12 @@ export class FakeGateway {
       const expiresAt =
         target.expiresAt === null
           ? null
-          : new Date(Date.now() + (Date.parse(target.expiresAt) - Date.parse(target.createdAt))).toISOString();
+          : new Date(
+              Date.now() +
+                (target.createdAt === null
+                  ? DEFAULT_TOKEN_LIFETIME_MS
+                  : Date.parse(target.expiresAt) - Date.parse(target.createdAt))
+            ).toISOString();
       this.tokens.delete(target.secret);
       sendJson(res, 201, this.mint(target.owner, target.alias, target.scopes, createdAt, expiresAt));
       return;
@@ -466,7 +508,7 @@ export class FakeGateway {
     owner: string,
     alias: string,
     scopes: readonly string[],
-    createdAt: string,
+    createdAt: string | null,
     expiresAt: string | null
   ): GatewayMintedTokenBody {
     const n = ++this.tokenSerial;

@@ -165,6 +165,8 @@ export type {
   GatewayKnowledgeBaseList,
   GatewayMarketplaceRepo,
   GatewayMarketplaceRepoList,
+  GatewayCreatedToken,
+  GatewayExpiryCap,
   GatewayMintedToken,
   GatewayMintedTokenBody,
   GatewayTokenCreateRequest,

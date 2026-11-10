@@ -65,6 +65,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `GatewayTokenStoreError`, `GatewayOffContractTokenError` and `GatewayOutcomeUnknownError`. `GatewayClient.sequence((seq) => …)`
   is the client's one queue primitive (the git layer's whole-operation hold uses it too); `seq`
   sends requests over one token read. No secret is logged or put in an error message.
+- **Token expiry follows the gateway's contract delta (2026-11-10)**: `create` with no `expiresAt`
+  mints for the sooner of 90 days and the stored token's own expiry and returns
+  `expiryCapped: { cappedTo, requested: "90d" } | null` (new `GatewayCreatedToken`); an explicit expiry
+  or `null` is sent as given, and a `403 not-permitted` that it explains is
+  `Err.GatewayTokenExpiryRefusedError`. Listed tokens carry `expired` (derived) and a nullable
+  `createdAt`; `lastUsedAt` is approximate. `kb:rewrite` can be minted and rotated. `FakeGateway`
+  enforces the cap and the 50-live-token limit.
 - **`BearerAuthProvider.replaceStoredToken(expected, next)`**: replaces the stored token only while
   it is still `expected` (an in-process compare-then-write, not atomic across processes); the write
   behind rotating it. Never prompts or logs either value.

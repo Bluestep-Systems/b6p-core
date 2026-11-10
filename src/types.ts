@@ -824,17 +824,18 @@ export interface GatewayTokenRecord {
   alias: string;
   scopes: string[];
   /**
-   * ISO 8601.
+   * ISO 8601, or `null` for a token minted before the gateway recorded creation times.
    * @lastreviewed null
    */
-  createdAt: string;
+  createdAt: string | null;
   /**
    * ISO 8601, or `null` for a token that never expires.
    * @lastreviewed null
    */
   expiresAt: string | null;
   /**
-   * ISO 8601, or `null` when the token has not been used.
+   * ISO 8601, or `null` when the token has not been used. Approximate: the gateway stamps it at
+   * most every 12 hours, so it can trail the real last use by that long.
    * @lastreviewed null
    */
   lastUsedAt: string | null;
@@ -854,10 +855,17 @@ export interface GatewayTokenList {
 }
 
 /**
- * A listed token, as `core.gateway.tokens.list()` returns it.
+ * A listed token, as `core.gateway.tokens.list()` returns it. The gateway lists expired tokens too;
+ * {@link expired} tells them apart.
  * @lastreviewed null
  */
 export interface GatewayTokenSummary extends GatewayTokenRecord {
+  /**
+   * `true` when {@link GatewayTokenRecord.expiresAt} is in the past by this machine's clock at the
+   * time of the listing. Derived here, not sent by the gateway.
+   * @lastreviewed null
+   */
+  expired: boolean;
   /**
    * `true` when {@link GatewayTokenRecord.expiresAt} is `null`.
    * @lastreviewed null
@@ -881,11 +889,44 @@ export interface GatewayTokenCreateRequest {
    */
   scopes: readonly string[];
   /**
-   * ISO 8601 expiry. Leave it out for the gateway's default (90 days); `null` mints a token that
-   * never expires.
+   * ISO 8601 expiry, sent as given. `null` mints a token that never expires. Left out, the token is
+   * minted for 90 days, or until the presenting token expires if that comes first
+   * ({@link GatewayCreatedToken.expiryCapped} says when it did): the gateway refuses a token that
+   * would outlive the one making the request.
    * @lastreviewed null
    */
   expiresAt?: string | null;
+}
+
+/**
+ * Set on a {@link GatewayCreatedToken} when no expiry was asked for and the default 90 days would
+ * have outlived the presenting token.
+ * @lastreviewed null
+ */
+export interface GatewayExpiryCap {
+  /**
+   * The expiry the token was minted with: the presenting token's own, ISO 8601.
+   * @lastreviewed null
+   */
+  cappedTo: string;
+  /**
+   * What would have applied without the cap.
+   * @lastreviewed null
+   */
+  requested: "90d";
+}
+
+/**
+ * What `core.gateway.tokens.create()` returns: the minted token and whether its default expiry was
+ * shortened.
+ * @lastreviewed null
+ */
+export interface GatewayCreatedToken extends GatewayMintedToken {
+  /**
+   * Non-null only when the caller gave no expiry and it was capped at the presenting token's.
+   * @lastreviewed null
+   */
+  expiryCapped: GatewayExpiryCap | null;
 }
 
 /**

@@ -193,8 +193,9 @@ caller's **own** tokens. Every call needs the `tokens:self` scope on the stored 
 (`GatewayScopeError` with `scope: "tokens:self"` otherwise); nothing addresses another user.
 
 ```typescript
-const tokens = await core.gateway.tokens.list(); // [{ id, alias, scopes, createdAt, expiresAt, lastUsedAt, current, neverExpires }]
+const tokens = await core.gateway.tokens.list(); // [{ id, alias, scopes, createdAt (null for old tokens), expiresAt, lastUsedAt (approximate), current, neverExpires, expired }] - expired tokens are listed too
 const minted = await core.gateway.tokens.create({ alias: "ci", scopes: ["kb:read"] }); // 90 days by default
+minted.expiryCapped; // null, or { cappedTo, requested: "90d" } when the 90-day default was cut to the stored token's own expiry
 minted.token; // the b6pt_ secret, shown this once; expiresAt: null mints one that never expires (neverExpires: true)
 await core.gateway.tokens.revoke("ci"); // id or alias → { id, alias, revokedCurrent }
 await core.gateway.tokens.rotate("laptop"); // → { replaced, token, rotatedCurrent }
@@ -208,6 +209,13 @@ await core.gateway.tokens.rotate("laptop"); // → { replaced, token, rotatedCur
   strict ISO 8601 date-time with a time zone (`2027-02-01T00:00:00Z`, `…+05:30`; a plain date,
   `March 7` or `1` is refused) before sending (`GatewayInvalidArgumentError`). A new token's scopes must be a subset of the
   stored token's.
+- **Expiry.** The gateway refuses a token that would outlive the one making the request. With no
+  `expiresAt`, `create` reads the list first (same queue entry) and mints for the sooner of 90 days
+  and the stored token's expiry, reporting a cut in `expiryCapped`. An explicit expiry, or `null`, is
+  sent as given; if the gateway answers `403 not-permitted` and that expiry does outlive the stored
+  token, the error is `GatewayTokenExpiryRefusedError` (`requestedExpiresAt`, `presentingExpiresAt`).
+  Other mint failures: `GatewayTokenLimitError` (`409 token-limit`, `limit`),
+  `GatewayInvalidRequestError` (`400`). Scopes (including `kb:rewrite`) are not checked client-side.
 - **Rotating the stored token** (`current`) stores the replacement in its place: there is still one
   stored token. If storing fails after the gateway has rotated (so the old token is already
   revoked), `rotate` throws `GatewayTokenStoreError`, whose non-enumerable `replacement` property
