@@ -67,7 +67,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sends requests over one token read. No secret is logged or put in an error message.
 - **Token expiry follows the gateway's contract delta (2026-11-10)**: `create` with no `expiresAt`
   mints for the sooner of 90 days and the stored token's own expiry and returns
-  `expiryCapped: { cappedTo, requested: "90d" } | null` (new `GatewayCreatedToken`); an explicit expiry
+  `expiryCapped: { cappedTo, requested: "90d" } | null` (null when the cut is 24 hours or less) (new `GatewayCreatedToken`); an explicit expiry
   or `null` is sent as given, and a `403 not-permitted` that it explains is
   `Err.GatewayTokenExpiryRefusedError`. Listed tokens carry `expired` (derived) and a nullable
   `createdAt`; `lastUsedAt` is approximate. `kb:rewrite` can be minted and rotated. `FakeGateway`

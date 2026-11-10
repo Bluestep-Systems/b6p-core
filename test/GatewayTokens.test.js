@@ -272,6 +272,25 @@ test("create with no expiry mints for the presenting token's expiry when that is
   );
 });
 
+test("expiryCapped is reported only when the cap cuts more than 24 hours off the 90 days", async () => {
+  for (const [daysLeft, reported] of [
+    [90 - 0.5, false],
+    [90 - 2, true],
+  ]) {
+    const presentingExpiry = new Date(Date.now() + daysLeft * DAY_MS).toISOString();
+    await withCore(
+      async (fake, core) => {
+        const minted = await core.gateway.tokens.create({ alias: "edge", scopes: [Gateway.Scopes.KB_READ] });
+        secrets.add(minted.token);
+        assert.strictEqual(minted.expiresAt, presentingExpiry, "minted for the cap either way");
+        assert.deepStrictEqual(minted.expiryCapped, reported ? { cappedTo: presentingExpiry, requested: "90d" } : null);
+      },
+      ALL_SCOPES,
+      { expiresAt: presentingExpiry }
+    );
+  }
+});
+
 test("create with no expiry and a presenting token past 90 days sends no expiry and reports no cap", async () => {
   const far = new Date(Date.now() + 200 * DAY_MS).toISOString();
   await withCore(

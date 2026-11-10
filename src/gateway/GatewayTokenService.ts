@@ -28,6 +28,12 @@ const BAD_CHARS = /[\s\u0000-\u001f\u007f]/;
 const DEFAULT_LIFETIME_MS = 90 * 24 * 60 * 60 * 1_000;
 
 /**
+ * A cap that cuts no more than this off the 90 days is applied but not reported (`expiryCapped` stays null).
+ * @lastreviewed null
+ */
+const REPORTABLE_CUT_MS = 24 * 60 * 60 * 1_000;
+
+/**
  * Self-service management of the caller's own gateway access tokens (`core.gateway.tokens`), per
  * the contract's §Tokens. Every route needs the `tokens:self` scope on the presenting token, which
  * is the one b6p has stored; nothing here addresses another user.
@@ -104,9 +110,13 @@ export class GatewayTokenService {
       const presenting = (await listVia(seq.request)).find((t) => t.current);
       let expiryCapped: GatewayCreatedToken["expiryCapped"] = null;
       if (request.expiresAt === undefined && presenting?.expiresAt) {
-        if (Date.parse(presenting.expiresAt) < Date.now() + DEFAULT_LIFETIME_MS) {
+        const cut = Date.now() + DEFAULT_LIFETIME_MS - Date.parse(presenting.expiresAt);
+        if (cut > 0) {
           body.expiresAt = presenting.expiresAt;
-          expiryCapped = { cappedTo: presenting.expiresAt, requested: "90d" };
+          // A cut of a day or less is not worth reporting; the token is still minted for the cap.
+          if (cut > REPORTABLE_CUT_MS) {
+            expiryCapped = { cappedTo: presenting.expiresAt, requested: "90d" };
+          }
         }
       }
       let answer: JsonValue | undefined;
