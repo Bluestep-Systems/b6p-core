@@ -43,6 +43,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `409 token-limit` → `Err.GatewayTokenLimitError` (`limit`, 50 when the body says so, else `null`);
   `503 registry-unavailable` is a `GatewayUnavailableError` naming web-global as the one that could
   not answer. A `409` other than `non-fast-forward` no longer claims the update misses the branch head.
+- **`Err.GatewayNotPermittedError` carries `reason` and `presentingExpiresAt`** from a `403 not-permitted`
+  body (`GatewayErrorBody` gained both), so a consumer can tell why.
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.
 - **`core.gateway.tokens`: self-service management of the caller's own gateway tokens**

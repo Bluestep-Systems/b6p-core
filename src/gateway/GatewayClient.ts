@@ -129,6 +129,17 @@ function parseErrorBody(text: string): GatewayErrorBody {
   if (typeof record.limit === "number" && Number.isInteger(record.limit) && record.limit > 0) {
     body.limit = record.limit;
   }
+  // A reason is a short code; anything else is ignored rather than quoted.
+  if (typeof record.reason === "string" && /^[a-z0-9-]{1,64}$/.test(record.reason)) {
+    body.reason = record.reason;
+  }
+  if (
+    typeof record.presentingExpiresAt === "string" &&
+    record.presentingExpiresAt.length <= 40 &&
+    !Number.isNaN(Date.parse(record.presentingExpiresAt))
+  ) {
+    body.presentingExpiresAt = record.presentingExpiresAt;
+  }
   return body;
 }
 
@@ -169,7 +180,12 @@ export function gatewayErrorFor(status: number, bodyText: string, what: string, 
           msg("a new token's scopes may not exceed those of the token making the request")
         );
       }
-      return new Err.GatewayNotPermittedError(msg("this user is not permitted to do this"), code);
+      return new Err.GatewayNotPermittedError(
+        msg("this user is not permitted to do this"),
+        code,
+        body.reason ?? null,
+        body.presentingExpiresAt ?? null
+      );
     case 400:
       return new Err.GatewayInvalidRequestError(msg("the gateway rejected the request as malformed"), code);
     case 404:

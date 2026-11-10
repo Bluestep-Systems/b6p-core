@@ -249,6 +249,23 @@ for (const [failure, type, expected] of MAPPINGS) {
   });
 }
 
+test("403 not-permitted carries the body's reason and presentingExpiresAt; odd values are dropped", () => {
+  const at = "2026-12-01T00:00:00.000Z";
+  const e = gatewayErrorFor(403, JSON.stringify({ error: "not-permitted", reason: "expiry-exceeds-presenting", presentingExpiresAt: at }), "x");
+  assert.ok(e instanceof Err.GatewayNotPermittedError);
+  assert.strictEqual(e.reason, "expiry-exceeds-presenting");
+  assert.strictEqual(e.presentingExpiresAt, at);
+  const r = gatewayErrorFor(403, '{"error":"not-permitted","reason":"restricted-mints-disabled"}', "x");
+  assert.strictEqual(r.reason, "restricted-mints-disabled");
+  assert.strictEqual(r.presentingExpiresAt, null);
+  const unknown = gatewayErrorFor(403, '{"error":"not-permitted","reason":"something-new"}', "x");
+  assert.strictEqual(unknown.reason, "something-new");
+  const junk = gatewayErrorFor(403, '{"error":"not-permitted","reason":"has spaces and b6pt_secret","presentingExpiresAt":"nope"}', "x");
+  assert.strictEqual(junk.reason, null);
+  assert.strictEqual(junk.presentingExpiresAt, null);
+  assert.strictEqual(gatewayErrorFor(403, "", "x").reason, null);
+});
+
 test("409 conflict text names the branch head only for the git codes", () => {
   const head = (status, body) => gatewayErrorFor(status, JSON.stringify(body), "x").message;
   assert.match(head(409, { error: "non-fast-forward" }), /branch head/);
