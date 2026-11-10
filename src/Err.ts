@@ -967,6 +967,18 @@ export namespace Err {
   }
 
   /**
+   * `403 not-permitted` with reason `rewrite-not-permitted` on a token mint or rotate: this account may
+   * not hold the `kb:rewrite` scope, whatever the presenting token holds.
+   * @lastreviewed null
+   */
+  export class GatewayRewriteNotPermittedError extends GatewayNotPermittedError {
+    constructor(message: string, scope: string) {
+      super(message, "not-permitted", "rewrite-not-permitted", null, scope);
+      this.name = "GatewayRewriteNotPermittedError";
+    }
+  }
+
+  /**
    * `404`: the target does not exist, or exists but is not visible to this user. The gateway
    * deliberately does not say which.
    * @lastreviewed null

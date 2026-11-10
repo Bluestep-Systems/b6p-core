@@ -165,6 +165,13 @@ export class FakeGateway {
   restrictedMintsDisabled = false;
 
   /**
+   * When `true`, a mint or rotate of a token holding `kb:rewrite` is refused `403 not-permitted` with
+   * reason `rewrite-not-permitted` and `scope: "kb:rewrite"` (this account may not rewrite knowledge bases).
+   * @lastreviewed null
+   */
+  rewriteNotPermitted = false;
+
+  /**
    * Every request received, in arrival order.
    * @lastreviewed null
    */
@@ -473,6 +480,15 @@ export class FakeGateway {
           });
           return;
         }
+        if (this.rewriteNotPermitted && scopes.includes("kb:rewrite")) {
+          sendJson(res, 403, {
+            error: "not-permitted",
+            reason: "rewrite-not-permitted",
+            scope: "kb:rewrite",
+            message: "This account may not hold kb:rewrite.",
+          });
+          return;
+        }
         if (this.restrictedMintsDisabled && scopes.some((s) => s !== "mcp")) {
           sendJson(res, 403, {
             error: "not-permitted",
@@ -508,6 +524,15 @@ export class FakeGateway {
       return;
     }
     if (rest.length === 2 && rest[1] === "rotate" && method === "POST") {
+      if (this.rewriteNotPermitted && target.scopes.includes("kb:rewrite")) {
+        sendJson(res, 403, {
+          error: "not-permitted",
+          reason: "rewrite-not-permitted",
+          scope: "kb:rewrite",
+          message: "This account may not hold kb:rewrite.",
+        });
+        return;
+      }
       if (this.restrictedMintsDisabled && target.scopes.some((s) => s !== "mcp")) {
         sendJson(res, 403, {
           error: "not-permitted",

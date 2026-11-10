@@ -402,6 +402,29 @@ test("403 not-permitted reason restricted-mints-disabled → GatewayRestrictedMi
   );
 });
 
+test("403 not-permitted reason rewrite-not-permitted → GatewayRewriteNotPermittedError on mint and rotate", async () => {
+  await withCore(
+    async (fake, core) => {
+      await core.gateway.tokens.create({ alias: "rw", scopes: ["kb:rewrite"], expiresAt: null });
+      fake.rewriteNotPermitted = true;
+      const error = await rejectsWith(
+        core.gateway.tokens.create({ alias: "rw2", scopes: ["kb:rewrite"], expiresAt: null }),
+        Err.GatewayRewriteNotPermittedError
+      );
+      assert.ok(error instanceof Err.GatewayNotPermittedError);
+      assert.strictEqual(error.reason, "rewrite-not-permitted");
+      assert.strictEqual(error.scope, "kb:rewrite");
+      assert.strictEqual(error.status, 403);
+      assert.ok(!/flag|administrator|--/.test(error.message), "the message says what happened, not how to respond");
+      await rejectsWith(core.gateway.tokens.rotate("rw"), Err.GatewayRewriteNotPermittedError);
+      const plain = await core.gateway.tokens.create({ alias: "plain", scopes: [Gateway.Scopes.KB_READ], expiresAt: null });
+      assert.ok(plain.token, "a token without kb:rewrite is still mintable");
+    },
+    [...ALL_SCOPES, "kb:rewrite"],
+    { expiresAt: null }
+  );
+});
+
 test("rotate refused for expiry carries no requested expiry", async () => {
   await withCore(async (fake, core) => {
     fake.failNext({

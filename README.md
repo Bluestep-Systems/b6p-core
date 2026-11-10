@@ -215,7 +215,8 @@ await core.gateway.tokens.rotate("laptop"); // → { replaced, token, rotatedCur
   when that cut more than 24 hours off the 90 days. An explicit expiry, or `null`, is sent as given. A
   `403 not-permitted` on a mint or rotate is typed by the body's `reason`:
   `expiry-exceeds-presenting` (with `presentingExpiresAt`) is `GatewayTokenExpiryRefusedError`,
-  `restricted-mints-disabled` is `GatewayRestrictedMintsDisabledError`, and any other or missing
+  `restricted-mints-disabled` is `GatewayRestrictedMintsDisabledError`, `rewrite-not-permitted` (with
+  `scope: "kb:rewrite"`) is `GatewayRewriteNotPermittedError`, and any other or missing
   reason stays `GatewayNotPermittedError` (`reason` says what arrived). Other mint failures:
   `GatewayTokenLimitError` (`409 token-limit`, `limit`), `GatewayInvalidRequestError` (`400`). Scopes
   (including `kb:rewrite`) are not checked client-side.

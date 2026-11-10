@@ -83,6 +83,7 @@ export class GatewayTokenService {
    * @throws {Err.GatewayTokenLimitError} the caller already holds the maximum number of live tokens
    * @throws {Err.GatewayTokenExpiryRefusedError} the requested expiry outlives the presenting token
    * @throws {Err.GatewayRestrictedMintsDisabledError} the gateway is not yet minting tokens beyond `mcp`
+   * @throws {Err.GatewayRewriteNotPermittedError} the account may not hold `kb:rewrite`
    * @throws {Err.GatewayOffContractTokenError} the token was minted but the answer was malformed;
    *   the error carries the secret
    * @lastreviewed null
@@ -165,6 +166,7 @@ export class GatewayTokenService {
    *
    * @throws {Err.GatewayNotFoundError} no token of the caller's has that id or alias
    * @throws {Err.GatewayTokenAmbiguousError} it matches one token's id and another's alias
+   * @throws {Err.GatewayRewriteNotPermittedError} the token holds `kb:rewrite` and the account may not
    * @throws {Err.GatewayTokenStoreError} the stored token was rotated (so it is already revoked) but
    *   its replacement could not be stored; the error carries the replacement, secret included
    * @throws {Err.GatewayOffContractTokenError} the token was rotated but the answer was malformed; the
@@ -325,6 +327,12 @@ function explainMintRefusal(requested: string | null | undefined): (error: unkno
       if (error.reason === "restricted-mints-disabled") {
         throw new Err.GatewayRestrictedMintsDisabledError(
           `${error.message.split(": ")[0]}: the gateway is not yet issuing tokens beyond the mcp scope (403 not-permitted)`
+        );
+      }
+      if (error.reason === "rewrite-not-permitted") {
+        throw new Err.GatewayRewriteNotPermittedError(
+          `${error.message.split(": ")[0]}: this account may not hold the ${error.scope ?? "kb:rewrite"} scope (403 not-permitted)`,
+          error.scope ?? "kb:rewrite"
         );
       }
     }
