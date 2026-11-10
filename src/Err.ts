@@ -894,7 +894,8 @@ export namespace Err {
    */
   export class GatewayNotPermittedError extends GatewayError {
     /**
-     * The `reason` the response body gave (`expiry-exceeds-presenting`, `restricted-mints-disabled`, or a
+     * The `reason` the response body gave (`expiry-exceeds-presenting`, `restricted-mints-disabled`,
+     * `rewrite-not-permitted`, or a
      * value this version does not know), or `null` when it gave none.
      * @lastreviewed null
      */
@@ -904,16 +905,24 @@ export namespace Err {
      * @lastreviewed null
      */
     readonly presentingExpiresAt: string | null;
+    /**
+     * With reason `rewrite-not-permitted`: the scope that was refused (`kb:rewrite`); else `null`. Only a
+     * short scope-shaped value is kept.
+     * @lastreviewed null
+     */
+    readonly scope: string | null;
     constructor(
       message: string,
       code: string | null,
       reason: string | null = null,
-      presentingExpiresAt: string | null = null
+      presentingExpiresAt: string | null = null,
+      scope: string | null = null
     ) {
       super(message, 403, code);
       this.name = "GatewayNotPermittedError";
       this.reason = reason;
       this.presentingExpiresAt = presentingExpiresAt;
+      this.scope = scope;
     }
   }
 
