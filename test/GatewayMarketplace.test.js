@@ -111,6 +111,17 @@ test("list returns typed repos with their tags", async () => {
   });
 });
 
+test("list keeps the server's order and accepts an empty description (the registry sends \"\" when absent)", async () => {
+  await withMarket(async ({ market, fake }) => {
+    const entry = (name) => ({ name, description: "", defaultBranch: "master", tags: ["v2", "v10"], gitUrl: fake.gitUrl("marketplace", name) });
+    fake.repos = [entry("zeta"), entry("alpha")];
+    const repos = await market.list();
+    assert.deepStrictEqual(repos.map((r) => r.name), ["zeta", "alpha"], "not re-sorted");
+    assert.strictEqual(repos[0].description, "");
+    assert.deepStrictEqual(repos[0].tags, ["v2", "v10"], "tags not re-sorted");
+  });
+});
+
 test("a malformed entry is skipped: it does not break list, get or pull for the others", async () => {
   await withMarket(async ({ market, fake }) => {
     const good = fake.repos[0];
