@@ -20,6 +20,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   gateway URLs only. A request path that resolves off the gateway origin is refused unsent, and a
   redirect is never followed (`redirect-refused`). The token never appears in an error message or a log
   line.
+- **Gateway contract delta (2026-11-10)**: `400 invalid-request` → `Err.GatewayInvalidRequestError`;
+  `409 token-limit` → `Err.GatewayTokenLimitError` (`limit`, 50 when the body says so, else `null`);
+  `503 registry-unavailable` is a `GatewayUnavailableError` naming web-global as the one that could
+  not answer. A `409` other than `non-fast-forward` no longer claims the update misses the branch head.
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.
 - **`FakeGateway`** (testing): an in-process gateway on `127.0.0.1` answering the contract's REST
