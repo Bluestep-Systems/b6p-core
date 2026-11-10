@@ -739,6 +739,18 @@ export interface GatewayErrorBody {
    * @lastreviewed null
    */
   limit?: number;
+  /**
+   * Why a `403 not-permitted` was refused, when the gateway says: `expiry-exceeds-presenting` (a
+   * mint would outlive the presenting token; see {@link presentingExpiresAt}) or
+   * `restricted-mints-disabled` (tokens beyond `mcp` cannot be minted yet). More values may come.
+   * @lastreviewed null
+   */
+  reason?: string;
+  /**
+   * With reason `expiry-exceeds-presenting`: when the presenting token expires, ISO 8601.
+   * @lastreviewed null
+   */
+  presentingExpiresAt?: string;
 }
 
 /**
