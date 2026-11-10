@@ -262,10 +262,10 @@ test("create with no expiry mints for the presenting token's expiry when that is
       const reqs = tokenRequests(fake);
       assert.deepStrictEqual(
         reqs.map((r) => r.method),
-        ["GET", "POST"],
-        "the caller's tokens are read, then the mint"
+        ["POST"],
+        "the tokens are not listed first"
       );
-      assert.strictEqual(JSON.parse(reqs[1].body).expiresAt, presentingExpiry);
+      assert.ok(!("expiresAt" in JSON.parse(reqs[0].body)), "no expiry is sent; the gateway caps it");
     },
     ALL_SCOPES,
     { expiresAt: presentingExpiry }
@@ -289,6 +289,28 @@ test("expiryCapped is reported only when the cap cuts more than 24 hours off the
       { expiresAt: presentingExpiry }
     );
   }
+});
+
+test("expiryCapped is derived from the 201's expiresAt, not from anything the client read first", async () => {
+  await withCore(async (fake, core) => {
+    const cappedTo = new Date(Date.now() + 30 * DAY_MS).toISOString();
+    fake.failNext({
+      method: "POST",
+      status: 201,
+      body: JSON.stringify({ id: "tok_z", token: "b6pt_derived_cap_0001", alias: "d", scopes: ["kb:read"], expiresAt: cappedTo }),
+    });
+    secrets.add("b6pt_derived_cap_0001");
+    const minted = await core.gateway.tokens.create({ alias: "d", scopes: [Gateway.Scopes.KB_READ] });
+    assert.deepStrictEqual(minted.expiryCapped, { cappedTo, requested: "90d" });
+    assert.strictEqual(tokenRequests(fake).filter((r) => r.method === "GET").length, 0);
+    fake.failNext({
+      method: "POST",
+      status: 201,
+      body: JSON.stringify({ id: "tok_y", token: "b6pt_derived_cap_0002", alias: "e", scopes: ["kb:read"], expiresAt: new Date(Date.now() + 89.5 * DAY_MS).toISOString() }),
+    });
+    secrets.add("b6pt_derived_cap_0002");
+    assert.strictEqual((await core.gateway.tokens.create({ alias: "e", scopes: [Gateway.Scopes.KB_READ] })).expiryCapped, null);
+  }, ALL_SCOPES, { expiresAt: null });
 });
 
 test("create with no expiry and a presenting token past 90 days sends no expiry and reports no cap", async () => {
@@ -322,11 +344,11 @@ test("create with an explicit expiry or never is sent as asked, never capped", a
   );
 });
 
-test("403 not-permitted on a mint outliving the presenting token → GatewayTokenExpiryRefusedError with both expiries", async () => {
+test("403 not-permitted reason expiry-exceeds-presenting → GatewayTokenExpiryRefusedError, from the body", async () => {
   const presentingExpiry = new Date(Date.now() + 10 * DAY_MS).toISOString();
   const later = new Date(Date.now() + 40 * DAY_MS).toISOString();
   await withCore(
-    async (_fake, core) => {
+    async (fake, core) => {
       const error = await rejectsWith(
         core.gateway.tokens.create({ alias: "long", scopes: [Gateway.Scopes.KB_READ], expiresAt: later }),
         Err.GatewayTokenExpiryRefusedError
@@ -334,6 +356,7 @@ test("403 not-permitted on a mint outliving the presenting token → GatewayToke
       assert.ok(error instanceof Err.GatewayNotPermittedError);
       assert.strictEqual(error.status, 403);
       assert.strictEqual(error.code, "not-permitted");
+      assert.strictEqual(error.reason, "expiry-exceeds-presenting");
       assert.strictEqual(error.requestedExpiresAt, later);
       assert.strictEqual(error.presentingExpiresAt, presentingExpiry);
       const never = await rejectsWith(
@@ -341,21 +364,71 @@ test("403 not-permitted on a mint outliving the presenting token → GatewayToke
         Err.GatewayTokenExpiryRefusedError
       );
       assert.strictEqual(never.requestedExpiresAt, null);
-      assert.strictEqual(never.presentingExpiresAt, presentingExpiry);
+      // presentingExpiresAt comes from the body, not from a guess: a body naming another date wins.
+      const other = "2031-01-01T00:00:00.000Z";
+      fake.failNext({
+        method: "POST",
+        status: 403,
+        body: { error: "not-permitted", reason: "expiry-exceeds-presenting", presentingExpiresAt: other },
+      });
+      const fromBody = await rejectsWith(
+        core.gateway.tokens.create({ alias: "x", scopes: [Gateway.Scopes.KB_READ], expiresAt: later }),
+        Err.GatewayTokenExpiryRefusedError
+      );
+      assert.strictEqual(fromBody.presentingExpiresAt, other);
+      assert.strictEqual(tokenRequests(fake).filter((r) => r.method === "GET").length, 0, "no listing, no guess");
     },
     ALL_SCOPES,
     { expiresAt: presentingExpiry }
   );
 });
 
-test("a 403 not-permitted mint that the expiry does not explain stays a plain GatewayNotPermittedError", async () => {
+test("403 not-permitted reason restricted-mints-disabled → GatewayRestrictedMintsDisabledError on mint and rotate", async () => {
+  await withCore(
+    async (fake, core) => {
+      fake.restrictedMintsDisabled = true;
+      const error = await rejectsWith(
+        core.gateway.tokens.create({ alias: "wide", scopes: [Gateway.Scopes.KB_READ], expiresAt: null }),
+        Err.GatewayRestrictedMintsDisabledError
+      );
+      assert.ok(error instanceof Err.GatewayNotPermittedError);
+      assert.strictEqual(error.reason, "restricted-mints-disabled");
+      assert.ok(!(error instanceof Err.GatewayTokenExpiryRefusedError));
+      await rejectsWith(core.gateway.tokens.rotate("laptop"), Err.GatewayRestrictedMintsDisabledError);
+      assert.ok(fake.issuedTokens().some((t) => t.secret === TOKEN), "the refused rotate revoked nothing");
+    },
+    ALL_SCOPES,
+    { expiresAt: null }
+  );
+});
+
+test("rotate refused for expiry carries no requested expiry", async () => {
   await withCore(async (fake, core) => {
-    fake.failNext({ method: "POST", status: 403, body: { error: "not-permitted", message: "m" } });
-    const error = await rejectsWith(
-      core.gateway.tokens.create({ alias: "restricted", scopes: [Gateway.Scopes.KB_READ] }),
-      Err.GatewayNotPermittedError
-    );
-    assert.ok(!(error instanceof Err.GatewayTokenExpiryRefusedError));
+    fake.failNext({
+      method: "POST",
+      status: 403,
+      body: { error: "not-permitted", reason: "expiry-exceeds-presenting", presentingExpiresAt: "2031-01-01T00:00:00Z" },
+    });
+    const error = await rejectsWith(core.gateway.tokens.rotate("laptop"), Err.GatewayTokenExpiryRefusedError);
+    assert.strictEqual(error.requestedExpiresAt, undefined);
+  });
+});
+
+test("a 403 not-permitted with an unknown or missing reason stays a plain GatewayNotPermittedError", async () => {
+  await withCore(async (fake, core) => {
+    for (const body of [
+      { error: "not-permitted", message: "m" },
+      { error: "not-permitted", reason: "something-new", message: "m" },
+      { error: "not-permitted", reason: "expiry-exceeds-presenting", message: "no date" },
+    ]) {
+      fake.failNext({ method: "POST", status: 403, body });
+      const error = await rejectsWith(
+        core.gateway.tokens.create({ alias: "restricted", scopes: [Gateway.Scopes.KB_READ], expiresAt: null }),
+        Err.GatewayNotPermittedError
+      );
+      assert.strictEqual(error.constructor, Err.GatewayNotPermittedError, JSON.stringify(body));
+      assert.strictEqual(error.reason, body.reason ?? null);
+    }
   });
 });
 

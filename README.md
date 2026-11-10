@@ -209,13 +209,16 @@ await core.gateway.tokens.rotate("laptop"); // → { replaced, token, rotatedCur
   strict ISO 8601 date-time with a time zone (`2027-02-01T00:00:00Z`, `…+05:30`; a plain date,
   `March 7` or `1` is refused) before sending (`GatewayInvalidArgumentError`). A new token's scopes must be a subset of the
   stored token's.
-- **Expiry.** The gateway refuses a token that would outlive the one making the request. With no
-  `expiresAt`, `create` reads the list first (same queue entry) and mints for the sooner of 90 days
-  and the stored token's expiry, reporting a cut in `expiryCapped`. An explicit expiry, or `null`, is
-  sent as given; if the gateway answers `403 not-permitted` and that expiry does outlive the stored
-  token, the error is `GatewayTokenExpiryRefusedError` (`requestedExpiresAt`, `presentingExpiresAt`).
-  Other mint failures: `GatewayTokenLimitError` (`409 token-limit`, `limit`),
-  `GatewayInvalidRequestError` (`400`). Scopes (including `kb:rewrite`) are not checked client-side.
+- **Expiry.** The gateway caps a new token's expiry at the presenting token's. With no `expiresAt`,
+  `create` sends none and the gateway mints for the sooner of 90 days and the stored token's expiry;
+  `expiryCapped` (`{ cappedTo, requested: "90d" }`, `cappedTo` = the returned `expiresAt`) is set only
+  when that cut more than 24 hours off the 90 days. An explicit expiry, or `null`, is sent as given. A
+  `403 not-permitted` on a mint or rotate is typed by the body's `reason`:
+  `expiry-exceeds-presenting` (with `presentingExpiresAt`) is `GatewayTokenExpiryRefusedError`,
+  `restricted-mints-disabled` is `GatewayRestrictedMintsDisabledError`, and any other or missing
+  reason stays `GatewayNotPermittedError` (`reason` says what arrived). Other mint failures:
+  `GatewayTokenLimitError` (`409 token-limit`, `limit`), `GatewayInvalidRequestError` (`400`). Scopes
+  (including `kb:rewrite`) are not checked client-side.
 - **Rotating the stored token** (`current`) stores the replacement in its place: there is still one
   stored token. If storing fails after the gateway has rotated (so the old token is already
   revoked), `rotate` throws `GatewayTokenStoreError`, whose non-enumerable `replacement` property

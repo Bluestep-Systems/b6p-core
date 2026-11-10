@@ -920,28 +920,40 @@ export namespace Err {
   }
 
   /**
-   * `403 not-permitted` on a token mint, where the token asked for would outlive the token making
-   * the request: the gateway caps a new token's expiry at the presenting token's. Thrown only when
-   * both expiries are known and the requested one is later; a `not-permitted` mint refusal that
-   * cannot be explained that way stays a {@link GatewayNotPermittedError}.
+   * `403 not-permitted` with reason `expiry-exceeds-presenting` on a token mint (`POST /api/v1/tokens`)
+   * or rotate: the token asked for would outlive the token making the request, whose expiry caps
+   * every new token's.
    * @lastreviewed null
    */
   export class GatewayTokenExpiryRefusedError extends GatewayNotPermittedError {
     /**
-     * The expiry asked for, ISO 8601; `null` for a token that never expires.
+     * The expiry asked for, ISO 8601; `null` for a token that never expires; `undefined` when the
+     * request named none (a rotate keeps the rotated token's own lifetime).
      * @lastreviewed null
      */
-    readonly requestedExpiresAt: string | null;
+    readonly requestedExpiresAt: string | null | undefined;
     /**
-     * When the presenting token expires, ISO 8601.
+     * When the presenting token expires, ISO 8601, as the gateway reported it.
      * @lastreviewed null
      */
-    readonly presentingExpiresAt: string;
-    constructor(message: string, requestedExpiresAt: string | null, presentingExpiresAt: string) {
-      super(message, "not-permitted");
+    override readonly presentingExpiresAt: string;
+    constructor(message: string, requestedExpiresAt: string | null | undefined, presentingExpiresAt: string) {
+      super(message, "not-permitted", "expiry-exceeds-presenting", presentingExpiresAt);
       this.name = "GatewayTokenExpiryRefusedError";
       this.requestedExpiresAt = requestedExpiresAt;
       this.presentingExpiresAt = presentingExpiresAt;
+    }
+  }
+
+  /**
+   * `403 not-permitted` with reason `restricted-mints-disabled` on a token mint or rotate: the gateway
+   * is not yet issuing tokens beyond the `mcp` scope (a rollout switch, not a property of the user).
+   * @lastreviewed null
+   */
+  export class GatewayRestrictedMintsDisabledError extends GatewayNotPermittedError {
+    constructor(message: string) {
+      super(message, "not-permitted", "restricted-mints-disabled");
+      this.name = "GatewayRestrictedMintsDisabledError";
     }
   }
 

@@ -158,6 +158,13 @@ export interface FakeGatewayRoute {
  */
 export class FakeGateway {
   /**
+   * When `true`, a mint or rotate of a token with any scope but `mcp` is refused `403 not-permitted`
+   * with reason `restricted-mints-disabled` (the gateway's rollout switch).
+   * @lastreviewed null
+   */
+  restrictedMintsDisabled = false;
+
+  /**
    * Every request received, in arrival order.
    * @lastreviewed null
    */
@@ -444,7 +451,11 @@ export class FakeGateway {
         const createdAt = new Date().toISOString();
         let expiresAt: string | null;
         if (!("expiresAt" in request) || request.expiresAt === undefined) {
-          expiresAt = new Date(Date.now() + DEFAULT_TOKEN_LIFETIME_MS).toISOString();
+          // No expiry asked for: the sooner of 90 days and the presenting token's expiry.
+          const full = Date.now() + DEFAULT_TOKEN_LIFETIME_MS;
+          expiresAt = new Date(
+            caller.expiresAt === null ? full : Math.min(full, Date.parse(caller.expiresAt))
+          ).toISOString();
         } else if (request.expiresAt === null) {
           expiresAt = null;
         } else if (typeof request.expiresAt === "string") {
@@ -456,7 +467,17 @@ export class FakeGateway {
         if (caller.expiresAt !== null && (expiresAt === null || Date.parse(expiresAt) > Date.parse(caller.expiresAt))) {
           sendJson(res, 403, {
             error: "not-permitted",
+            reason: "expiry-exceeds-presenting",
+            presentingExpiresAt: caller.expiresAt,
             message: "A new token may not outlive the token that makes the request.",
+          });
+          return;
+        }
+        if (this.restrictedMintsDisabled && scopes.some((s) => s !== "mcp")) {
+          sendJson(res, 403, {
+            error: "not-permitted",
+            reason: "restricted-mints-disabled",
+            message: "Minting tokens beyond mcp is not enabled yet.",
           });
           return;
         }
@@ -487,6 +508,14 @@ export class FakeGateway {
       return;
     }
     if (rest.length === 2 && rest[1] === "rotate" && method === "POST") {
+      if (this.restrictedMintsDisabled && target.scopes.some((s) => s !== "mcp")) {
+        sendJson(res, 403, {
+          error: "not-permitted",
+          reason: "restricted-mints-disabled",
+          message: "Minting tokens beyond mcp is not enabled yet.",
+        });
+        return;
+      }
       const createdAt = new Date().toISOString();
       const expiresAt =
         target.expiresAt === null

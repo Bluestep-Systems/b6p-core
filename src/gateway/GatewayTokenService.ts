@@ -68,15 +68,11 @@ export class GatewayTokenService {
    * Mint a new token for the caller. The result holds the secret, which the gateway shows only
    * this once.
    *
-   * The gateway refuses a token that would outlive the one making the request, so the expiry is
-   * settled against the presenting token (the `current` row of the token list, read in the same
-   * queue entry as the mint):
-   *
-   * - `expiresAt` left out: the token is minted for 90 days, or until the presenting token expires
-   *   if that is sooner. Then the result's `expiryCapped` says so and gives the date. A presenting
-   *   token that never expires leaves the 90 days alone.
-   * - `expiresAt` a date, or `null` (never): sent as given. If the gateway answers `403
-   *   not-permitted` and that expiry does outlive the presenting token, the error is the typed
+   * - `expiresAt` left out: none is sent. The gateway mints for the sooner of 90 days and the
+   *   presenting token's expiry; when that cut more than 24 hours off the 90 days, the result's
+   *   `expiryCapped` says so and gives the date the gateway returned.
+   * - `expiresAt` a date, or `null` (never): sent as given, and `expiryCapped` is `null`. A `403
+   *   not-permitted` with reason `expiry-exceeds-presenting` is
    *   {@link Err.GatewayTokenExpiryRefusedError}.
    *
    * @throws {Err.GatewayInvalidArgumentError} before sending, for an empty or malformed alias or scope
@@ -86,6 +82,7 @@ export class GatewayTokenService {
    * @throws {Err.GatewayAliasTakenError} another of the caller's tokens has the alias
    * @throws {Err.GatewayTokenLimitError} the caller already holds the maximum number of live tokens
    * @throws {Err.GatewayTokenExpiryRefusedError} the requested expiry outlives the presenting token
+   * @throws {Err.GatewayRestrictedMintsDisabledError} the gateway is not yet minting tokens beyond `mcp`
    * @throws {Err.GatewayOffContractTokenError} the token was minted but the answer was malformed;
    *   the error carries the secret
    * @lastreviewed null
@@ -105,57 +102,34 @@ export class GatewayTokenService {
       body.expiresAt = request.expiresAt;
     }
     const what = `${Http.Methods.POST} ${Gateway.Paths.TOKENS}`;
-    // One queue entry: the presenting token's expiry is read from the same token that mints.
-    return this.client.sequence(async (seq) => {
-      const presenting = (await listVia(seq.request)).find((t) => t.current);
+    const answer = await outcomeUnknownOnUnavailable(
+      () =>
+        this.client
+          .request(Http.Methods.POST, Gateway.Paths.TOKENS, { body })
+          .catch(explainMintRefusal(request.expiresAt)),
+      "create",
+      "a token may have been minted, and its secret was never received"
+    );
+    const mintedAt = Date.now();
+    const parsed = parseMinted(answer, what, "the token may have been minted");
+    if (parsed.minted) {
       let expiryCapped: GatewayCreatedToken["expiryCapped"] = null;
-      if (request.expiresAt === undefined && presenting?.expiresAt) {
-        const cut = Date.now() + DEFAULT_LIFETIME_MS - Date.parse(presenting.expiresAt);
-        if (cut > 0) {
-          body.expiresAt = presenting.expiresAt;
-          // A cut of a day or less is not worth reporting; the token is still minted for the cap.
-          if (cut > REPORTABLE_CUT_MS) {
-            expiryCapped = { cappedTo: presenting.expiresAt, requested: "90d" };
-          }
+      // Derived from the answer: the gateway minted for min(90 days, the presenting token's expiry).
+      if (request.expiresAt === undefined && parsed.minted.expiresAt !== null) {
+        const cut = mintedAt + DEFAULT_LIFETIME_MS - Date.parse(parsed.minted.expiresAt);
+        // A cut of a day or less is not worth reporting.
+        if (cut > REPORTABLE_CUT_MS) {
+          expiryCapped = { cappedTo: parsed.minted.expiresAt, requested: "90d" };
         }
       }
-      let answer: JsonValue | undefined;
-      try {
-        answer = await outcomeUnknownOnUnavailable(
-          () => seq.request(Http.Methods.POST, Gateway.Paths.TOKENS, { body }),
-          "create",
-          "a token may have been minted, and its secret was never received"
-        );
-      } catch (error) {
-        const asked = body.expiresAt === undefined ? undefined : (body.expiresAt as string | null);
-        if (
-          error instanceof Err.GatewayNotPermittedError &&
-          error.code === "not-permitted" &&
-          presenting?.expiresAt &&
-          asked !== undefined &&
-          (asked === null || Date.parse(asked) > Date.parse(presenting.expiresAt))
-        ) {
-          throw new Err.GatewayTokenExpiryRefusedError(
-            `${what}: the gateway refused a token that expires ${
-              asked === null ? "never" : `at ${asked}`
-            }, because the token making the request expires at ${presenting.expiresAt} (403 not-permitted)`,
-            asked,
-            presenting.expiresAt
-          );
-        }
-        throw error;
-      }
-      const parsed = parseMinted(answer, what, "the token may have been minted");
-      if (parsed.minted) {
-        return { ...parsed.minted, expiryCapped };
-      }
-      throw new Err.GatewayOffContractTokenError(
-        `${what}: a token was minted, but the gateway's answer describing it was malformed.`,
-        "create",
-        parsed.secret,
-        false
-      );
-    });
+      return { ...parsed.minted, expiryCapped };
+    }
+    throw new Err.GatewayOffContractTokenError(
+      `${what}: a token was minted, but the gateway's answer describing it was malformed.`,
+      "create",
+      parsed.secret,
+      false
+    );
   }
 
   /**
@@ -207,7 +181,7 @@ export class GatewayTokenService {
       const path = `${Gateway.Paths.TOKENS}/${encodeURIComponent(target.id)}/rotate`;
       const what = `${Http.Methods.POST} ${path}`;
       const answer = await outcomeUnknownOnUnavailable(
-        () => seq.request(Http.Methods.POST, path),
+        () => seq.request(Http.Methods.POST, path).catch(explainMintRefusal(undefined)),
         "rotate",
         `the token "${target.alias}" may have been rotated, in which case the old one is revoked and its replacement was never received`
       );
@@ -329,6 +303,33 @@ function pick(tokens: readonly GatewayTokenSummary[], wanted: string): GatewayTo
     );
   }
   return matches[0];
+}
+
+/**
+ * For a mint or rotate request's `.catch`: turn a `403 not-permitted` whose body gave a known reason
+ * into its typed error. Any other reason, or none, stays the plain {@link Err.GatewayNotPermittedError}
+ * (the gateway may add reasons). Nothing is inferred client-side.
+ * @param requested the expiry the request asked for (`undefined` when it named none)
+ * @lastreviewed null
+ */
+function explainMintRefusal(requested: string | null | undefined): (error: unknown) => never {
+  return (error) => {
+    if (error instanceof Err.GatewayNotPermittedError && error.code === "not-permitted") {
+      if (error.reason === "expiry-exceeds-presenting" && error.presentingExpiresAt !== null) {
+        throw new Err.GatewayTokenExpiryRefusedError(
+          `${error.message.split(": ")[0]}: the new token would outlive the token making the request, which expires at ${error.presentingExpiresAt} (403 not-permitted)`,
+          requested,
+          error.presentingExpiresAt
+        );
+      }
+      if (error.reason === "restricted-mints-disabled") {
+        throw new Err.GatewayRestrictedMintsDisabledError(
+          `${error.message.split(": ")[0]}: the gateway is not yet issuing tokens beyond the mcp scope (403 not-permitted)`
+        );
+      }
+    }
+    throw error;
+  };
 }
 
 /**
