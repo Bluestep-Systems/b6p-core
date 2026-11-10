@@ -175,6 +175,28 @@ test("list refuses a body that is not the promised shape", async () => {
   });
 });
 
+test("list: an unknown or invisible tenant is an empty list, not an error; global rows have a null tenant; the server's order is kept", async () => {
+  await withKb(async ({ kb }) => {
+    assert.deepStrictEqual(await kb.list({ tenant: "U999" }), []);
+    assert.deepStrictEqual(await kb.list({ scope: "tenant", tenant: "U999" }), []);
+    assert.strictEqual((await kb.list({ scope: "global" })).every((k) => k.tenant === null), true);
+  });
+  const row = (name, tenant) => ({
+    ref: tenant ? `tenant/${tenant}/${name}` : `global/${name}`,
+    scope: tenant ? "tenant" : "global",
+    tenant: tenant ?? null,
+    name,
+    title: name,
+    liveBranch: "master",
+    canPush: false,
+    gitUrl: `http://x/${name}.git`,
+  });
+  const served = [row("zeta"), row("alpha"), row("b", "U9"), row("a", "U2")];
+  await withBody({ knowledgeBases: served }, async (kb) => {
+    assert.deepStrictEqual((await kb.list()).map((k) => k.ref), served.map((k) => k.ref), "not re-sorted");
+  });
+});
+
 // ── resolve ─────────────────────────────────────────────────────────────
 
 test("resolve: a bare name is global, <tenant>/<name> is a tenant KB, the listing's own ref form works", async () => {
