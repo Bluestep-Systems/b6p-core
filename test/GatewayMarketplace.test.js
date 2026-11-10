@@ -122,6 +122,15 @@ test("list keeps the server's order and accepts an empty description (the regist
   });
 });
 
+test("list hands every tag over in the server's order and truncates nothing, even past 1_000", async () => {
+  await withMarket(async ({ market, fake }) => {
+    const tags = Array.from({ length: 1_200 }, (_, i) => `1.0.${1_199 - i}`);
+    fake.repos = [{ name: "big", description: "d", defaultBranch: "master", tags, gitUrl: fake.gitUrl("marketplace", "big") }];
+    const [repo] = await market.list();
+    assert.deepStrictEqual(repo.tags, tags, "the client neither re-sorts nor caps the tags (the server owns both)");
+  });
+});
+
 test("a malformed entry is skipped: it does not break list, get or pull for the others", async () => {
   await withMarket(async ({ market, fake }) => {
     const good = fake.repos[0];
