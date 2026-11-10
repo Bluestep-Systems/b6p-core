@@ -126,6 +126,9 @@ function parseErrorBody(text: string): GatewayErrorBody {
   if (typeof record.scope === "string") {
     body.scope = record.scope;
   }
+  if (typeof record.limit === "number" && Number.isInteger(record.limit) && record.limit > 0) {
+    body.limit = record.limit;
+  }
   return body;
 }
 
@@ -167,17 +170,39 @@ export function gatewayErrorFor(status: number, bodyText: string, what: string, 
         );
       }
       return new Err.GatewayNotPermittedError(msg("this user is not permitted to do this"), code);
+    case 400:
+      return new Err.GatewayInvalidRequestError(msg("the gateway rejected the request as malformed"), code);
     case 404:
       return new Err.GatewayNotFoundError(msg("not found, or not visible to this user"), code);
     case 409:
       if (code === "alias-taken") {
         return new Err.GatewayAliasTakenError(msg("another of this user's tokens already has that alias"));
       }
-      return new Err.GatewayConflictError(msg("the update does not build on the current branch head"), code);
+      if (code === "token-limit") {
+        const limit = body.limit ?? null;
+        const full = limit
+          ? `this user already has the maximum of ${limit} live tokens`
+          : "this user already has the maximum number of live tokens";
+        return new Err.GatewayTokenLimitError(msg(full), limit);
+      }
+      // Only the git routes' conflicts (a push that does not build on the head; a bodyless 409 from
+      // the git proxy) are about a branch head. Any other 409 code is some other conflict.
+      if (code === null || code === "non-fast-forward") {
+        return new Err.GatewayConflictError(msg("the update does not build on the current branch head"), code);
+      }
+      return new Err.GatewayConflictError(msg("the request conflicts with the current state"), code);
     case 413:
       return new Err.GatewayTooLargeError(msg("the request is larger than the gateway accepts"), code);
-    case 502:
     case 503:
+      if (code === "registry-unavailable") {
+        return new Err.GatewayUnavailableError(
+          msg("web-global, which holds the registry, could not answer"),
+          status,
+          code
+        );
+      }
+      return new Err.GatewayUnavailableError(msg("the gateway or the forge behind it is unavailable"), status, code);
+    case 502:
     case 504:
       return new Err.GatewayUnavailableError(msg("the gateway or the forge behind it is unavailable"), status, code);
     default:
