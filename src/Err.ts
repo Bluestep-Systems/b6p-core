@@ -912,7 +912,40 @@ export namespace Err {
   }
 
   /**
-   * `409 non-fast-forward`: the push does not build on the branch's current head.
+   * `400 invalid-request`: the gateway rejected the request itself (malformed body or query, bad
+   * alias, an expiry in the past, no vocabulary scope, an unknown scope, a bad filter value). The
+   * gateway's own message says which; `code` is `invalid-request` or `null`.
+   * @lastreviewed null
+   */
+  export class GatewayInvalidRequestError extends GatewayError {
+    constructor(message: string, code: string | null) {
+      super(message, 400, code);
+      this.name = "GatewayInvalidRequestError";
+    }
+  }
+
+  /**
+   * `409 token-limit`: the user already holds the maximum number of live tokens.
+   * @lastreviewed null
+   */
+  export class GatewayTokenLimitError extends GatewayError {
+    /**
+     * The maximum number of live tokens (50 at the time of writing) when the response states it,
+     * else `null`.
+     * @lastreviewed null
+     */
+    readonly limit: number | null;
+    constructor(message: string, limit: number | null) {
+      super(message, 409, "token-limit");
+      this.name = "GatewayTokenLimitError";
+      this.limit = limit;
+    }
+  }
+
+  /**
+   * A `409` conflict. `non-fast-forward` (or a code-less `409` from the git routes) means the push
+   * does not build on the branch's current head; any other code is a different conflict (e.g.
+   * `alias-taken`) and the message says only that the request conflicts with current state.
    * @lastreviewed null
    */
   export class GatewayConflictError extends GatewayError {
@@ -934,8 +967,8 @@ export namespace Err {
   }
 
   /**
-   * The gateway, or the forge behind it, could not be reached: `502 forge-unavailable`, `503`,
-   * `504`, a network failure or a timeout (`status` is then `null`).
+   * The gateway, or the forge behind it, could not be reached: `502 forge-unavailable`, `503`
+   * (`registry-unavailable` means web-global, which holds the registry, could not answer), `504`, a network failure or a timeout (`status` is then `null`).
    * @lastreviewed null
    */
   export class GatewayUnavailableError extends GatewayError {

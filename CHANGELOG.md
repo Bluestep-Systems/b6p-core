@@ -46,6 +46,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clone of a branch or tag (default branch, `./<name>`), or fast-forwards an existing clone of the
   same repo. A malformed listing entry is skipped, and a name is checked as a folder name (no separators, drive or reserved characters, device names) only when `dir` is omitted. A clone of another repo, on another ref, or on a tag that moved on the gateway is `GatewayCloneMismatchError` and is left
   untouched; a refused tag is `tag-moved` or `tag-gone`. A listing name with a leading dot (`.git`), `git~N`, control characters a Windows device name (`CONIN$`, `COM0`, `CON .txt`) or an invisible Unicode character is never used as a folder, and such characters make a listing entry malformed. A relative folder without an absolute `cwd` is `GatewayConfigError`. `ref` accepts `refs/heads/x` / `refs/tags/x`. It never reads or changes script sources or pins, and there is no push. `GatewayGit` gained `inspect(dir, tag?)` and `remoteTagCommit(gitUrl, tag)` for it.
+- **Gateway contract delta (2026-11-10)**: `400 invalid-request` → `Err.GatewayInvalidRequestError`;
+  `409 token-limit` → `Err.GatewayTokenLimitError` (`limit`, 50 when the body says so, else `null`);
+  `503 registry-unavailable` is a `GatewayUnavailableError` naming web-global as the one that could
+  not answer. A `409` other than `non-fast-forward` no longer claims the update misses the branch head.
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.
 - **`FakeGateway`** (testing): an in-process gateway on `127.0.0.1` answering the contract's REST

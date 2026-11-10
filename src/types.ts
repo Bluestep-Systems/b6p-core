@@ -707,7 +707,10 @@ export type GatewayErrorCode =
   | "not-found"
   | "non-fast-forward"
   | "too-large"
-  | "forge-unavailable";
+  | "forge-unavailable"
+  | "invalid-request"
+  | "token-limit"
+  | "registry-unavailable";
 
 /**
  * The JSON body of a gateway error response. On git routes the body is best-effort, so every
@@ -730,6 +733,12 @@ export interface GatewayErrorBody {
    * @lastreviewed null
    */
   scope?: string;
+  /**
+   * The cap the request ran into, when the gateway states it (`token-limit` carries the maximum
+   * number of live tokens). Absent otherwise.
+   * @lastreviewed null
+   */
+  limit?: number;
 }
 
 /**
