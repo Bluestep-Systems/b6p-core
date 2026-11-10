@@ -221,7 +221,7 @@ const MAPPINGS = [
     { code: "token-limit", limit: 50 },
   ],
   [{ status: 409, body: { error: "token-limit" } }, Err.GatewayTokenLimitError, { limit: null }],
-  [{ status: 409, body: { error: "alias-taken", message: "m" } }, Err.GatewayConflictError, { code: "alias-taken" }],
+  [{ status: 409, body: { error: "stale-state", message: "m" } }, Err.GatewayConflictError, { code: "stale-state" }],
   [{ status: 413, body: { error: "too-large", message: "m" } }, Err.GatewayTooLargeError, { code: "too-large" }],
   [
     { status: 502, body: { error: "forge-unavailable", message: "m" } },
@@ -253,7 +253,7 @@ test("409 conflict text names the branch head only for the git codes", () => {
   const head = (status, body) => gatewayErrorFor(status, JSON.stringify(body), "x").message;
   assert.match(head(409, { error: "non-fast-forward" }), /branch head/);
   assert.match(gatewayErrorFor(409, "", "git push").message, /branch head/);
-  const other = head(409, { error: "alias-taken" });
+  const other = head(409, { error: "stale-state" });
   assert.doesNotMatch(other, /branch head/);
   assert.match(other, /conflicts with the current state/);
 });
