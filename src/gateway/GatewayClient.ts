@@ -202,6 +202,13 @@ export function gatewayErrorFor(status: number, bodyText: string, what: string, 
           : "this user already has the maximum number of live tokens";
         return new Err.GatewayTokenLimitError(msg(full), limit);
       }
+      if (code === "live-branch-unprotected") {
+        return new Err.GatewayLiveBranchUnprotectedError(
+          msg(
+            "the gateway refused the push because the knowledge base's live branch is not protected on the forge; nothing was pushed"
+          )
+        );
+      }
       // Only the git routes' conflicts (a push that does not build on the head; a bodyless 409 from
       // the git proxy) are about a branch head. Any other 409 code is some other conflict.
       if (code === null || code === "non-fast-forward") {

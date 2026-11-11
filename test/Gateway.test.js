@@ -222,6 +222,11 @@ const MAPPINGS = [
   ],
   [{ status: 409, body: { error: "token-limit" } }, Err.GatewayTokenLimitError, { limit: null }],
   [{ status: 409, body: { error: "stale-state", message: "m" } }, Err.GatewayConflictError, { code: "stale-state" }],
+  [
+    { status: 409, body: { error: "live-branch-unprotected", message: "m" } },
+    Err.GatewayLiveBranchUnprotectedError,
+    { code: "live-branch-unprotected" },
+  ],
   [{ status: 413, body: { error: "too-large", message: "m" } }, Err.GatewayTooLargeError, { code: "too-large" }],
   [
     { status: 502, body: { error: "forge-unavailable", message: "m" } },
