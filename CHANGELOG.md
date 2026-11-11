@@ -9,6 +9,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`Err.GatewayLiveBranchUnprotectedError`** (extends `GatewayConflictError`): `409 live-branch-unprotected`, a push to a
+  knowledge base's live branch refused because its forge protection rule is missing or drifted; nothing was pushed.
 - **`GatewayNotPermittedError.scope`**: the `scope` a `403 not-permitted` body names (kept only when it is a short
   scope-shaped value), used with the reason `rewrite-not-permitted`; `reason` documents the full list.
 - **`core.gateway`: a client for web-global's gateway** (`gateway.bluestep.net`), the origin for
