@@ -983,6 +983,18 @@ export namespace Err {
   }
 
   /**
+   * `409 live-branch-unprotected`: a push to a knowledge base's live branch was refused because the
+   * forge's protection rule for that branch is missing or has drifted. Nothing was pushed.
+   * @lastreviewed null
+   */
+  export class GatewayLiveBranchUnprotectedError extends GatewayConflictError {
+    constructor(message: string) {
+      super(message, "live-branch-unprotected");
+      this.name = "GatewayLiveBranchUnprotectedError";
+    }
+  }
+
+  /**
    * `413 too-large`: the request body exceeds what the gateway accepts.
    * @lastreviewed null
    */
