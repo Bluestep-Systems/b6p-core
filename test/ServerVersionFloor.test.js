@@ -36,6 +36,8 @@ test("newer meets the floor, numerically not lexically", () => {
   assert.strictEqual(meetsMinimumVersion("26.11.09.10", "26.11.09.02"), true);
 });
 test("dev is current", () => assert.strictEqual(meetsMinimumVersion("dev", FLOOR), true));
+test("latest is current (web's fast local build, ruling 49)", () =>
+  assert.strictEqual(meetsMinimumVersion("latest", FLOOR), true));
 test("empty and garbage do not meet", () => {
   for (const v of ["", "   ", "garbage", "26.11.09", "26.11.09.00.1", "DEV", "v26.11.09.00", "<html>404</html>"]) {
     assert.strictEqual(meetsMinimumVersion(v, FLOOR), false, v);
@@ -101,6 +103,9 @@ test("current and dev take the server route, which refuses no snapshot", async (
   const dev = await route({ body: "dev" });
   assert.deepStrictEqual(dev.route, { mode: "server", reason: "dev", serverVersion: "dev", required: FLOOR });
   assert.strictEqual(snapshotRefusalFor(dev.route), null);
+  const latest = await route({ body: "latest" });
+  assert.deepStrictEqual(latest.route, { mode: "server", reason: "dev", serverVersion: "latest", required: FLOOR });
+  assert.strictEqual(snapshotRefusalFor(latest.route), null);
 });
 test("404, 500, empty body, garbage and network failure are draft-only, unknown", async () => {
   for (const [answer, seen] of [

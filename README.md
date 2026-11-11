@@ -115,7 +115,7 @@ picks a route; it never refuses a push for the version.
 
 | Server                                                                       | Plain push                                                                                 | Snapshot push                                                                                          |
 | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `dev`, or at or above `MIN_SERVER_VERSION`                                   | the flow above (compile on the platform)                                                   | the flow above, then `takeSnapshot`                                                                    |
+| `dev` or `latest`, or at or above `MIN_SERVER_VERSION`                       | the flow above (compile on the platform)                                                   | the flow above, then `takeSnapshot`                                                                    |
 | below the floor, version unreadable or not a release tag, or the floor unset | sources PUT to `draft/` (usual platform-only cleanup); no `compileDraft`, no snapshot work | exactly that plain push, then no publish: `PushResult.snapshotRefused` is set and no snapshot is taken |
 
 `MIN_SERVER_VERSION` is `26.11.09.00`, the first web release containing the flow. Core has no compiler of its own.

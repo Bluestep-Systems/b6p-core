@@ -12,8 +12,13 @@ import { ApiEndpoints } from "../constants";
  */
 export const MIN_SERVER_VERSION: string | null = "26.11.09.00";
 
-/** What the server reports on a local build: always current. @lastreviewed null */
-const DEV_VERSION = "dev";
+/**
+ * What a development build reports instead of a release tag, taken as current: `dev`, and `latest`
+ * (web's fast local image build sets it, ruling 49). A stale local image predating the floor would
+ * get the server flow anyway and fail its compile request instead of saving the draft only.
+ * @lastreviewed null
+ */
+const DEV_VERSIONS: ReadonlySet<string> = new Set(["dev", "latest"]);
 
 const RELEASE_TAG = /^\d{2}\.\d{2}\.\d{2}\.\d{2}$/;
 
@@ -29,12 +34,12 @@ export function parseReleaseTag(text: string): number[] | null {
 
 /**
  * Whether a server version meets a floor, compared numerically part by part (so a backport patch
- * such as `26.11.02.05` sorts below `26.11.09.00`). Exactly `dev` is current and meets any floor.
+ * such as `26.11.02.05` sorts below `26.11.09.00`). Exactly `dev` or `latest` is current and meets any floor.
  * An unreadable version, or an unreadable floor, does not.
  * @lastreviewed null
  */
 export function meetsMinimumVersion(serverVersion: string, floor: string): boolean {
-  if (serverVersion.trim() === DEV_VERSION) {
+  if (DEV_VERSIONS.has(serverVersion.trim())) {
     return true;
   }
   const have = parseReleaseTag(serverVersion);
@@ -131,7 +136,7 @@ export async function resolvePushRoute(opts: {
     serverVersion = null;
   }
 
-  if (serverVersion === DEV_VERSION) {
+  if (serverVersion !== null && DEV_VERSIONS.has(serverVersion)) {
     return { mode: "server", reason: "dev", serverVersion, required };
   }
   if (serverVersion === null || parseReleaseTag(serverVersion) === null) {
