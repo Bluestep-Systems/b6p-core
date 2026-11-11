@@ -807,6 +807,12 @@ export interface GatewayMarketplaceRepo {
   name: string;
   description: string;
   defaultBranch: string;
+  /**
+   * The repo's tags in the server's order, which is SemVer 2.0 precedence. The server keeps only the
+   * newest 1_000 when a repo has more. The client passes the list through as received: it does not
+   * re-sort or truncate it.
+   * @lastreviewed null
+   */
   tags: string[];
   /**
    * Absolute smart-HTTP URL. The server owns the layout; the client never builds one.

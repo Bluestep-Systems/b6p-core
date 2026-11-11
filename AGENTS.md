@@ -75,6 +75,11 @@ are load-bearing rather than stylistic — each records something this repo undi
   provider, which has no `lstat`/symlink/mode surface for isomorphic-git. Each operation runs
   inside `GatewayClient.sequence`. Its specs mount `git http-backend` on `FakeGateway`
   (`test/support/GitHttpBackend.js`), so they need `git` on PATH.
+- **`core.gateway.marketplace` (`GatewayMarketplace`) is a plain working clone, never a push.** It
+  is independent of script sources and pins, takes every `gitUrl` from the listing, and refuses a
+  clone of another repo or ref (`GatewayCloneMismatchError`) rather than prompting, and takes the consumer's `cwd` (never
+  `process.cwd()`). A repo name becomes a folder name only when `dir` is omitted, and is then
+  checked as one plain segment; a malformed listing entry is skipped, not fatal.
 - **A prompt that overwrites or deletes puts its safe option first and passes
   `{ destructive: true, safeOption }`.** Prompt implementations answer `options[0]` on an empty
   answer and under auto-confirm (the CLI's `--yes`); with the destructive option first, `--yes`

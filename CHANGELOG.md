@@ -43,6 +43,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   component (any case, and the NTFS/HFS+ aliases: trailing dots or spaces, Unicode-ignorable
   characters) is refused before any request (`GatewayWorkingCopyError`, reason
   `unsafe-target`).
+- **`core.gateway.marketplace`: list and pull marketplace repos** (ClickUp 86bczx3r8).
+  `list()` reads `GET /api/v1/registry/repos` (name, description, default branch, tags, `gitUrl`;
+  a body of the wrong shape is `GatewayUnexpectedResponseError`), `get(name)` throws
+  `GatewayNotFoundError` for an absent repo, and `pull(name, { cwd, dir?, ref? })` (core never reads `process.cwd()`) makes a plain working
+  clone of a branch or tag (default branch, `./<name>`), or fast-forwards an existing clone of the
+  same repo. A malformed listing entry is skipped, and a name is checked as a folder name (no separators, drive or reserved characters, device names) only when `dir` is omitted. A clone of another repo, on another ref, or on a tag that moved on the gateway is `GatewayCloneMismatchError` and is left
+  untouched; a refused tag is `tag-moved` or `tag-gone`. A listing name with a leading dot (`.git`), `git~N`, control characters a Windows device name (`CONIN$`, `COM0`, `CON .txt`) or an invisible Unicode character is never used as a folder, and such characters make a listing entry malformed. A relative folder without an absolute `cwd` is `GatewayConfigError`. `ref` accepts `refs/heads/x` / `refs/tags/x`. It never reads or changes script sources or pins, and there is no push. `GatewayGit` gained `inspect(dir, tag?)` and `remoteTagCommit(gitUrl, tag)` for it.
 - **Gateway contract delta (2026-11-10)**: `400 invalid-request` → `Err.GatewayInvalidRequestError`;
   `409 token-limit` → `Err.GatewayTokenLimitError` (`limit`, 50 when the body says so, else `null`);
   `503 registry-unavailable` is a `GatewayUnavailableError` naming web-global as the one that could

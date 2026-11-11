@@ -1091,4 +1091,42 @@ export namespace Err {
       this.reason = reason;
     }
   }
+
+  /**
+   * A marketplace pull found a clone it must not update. `reason` is `different-repo` (the
+   * folder's `origin` is not this repo's `gitUrl`), `different-ref` (the clone is on another branch
+   * or tag than the one asked for, or its branch tracks something other than that ref), `tag-moved`
+   * (the tag checked out now points at another commit on the gateway) or `tag-gone` (the gateway
+   * no longer has the tag). Nothing was changed.
+   * @lastreviewed null
+   */
+  export class GatewayCloneMismatchError extends GatewayError {
+    /**
+     * Which of the four it was.
+     * @lastreviewed null
+     */
+    readonly reason: "different-repo" | "different-ref" | "tag-moved" | "tag-gone";
+    /**
+     * The local folder.
+     * @lastreviewed null
+     */
+    readonly dir: string;
+    /**
+     * The marketplace repo the pull was for.
+     * @lastreviewed null
+     */
+    readonly repo: string;
+    constructor(
+      message: string,
+      reason: "different-repo" | "different-ref" | "tag-moved" | "tag-gone",
+      dir: string,
+      repo: string
+    ) {
+      super(message, null, reason);
+      this.name = "GatewayCloneMismatchError";
+      this.reason = reason;
+      this.dir = dir;
+      this.repo = repo;
+    }
+  }
 }
