@@ -59,10 +59,22 @@ are load-bearing rather than stylistic — each records something this repo undi
   extends `PlatformContext` with `gatewayToken` (a `GatewayTokenSource`), `gatewayUrl()` (core
   config `settings.gatewayUrl`, default `https://gateway.bluestep.net`) and `fetchFn`. Knowledge-base
   and marketplace operations go beside `client` on `GatewayService`, over that one client, so all
-  REST requests made through the client share its sequential queue (`authHeadersFor` is not queued).
+  REST requests made through the client share its sequential queue, and so does every git operation (`GatewayClient.sequence`);
+  `authHeadersFor` itself is not queued.
   The client never follows a redirect (a 3xx is `redirect-refused`) and refuses a path that resolves
   off the gateway origin. Errors are `Err.Gateway*`; a git layer maps statuses
   with `gatewayErrorFor` rather than its own table.
+- **`core.gateway.git` (`GatewayGit`) is pure-JS git (isomorphic-git, exact-pinned) and keeps four
+  rules.** It runs only on gateway-supplied `gitUrl`s, with the bearer from `authHeadersFor(url)` on
+  every request (a foreign origin throws first; a 3xx is `redirect-refused`, never followed; a response whose URL is off
+  the origin is discarded). It pushes only
+  fast-forwards: no `force`, no `delete`, no tags, and a branch behind its upstream is refused
+  before the wire. A pull never overwrites: it throws `GatewayDirtyWorkingTreeError` with the
+  paths instead of prompting (anything staged refuses, since the checkout rebuilds the index), and puts the branch back if a checkout refuses. And it never
+  rewrites file contents (no autocrlf). Its clones go through Node's `fs`, not the `FileSystem`
+  provider, which has no `lstat`/symlink/mode surface for isomorphic-git. Each operation runs
+  inside `GatewayClient.sequence`. Its specs mount `git http-backend` on `FakeGateway`
+  (`test/support/GitHttpBackend.js`), so they need `git` on PATH.
 - **A prompt that overwrites or deletes puts its safe option first and passes
   `{ destructive: true, safeOption }`.** Prompt implementations answer `options[0]` on an empty
   answer and under auto-confirm (the CLI's `--yes`); with the destructive option first, `--yes`
@@ -82,8 +94,8 @@ are load-bearing rather than stylistic — each records something this repo undi
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
-snapshot history), `gateway/` (`GatewayService`, `GatewayClient` — web-global's gateway over the
-`b6pt_` token), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
+snapshot history), `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit` — web-global's gateway over
+the `b6pt_` token, and pure-JS git through it), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
 parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles, including `FakeGateway`).
 
 ## Commands

@@ -29,3 +29,5 @@ is how a POSIX runner still covers `file:///C:/…` drive-letter hrefs.
 
 `DownstairsPathParser.test.js` shows the other half of the technique — swapping the ambient `path`
 members for `path.win32` to drive the Windows branch from a Linux host.
+
+`GatewayGit.test.js` needs `git` on PATH (fixtures and `git http-backend`); without it the spec fails up front, it never skips.

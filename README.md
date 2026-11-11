@@ -146,9 +146,38 @@ Failures are typed, all extending `Err.GatewayError` (`status`, `code`):
 | `GatewayUnavailableError` | `502`/`503`/`504`, a network failure or a timeout |
 | `GatewayUnexpectedResponseError` | any other status, a redirect (`code: "redirect-refused"`, not followed), or a 2xx body that is not JSON |
 | `GatewayConfigError` | an unusable `gatewayUrl`, or a URL or request path that resolves off the gateway's origin |
+| `GatewayDirtyWorkingTreeError` (`paths`) | a pull would overwrite local changes (git layer) |
+| `GatewayWorkingCopyError` (`reason`) | the local folder cannot be used: `not-empty`, `not-a-clone`, `detached`, `no-upstream`, `diverged`, `ref-not-found`, `unsafe-target` (git layer) |
 
 `gatewayErrorFor(status, body, what)` applies the same mapping to a status seen elsewhere (the git
 layer). The token never appears in a message or a log line, including when the server echoes it.
+
+#### Git
+
+`core.gateway.git` ([`GatewayGit`](src/gateway/GatewayGit.ts)) clones and updates the repositories behind
+a knowledge base or marketplace listing, in pure JS ([isomorphic-git](https://isomorphic-git.org), MIT;
+no git install needed) over the gateway's smart HTTP endpoints. It takes the `gitUrl` from a listing
+and never builds one; a URL off the gateway's origin is refused before any request, and a redirect is
+not followed (`redirect-refused`). The folders are real local paths, read and written through Node's `fs`, and file
+contents are never rewritten (no autocrlf).
+
+```typescript
+await core.gateway.git.clone(kb.gitUrl, dir, { ref: "master" }); // dir missing or empty
+const status = await core.gateway.git.status(dir, { fetch: true }); // branch, dirty, ahead, behind
+await core.gateway.git.pull(dir); // fetch + fast-forward only
+await core.gateway.git.push(dir); // current branch to its upstream, fast-forward only
+```
+
+- `pull` never merges or rebases. A clean tree just proceeds, and unstaged edits and untracked files
+  on paths the incoming commits do not touch are kept. Anything staged refuses the pull (the checkout
+  would drop it), naming the paths. A pull interrupted after its checkout is finished on the next call. If they do touch them, it throws `GatewayDirtyWorkingTreeError` with the
+  `paths` and changes nothing. If both sides have moved on it throws `GatewayWorkingCopyError`
+  (`diverged`).
+- `push` is never forced, never deletes a ref and never sends tags. An upstream that has moved on
+  (found locally, or reported by the gateway as `409`) is `GatewayConflictError`; a token without
+  `kb:push` is `GatewayScopeError`.
+- Gateway failures map through `gatewayErrorFor`, as for REST. Operations share the client's
+  one-at-a-time queue.
 
 For specs, [`FakeGateway`](src/testing/FakeGateway.ts) is an in-process gateway on `127.0.0.1` that
 answers the contract's REST routes and error codes, with `grantToken`, `failNext` and `route` (for
