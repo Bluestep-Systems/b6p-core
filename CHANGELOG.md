@@ -5,6 +5,36 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`Err.GatewayLiveBranchUnprotectedError`** (extends `GatewayConflictError`): `409 live-branch-unprotected`, a push to a
+  knowledge base's live branch refused because its forge protection rule is missing or drifted; nothing was pushed.
+- **`GatewayNotPermittedError.scope`**: the `scope` a `403 not-permitted` body names (kept only when it is a short
+  scope-shaped value), used with the reason `rewrite-not-permitted`; `reason` documents the full list.
+- **`core.gateway`: a client for web-global's gateway** (`gateway.bluestep.net`), the origin for
+  knowledge bases and marketplace repos (ClickUp 86bczwmwa). `GatewayService` holds a
+  `GatewayClient` that sends the `b6pt_` token `BearerAuthProvider` already stores as
+  `Authorization: Bearer` on every request, with no session bootstrap, one request at a time. The
+  origin comes from the `gatewayUrl` config value (default `https://gateway.bluestep.net`; plain
+  http only on loopback). Failures are typed `Err.Gateway*` errors (auth, scope, not permitted, not
+  found, non-fast-forward, too large, unavailable, unexpected, config), also available to a git
+  layer through `gatewayErrorFor`. `authHeadersFor(url)` hands the header to a git client, for
+  gateway URLs only. A request path that resolves off the gateway origin is refused unsent, and a
+  redirect is never followed (`redirect-refused`). The token never appears in an error message or a log
+  line.
+- **Gateway contract delta (2026-11-10)**: `400 invalid-request` → `Err.GatewayInvalidRequestError`;
+  `409 token-limit` → `Err.GatewayTokenLimitError` (`limit`, 50 when the body says so, else `null`);
+  `503 registry-unavailable` is a `GatewayUnavailableError` naming web-global as the one that could
+  not answer. A `409` other than `non-fast-forward` no longer claims the update misses the branch head.
+- **`Err.GatewayNotPermittedError` carries `reason` and `presentingExpiresAt`** from a `403 not-permitted`
+  body (`GatewayErrorBody` gained both), so a consumer can tell why.
+- **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
+  reads instead of `authHeaderValue()`.
+- **`FakeGateway`** (testing): an in-process gateway on `127.0.0.1` answering the contract's REST
+  shapes and error codes, with hooks for git routes.
+
 ## [0.8.1] - 2026-10-20
 
 ### Fixed

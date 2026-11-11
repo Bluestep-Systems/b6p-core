@@ -7,10 +7,27 @@ import { OrgCache, type OrgCacheSettings } from "./cache/OrgCache";
 import type { PlatformContext } from "./PlatformContext";
 import { ScriptService } from "./script/ScriptService";
 import { UpdateService } from "./update/UpdateService";
+import { GatewayService } from "./gateway/GatewayService";
+import type { GatewayTokenSource } from "./providers";
+import { Gateway } from "./constants/Gateway";
+import { SettingsKeys } from "./constants/SettingsKeys";
 
 const NOOP_ORG_CACHE_SETTINGS: OrgCacheSettings = {
   getParsedAnyDomainOverrideUrl: () => null,
 };
+
+/**
+ * The gateway's token source: the `b6pt_` token the bearer provider already stores (ruling 22),
+ * read without prompting. A consumer-supplied {@link AuthProvider} of some other scheme holds no
+ * such token, so the gateway then has none and every request fails `token-missing` before sending.
+ * @lastreviewed null
+ */
+function gatewayTokenFrom(auth: AuthProvider<AuthParams>): GatewayTokenSource {
+  if (auth instanceof BearerAuthProvider) {
+    return { token: () => auth.storedToken() };
+  }
+  return { token: async () => undefined };
+}
 
 /**
  * Result returned by the report command.
@@ -70,6 +87,12 @@ export class B6PCore {
    */
   readonly script: ScriptService;
 
+  /**
+   * Web-global's gateway: knowledge bases and marketplace repos, over the `b6pt_` token.
+   * @lastreviewed null
+   */
+  readonly gateway: GatewayService;
+
   private readonly _isDebugMode: () => boolean;
 
   constructor(providers: B6PProviders) {
@@ -118,6 +141,23 @@ export class B6PCore {
       scriptMetadataStore: this.scriptMetadataStore,
       orgCache: this.orgCache,
       typescriptLibDirs: providers.typescriptLibDirs,
+    });
+
+    // The gateway is a second origin that takes the same stored `b6pt_` token, but per request: it
+    // reads it through a non-prompting accessor and never goes through `SessionManager`'s cookie
+    // bootstrap or `auth.authHeaderValue()`. Its URL is read from core config on every
+    // request (default gateway.bluestep.net) and validated by the client.
+    const persistence = this.persistence;
+    this.gateway = new GatewayService({
+      ...platform,
+      gatewayToken: gatewayTokenFrom(this.auth),
+      gatewayUrl: async () => {
+        const configured = await persistence.get<unknown>(`settings.${SettingsKeys.GATEWAY_URL}`);
+        return configured === undefined || configured === null || configured === ""
+          ? Gateway.DEFAULT_URL
+          : String(configured);
+      },
+      fetchFn: providers.fetchFn ?? globalThis.fetch.bind(globalThis),
     });
 
     // Initialize update service if configuration is provided

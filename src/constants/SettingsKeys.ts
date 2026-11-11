@@ -8,4 +8,9 @@ export namespace SettingsKeys {
   export const DEBUG_MODE = "debugMode";
   export const UPDATE_CHECK = "updateCheck";
   export const UPDATE_CHECK_SHOW_NOTIFICATIONS = "updateCheck.showNotifications";
+  /**
+   * Core config key (read as `settings.gatewayUrl`) overriding the gateway origin.
+   * @lastreviewed null
+   */
+  export const GATEWAY_URL = "gatewayUrl";
 }

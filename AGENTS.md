@@ -48,9 +48,21 @@ are load-bearing rather than stylistic — each records something this repo undi
   base interface is the top object type, so `T extends AuthParams` would constrain nothing and
   `AuthProvider<string>` would type-check. Do not "simplify" it to an empty marker; if you change
   this or the rule above, re-check the other.
-- **The bearer token is a bootstrap, not a per-request credential.** `SessionManager.login()` is the
-  only caller of `AuthProvider.authHeaderValue()`: it sends the bearer once to `LOOKUP_TEST`, then
-  harvests the `JSESSIONID`/`INGRESSCOOKIE` cookies that carry every later request.
+- **One stored `b6pt_` token, two uses.** On the web origin it is a bootstrap, not a per-request
+  credential: `SessionManager.login()` is the only caller of `AuthProvider.authHeaderValue()`, sends
+  the bearer once to `LOOKUP_TEST`, then harvests the `JSESSIONID`/`INGRESSCOOKIE` cookies that carry
+  every later request. On web-global's gateway the same token *is* sent on every request, with no
+  session: `GatewayClient` reads it through `BearerAuthProvider.storedToken()` (never prompts), not
+  `authHeaderValue()`, and never through `SessionManager`. The gateway sends it only to its
+  configured origin (https, or http on loopback), and it never appears in a message or log line.
+- **`core.gateway` is the second subsystem** (`GatewayService`, `src/gateway/`). `GatewayContext`
+  extends `PlatformContext` with `gatewayToken` (a `GatewayTokenSource`), `gatewayUrl()` (core
+  config `settings.gatewayUrl`, default `https://gateway.bluestep.net`) and `fetchFn`. Knowledge-base
+  and marketplace operations go beside `client` on `GatewayService`, over that one client, so all
+  REST requests made through the client share its sequential queue (`authHeadersFor` is not queued).
+  The client never follows a redirect (a 3xx is `redirect-refused`) and refuses a path that resolves
+  off the gateway origin. Errors are `Err.Gateway*`; a git layer maps statuses
+  with `gatewayErrorFor` rather than its own table.
 - **A prompt that overwrites or deletes puts its safe option first and passes
   `{ destructive: true, safeOption }`.** Prompt implementations answer `options[0]` on an empty
   answer and under auto-confirm (the CLI's `--yes`); with the destructive option first, `--yes`
@@ -70,8 +82,9 @@ are load-bearing rather than stylistic — each records something this repo undi
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
-snapshot history), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
-parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles).
+snapshot history), `gateway/` (`GatewayService`, `GatewayClient` — web-global's gateway over the
+`b6pt_` token), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
+parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles, including `FakeGateway`).
 
 ## Commands
 

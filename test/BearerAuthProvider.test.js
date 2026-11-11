@@ -174,6 +174,33 @@ test("clear removes the bearer token AND purges the legacy basicAuth key", async
   assert.strictEqual(p.secrets["unrelated:key"], "untouched", "other secrets must be left alone");
 });
 
+// ── storedToken (the gateway's accessor) ────────────────────────────────
+
+/** build(), with a counter on every inputBox call so a spec can prove nothing prompted. */
+function buildCounting(secrets) {
+  const built = build(secrets, []);
+  built.asked = 0;
+  built.pr.prompt.inputBox = async () => {
+    built.asked++;
+    return undefined;
+  };
+  return built;
+}
+
+test("storedToken returns the stored token without prompting", async () => {
+  const b = buildCounting({ [KEY]: JSON.stringify({ scheme: "bearer", token: "b6pt_x" }) });
+  assert.strictEqual(await b.auth.storedToken(), "b6pt_x");
+  assert.strictEqual(b.asked, 0);
+});
+
+test("storedToken returns undefined, never prompting, when nothing usable is stored", async () => {
+  for (const secrets of [{}, { [KEY]: "not json" }, { [KEY]: JSON.stringify({ scheme: "bearer", token: "" }) }]) {
+    const b = buildCounting(secrets);
+    assert.strictEqual(await b.auth.storedToken(), undefined);
+    assert.strictEqual(b.asked, 0);
+  }
+});
+
 (async () => {
   for (const [name, fn] of pending) {
     try {

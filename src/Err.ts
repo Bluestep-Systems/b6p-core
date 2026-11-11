@@ -824,4 +824,221 @@ export namespace Err {
       this.name = "ScriptUrlParserError";
     }
   }
+  // Gateway (web-global) errors
+
+  /**
+   * Base of every error the gateway client throws. Messages say what happened, never how to
+   * respond, and never contain the access token.
+   * @lastreviewed null
+   */
+  export class GatewayError extends Error {
+    /**
+     * The HTTP status, or `null` when no response was received or the failure is local.
+     * @lastreviewed null
+     */
+    readonly status: number | null;
+    /**
+     * The `error` code from the response body, a local code (`token-missing`, `token-malformed`),
+     * or `null` when none was given.
+     * @lastreviewed null
+     */
+    readonly code: string | null;
+    constructor(message: string, status: number | null, code: string | null) {
+      super(message);
+      this.name = "GatewayError";
+      this.status = status;
+      this.code = code;
+    }
+  }
+
+  /**
+   * The request carried no usable access token: none is available (`token-missing`, also thrown
+   * locally before any request is sent), the gateway refused it (`token-invalid`), or it is not
+   * shaped like a gateway token (`token-malformed`, local, nothing sent).
+   * @lastreviewed null
+   */
+  export class GatewayAuthError extends GatewayError {
+    /**
+     * Which of the three it was.
+     * @lastreviewed null
+     */
+    readonly reason: "token-missing" | "token-invalid" | "token-malformed";
+    constructor(message: string, reason: "token-missing" | "token-invalid" | "token-malformed", status: number | null) {
+      super(message, status, reason);
+      this.name = "GatewayAuthError";
+      this.reason = reason;
+    }
+  }
+
+  /**
+   * `403 scope-missing`: the token is valid but lacks the scope the route needs.
+   * @lastreviewed null
+   */
+  export class GatewayScopeError extends GatewayError {
+    /**
+     * The missing scope (e.g. `kb:push`), or `null` when the gateway did not name it.
+     * @lastreviewed null
+     */
+    readonly scope: string | null;
+    constructor(message: string, scope: string | null) {
+      super(message, 403, "scope-missing");
+      this.name = "GatewayScopeError";
+      this.scope = scope;
+    }
+  }
+
+  /**
+   * `403 not-permitted` (or a `403` with no recognised body): the global user may not do this to
+   * this target, whatever the token's scopes.
+   * @lastreviewed null
+   */
+  export class GatewayNotPermittedError extends GatewayError {
+    /**
+     * The `reason` the response body gave (`expiry-exceeds-presenting`, `restricted-mints-disabled`,
+     * `rewrite-not-permitted`, or a
+     * value this version does not know), or `null` when it gave none.
+     * @lastreviewed null
+     */
+    readonly reason: string | null;
+    /**
+     * With reason `expiry-exceeds-presenting`: when the presenting token expires, ISO 8601; else `null`.
+     * @lastreviewed null
+     */
+    readonly presentingExpiresAt: string | null;
+    /**
+     * With reason `rewrite-not-permitted`: the scope that was refused (`kb:rewrite`); else `null`. Only a
+     * short scope-shaped value is kept.
+     * @lastreviewed null
+     */
+    readonly scope: string | null;
+    constructor(
+      message: string,
+      code: string | null,
+      reason: string | null = null,
+      presentingExpiresAt: string | null = null,
+      scope: string | null = null
+    ) {
+      super(message, 403, code);
+      this.name = "GatewayNotPermittedError";
+      this.reason = reason;
+      this.presentingExpiresAt = presentingExpiresAt;
+      this.scope = scope;
+    }
+  }
+
+  /**
+   * `404`: the target does not exist, or exists but is not visible to this user. The gateway
+   * deliberately does not say which.
+   * @lastreviewed null
+   */
+  export class GatewayNotFoundError extends GatewayError {
+    constructor(message: string, code: string | null) {
+      super(message, 404, code);
+      this.name = "GatewayNotFoundError";
+    }
+  }
+
+  /**
+   * `400 invalid-request`: the gateway rejected the request itself (malformed body or query, bad
+   * alias, an expiry in the past, no vocabulary scope, an unknown scope, a bad filter value). The
+   * gateway's own message says which; `code` is `invalid-request` or `null`.
+   * @lastreviewed null
+   */
+  export class GatewayInvalidRequestError extends GatewayError {
+    constructor(message: string, code: string | null) {
+      super(message, 400, code);
+      this.name = "GatewayInvalidRequestError";
+    }
+  }
+
+  /**
+   * `409 token-limit`: the user already holds the maximum number of live tokens.
+   * @lastreviewed null
+   */
+  export class GatewayTokenLimitError extends GatewayError {
+    /**
+     * The maximum number of live tokens (50 at the time of writing) when the response states it,
+     * else `null`.
+     * @lastreviewed null
+     */
+    readonly limit: number | null;
+    constructor(message: string, limit: number | null) {
+      super(message, 409, "token-limit");
+      this.name = "GatewayTokenLimitError";
+      this.limit = limit;
+    }
+  }
+
+  /**
+   * A `409` conflict. `non-fast-forward` (or a code-less `409` from the git routes) means the push
+   * does not build on the branch's current head; any other code is a different conflict (e.g.
+   * `alias-taken`) and the message says only that the request conflicts with current state.
+   * @lastreviewed null
+   */
+  export class GatewayConflictError extends GatewayError {
+    constructor(message: string, code: string | null) {
+      super(message, 409, code);
+      this.name = "GatewayConflictError";
+    }
+  }
+
+  /**
+   * `409 live-branch-unprotected`: a push to a knowledge base's live branch was refused because the
+   * forge's protection rule for that branch is missing or has drifted. Nothing was pushed.
+   * @lastreviewed null
+   */
+  export class GatewayLiveBranchUnprotectedError extends GatewayConflictError {
+    constructor(message: string) {
+      super(message, "live-branch-unprotected");
+      this.name = "GatewayLiveBranchUnprotectedError";
+    }
+  }
+
+  /**
+   * `413 too-large`: the request body exceeds what the gateway accepts.
+   * @lastreviewed null
+   */
+  export class GatewayTooLargeError extends GatewayError {
+    constructor(message: string, code: string | null) {
+      super(message, 413, code);
+      this.name = "GatewayTooLargeError";
+    }
+  }
+
+  /**
+   * The gateway, or the forge behind it, could not be reached: `502 forge-unavailable`, `503`
+   * (`registry-unavailable` means web-global, which holds the registry, could not answer), `504`, a network failure or a timeout (`status` is then `null`).
+   * @lastreviewed null
+   */
+  export class GatewayUnavailableError extends GatewayError {
+    constructor(message: string, status: number | null, code: string | null) {
+      super(message, status, code);
+      this.name = "GatewayUnavailableError";
+    }
+  }
+
+  /**
+   * Any other non-2xx status, a refused redirect (code `redirect-refused`; redirects are never
+   * followed), or a 2xx whose body is not the JSON the route promises.
+   * @lastreviewed null
+   */
+  export class GatewayUnexpectedResponseError extends GatewayError {
+    constructor(message: string, status: number | null, code: string | null) {
+      super(message, status, code);
+      this.name = "GatewayUnexpectedResponseError";
+    }
+  }
+
+  /**
+   * The configured gateway URL is unusable (not a URL, not `https:` off loopback, or carrying
+   * credentials, a query or a fragment), or a URL handed to the client is not on the gateway's
+   * origin. Thrown before any request, so the token is never sent anywhere unintended.
+   * @lastreviewed null
+   */
+  export class GatewayConfigError extends GatewayError {
+    constructor(message: string) {
+      super(message, null, null);
+      this.name = "GatewayConfigError";
+    }
+  }
 }

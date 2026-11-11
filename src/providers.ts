@@ -142,6 +142,26 @@ export interface AuthProvider<T extends AuthParams> {
   hasCredentials(): Promise<boolean>;
 }
 
+// ── Gateway token ──────────────────────────────────────────────────
+
+/**
+ * Where the gateway client gets the global user's `b6pt_` access token. The client asks on every
+ * request and sends what it gets as `Authorization: Bearer <token>`, with no session bootstrap.
+ *
+ * `B6PCore` backs it with the token the bearer auth provider already stores (the same token that
+ * bootstraps the web session). It is an interface so the client and its specs depend only on
+ * "something that yields the token", not on where it is kept.
+ * @lastreviewed null
+ */
+export interface GatewayTokenSource {
+  /**
+   * The token, or `undefined` when there is none. Never prompts: a missing token surfaces as a
+   * typed error from the client, and the consumer decides how to ask for one.
+   * @lastreviewed null
+   */
+  token(): Promise<string | undefined>;
+}
+
 // ── Logging ─────────────────────────────────────────────────────────
 
 export interface Logger {
