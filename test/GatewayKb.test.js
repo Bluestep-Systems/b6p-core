@@ -515,6 +515,41 @@ test("push sends local commits to the live branch and returns {pushed, commit, r
   });
 });
 
+// Answer the git-receive-pack POST with `409 live-branch-unprotected`, ahead of git's own backend.
+function refuseUnprotected(fake) {
+  const backend = fake.routes.find((r) => r.method === "POST");
+  const delegate = backend.handler;
+  backend.handler = (req, res) => {
+    if (!req.url.endsWith("git-receive-pack")) {
+      return delegate(req, res);
+    }
+    req.resume();
+    res.writeHead(409, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "live-branch-unprotected", message: "protection rule missing" }));
+  };
+}
+
+test("a push the gateway refuses with 409 live-branch-unprotected is that typed error, not non-fast-forward", async () => {
+  await withKb(async ({ fake, demo, kb, service }) => {
+    const cwd = tmp();
+    const { dir } = await kb.pull("demo", { cwd });
+    fs.writeFileSync(path.join(dir, "u.txt"), "u\n");
+    git(dir, "add", "-A");
+    git(dir, "commit", "-m", "unprotected");
+    const before = git(demo, "rev-parse", "master");
+    refuseUnprotected(fake);
+    for (const push of [() => kb.push(dir), () => service.git.push(dir)]) {
+      const error = await rejectsWith(push(), Err.GatewayLiveBranchUnprotectedError);
+      assert.ok(error instanceof Err.GatewayConflictError);
+      assert.strictEqual(error.code, "live-branch-unprotected");
+      assert.strictEqual(error.status, 409);
+      assert.ok(/not protected/.test(error.message) && /nothing was pushed/.test(error.message), error.message);
+      assert.ok(!/fast-forward/i.test(error.message), error.message);
+    }
+    assert.strictEqual(git(demo, "rev-parse", "master"), before);
+  });
+});
+
 test("push to a tenant KB reports its tenant ref", async () => {
   await withKb(async ({ kb, handbook }) => {
     const cwd = tmp();
