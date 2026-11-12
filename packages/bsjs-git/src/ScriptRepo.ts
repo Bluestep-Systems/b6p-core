@@ -381,12 +381,19 @@ export class ScriptRepo {
    * Stages every working-tree change and commits it to the current branch.
    * @param message the commit message.
    * @param author overrides the constructor's author.
+   * @param options `parents` makes the commit over exactly those parents (a merge when there are two) and commits even
+   *        with nothing staged: the tree is whatever is staged now.
    * @returns the new commit's sha, or `undefined` when nothing changed.
    * @throws {GitIdentityError} when there is no author.
    * @lastreviewed null
    */
-  async commit(message: string, author?: GitIdentity): Promise<string | undefined> {
+  async commit(
+    message: string,
+    author?: GitIdentity,
+    options: { readonly parents?: readonly string[] } = {}
+  ): Promise<string | undefined> {
     const who = requireIdentity(author ?? this.#author);
+    const parent = options.parents ? [...options.parents] : undefined;
     const matrix = await git.statusMatrix({ fs: this.#fs, dir: this.dir });
     let changed = 0;
     for (const [path, head, workdir, stage] of matrix) {
@@ -402,10 +409,50 @@ export class ScriptRepo {
         await git.add({ fs: this.#fs, dir: this.dir, filepath: path });
       }
     }
-    if (changed === 0) {
+    if (changed === 0 && !parent) {
       return undefined;
     }
-    return git.commit({ fs: this.#fs, dir: this.dir, message, author: who, committer: who });
+    return git.commit({
+      fs: this.#fs,
+      dir: this.dir,
+      message,
+      author: who,
+      committer: who,
+      ...(parent ? { parent } : {}),
+    });
+  }
+
+  /**
+   * A branch name or sha as a commit sha; a branch prefers the local ref, then the platform's
+   * (`origin/<branch>`).
+   * @throws {BsjsGitError} (`REPO_NOT_FOUND`) when the local repo has no such branch or commit.
+   * @lastreviewed null
+   */
+  async sha(rev: string): Promise<string> {
+    return this.#resolve(rev);
+  }
+
+  /**
+   * Whether `ancestor` is `descendant` or one of its ancestors (both branch names or shas).
+   * @lastreviewed null
+   */
+  async isAncestor(ancestor: string, descendant: string): Promise<boolean> {
+    const [oid, target] = await Promise.all([this.#resolve(ancestor), this.#resolve(descendant)]);
+    if (oid === target) {
+      return true;
+    }
+    return git.isDescendent({ fs: this.#fs, dir: this.dir, oid: target, ancestor: oid, depth: -1 });
+  }
+
+  /**
+   * Points the local draft branch at `rev` and checks it out, overwriting working-tree files (the caller keeps
+   * whatever local edits it wants to survive and writes them back afterwards).
+   * @lastreviewed null
+   */
+  async resetDraft(rev: string): Promise<void> {
+    const oid = await this.#resolve(rev);
+    await git.writeRef({ fs: this.#fs, dir: this.dir, ref: `refs/heads/${DRAFT_BRANCH}`, value: oid, force: true });
+    await git.checkout({ fs: this.#fs, dir: this.dir, ref: DRAFT_BRANCH, force: true });
   }
 
   /**
@@ -458,6 +505,17 @@ export class ScriptRepo {
    * @lastreviewed null
    */
   async ensureGitMode(): Promise<string> {
+    return (await this.ensureGitModeResult()).cloneUrl;
+  }
+
+  /**
+   * {@link ensureGitMode}, also saying whether this call is the one that switched the script.
+   * @returns `cloneUrl` as the platform reports it; `switched` is true when the script was in WEBDAV mode and this
+   *          call turned git on (one-way).
+   * @throws {GitModeError} as {@link ensureGitMode}.
+   * @lastreviewed null
+   */
+  async ensureGitModeResult(): Promise<{ readonly cloneUrl: string; readonly switched: boolean }> {
     const { mutationName, inputType, typeName } = publishMutationFor(this.script);
     const fail = (message: string, cause?: unknown): BsjsGitError => new GitModeError(message, cause);
     const id = compoundId(this.script);
@@ -468,7 +526,7 @@ export class ScriptRepo {
     );
     const current = read.data?.remoteObject as GraphQlScript | undefined;
     if (current?.gitPublishing && current.gitCloneUrl) {
-      return current.gitCloneUrl;
+      return { cloneUrl: current.gitCloneUrl, switched: false };
     }
     const enabled = await this.#gql(
       `mutation EnableGit($inputs: [${inputType}!]!) { ${mutationName}(inputs: $inputs) { id gitPublishing gitCloneUrl } }`,
@@ -480,7 +538,7 @@ export class ScriptRepo {
     if (!item?.gitPublishing || !item.gitCloneUrl) {
       throw new GitModeError("the script is not in git mode after enabling it, or the platform gave no clone URL");
     }
-    return item.gitCloneUrl;
+    return { cloneUrl: item.gitCloneUrl, switched: true };
   }
 
   async #gql(

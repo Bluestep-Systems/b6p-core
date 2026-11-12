@@ -1,7 +1,7 @@
 # @bluestep-systems/b6p-core
 
 The core library for **B6P** — BlueStep script management (push / pull / audit / deploy of JavaScript &
-TypeScript "formula" scripts over WebDAV).
+TypeScript "formula" scripts, through git).
 
 This package contains the headless orchestration logic shared by the
 [`b6p` CLI](https://github.com/Bluestep-Systems/b6p-cli) and the
@@ -39,7 +39,7 @@ const providers: B6PProviders = {
 
 const core = new B6PCore(providers);
 
-await core.script.pull({ formulaUrl: "https://org.bluestep.net/files/<id>/draft/", workspacePath });
+await core.script.pull({ formulaUrl: "https://org.bluestep.net/files/<id>/", workspacePath });
 await core.script.push({ rootPath, snapshot: true, message: "Update script" });
 const audit = await core.script.audit({ filePath, workspacePath });
 ```
@@ -52,12 +52,12 @@ functionality as its own service. Script management is `core.script`; further su
 beside it rather than onto `B6PCore` itself.
 
 `core.script` ([`ScriptService`](src/script/ScriptService.ts)) — everything that moves a script tree
-between the local filesystem and the platform over WebDAV:
+between the local filesystem and the platform (the draft over git, `declarations/` over WebDAV):
 
 | Method | Purpose |
 | --- | --- |
-| `push` / `pushCurrent` | Upload local script files to the platform (optional versioned snapshot) |
-| `pull` / `pullCurrent` | Download script files from a formula URL into a workspace |
+| `push` / `pushCurrent` | Commit and push the draft folder (optionally publish it as a snapshot) |
+| `pull` / `pullCurrent` | Clone or fast-forward the draft into a workspace |
 | `audit` / `auditPull` | Compare local vs. server; optionally pull differences |
 | `deploy` | Multi-target deploy driven by a config file |
 | `getSetupUrl` | Resolve a pulled script's web-UI setup page |
@@ -77,35 +77,68 @@ between the local filesystem and the platform over WebDAV:
 See [`src/index.ts`](src/index.ts) for the full set of exported classes, provider interfaces, data
 utilities, constants, and types.
 
+### Scripts are git (since 0.9.0)
+
+A script's **draft folder is a git working tree**: `<workspace>/<U>/<script>/draft/` holds the files and its `.git`;
+`declarations/` (generated typings, outside git) stays beside it. Everything about a script's draft and snapshot goes
+through the platform's git proxy by way of [`bsjsGit`](packages/bsjs-git/README.md); no draft or snapshot file is read or
+written over WebDAV any more (only `declarations/` and the root `.gitignore` still are).
+
+- **pull** clones the draft branch into `draft/`, or fetches and fast-forwards it. A local edit to a file the platform
+  also changed is kept and reported (`keptLocalPaths`); files missing locally come back. A folder pulled before git (files,
+  no repository) is bound to the repo as it stands: its files that its last sync record shows unedited take the platform
+  copy, edited ones are kept.
+- **push** commits the working tree as the author and pushes the draft branch. A **snapshot** push compiles first, then
+  also publishes (`publishedSha`) and reads back that the platform's `master` is at that commit.
+- **audit** compares the working tree with the platform's draft (a folder that is not a git working copy yet is reported
+  as not pulled).
+- **deploy** pushes the source draft's files to each target script through a scratch clone, and never binds the source
+  folder to a target.
+- **A script that still publishes over WebDAV is switched to git, one way.** A push does it on its first write (and
+  `PushResult.switchedToGit` and a warning say so); a pull asks first (`Prompt.confirm`, safe answer first, so
+  auto-confirm declines and the pull returns `null`) unless `enableGit: true` is passed. After the switch the script's
+  draft and snapshot refuse WebDAV writes.
+- **The commit author is never invented.** It is the `author` option of `push`/`pushCurrent`/`deploy`, else `git config
+  user.name`/`user.email` for the draft folder (global config included), else `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`
+  (then `GIT_COMMITTER_*`) from the environment, else a `GitIdentityError` before the compile and before the platform is
+  touched.
+- `B6PProviders.gitFs` (default `node:fs`) is the Node-style file system git works on; it must read and write the same
+  disk as the `fs` provider.
+
 ### Push results
 
 `push` / `pushCurrent` resolve to a [`PushResult`](src/script/push.ts) (or `null` when no target was
-given). Read `pushed` first: `false` means nothing was uploaded.
+given). Read `pushed` first: `false` means nothing was pushed.
 
 | Field | Meaning |
 | --- | --- |
-| `pushed` | The upload ran. `false` when the draft folder is missing or empty, or a snapshot's compiled `scripts/app.js` is missing or has no code (only comments and empty-module lines, as from a blank or types-only `app.ts`) |
-| `historyRecorded` | A snapshot's history entry was recorded. `false` also when the push stopped early |
+| `pushed` | The draft is on the platform. `false` when the draft folder is missing or empty, or a snapshot's compiled `scripts/app.js` is missing or has no code (only comments and empty-module lines, as from a blank or types-only `app.ts`) |
+| `commitSha` | The draft branch's head on the platform after the push (the commit this push made, or the one already there); `null` when `pushed` is `false` |
+| `publishedSha` | The commit the platform published, on a snapshot push; `null` on a plain push, an aborted one, or a failed publish. A caller that asked for a snapshot treats `null` as a failure |
+| `publishError` | Why the platform refused or failed the publish (the draft stays pushed); otherwise `null` |
+| `switchedToGit` | This push switched a WebDAV script to git, which cannot be undone |
 | `typeCheckDiagnostics` | Snapshot type-check: `0` clean, `> 0` published with diagnostics, `null` no check ran |
-| `liveVerified` | `true`: every `snapshot/` copy the push wrote reads back identical (by ETag). `false`: one is still different, missing or unreadable after one re-send, and the push stops before cleanup and history. `null`: not proven either way (a plain push, an early stop, or a copy served without a content hash, named in a warning) |
-| `liveMismatches` | Draft-relative paths whose live copy was still different, missing or unreadable after one re-send |
-| `keptPlatformOnly` | Platform-only files kept because deleting them was not confirmed |
+| `liveVerified` | `true`: the platform's `master` is at `publishedSha`. `false`: it is at another commit. `null`: not proven either way (a plain push, an early stop, a failed publish, or `master` could not be fetched) |
+| `liveMismatches` | Draft-relative paths that differ between `publishedSha` and `master` when `liveVerified` is `false` (empty when they can't be listed) |
+| `keptPlatformOnly` | Platform-only files kept because deleting them was not confirmed (they are part of the pushed commit) |
 
-A snapshot push checks the compiled entrypoint before uploading, fails on a refused `snapshot/`
-write, re-uploads a file whose `snapshot/` copy is stale even when `draft/` matches, and reads the
-live copies back afterwards.
+`historyRecorded` is gone: the git history is the history.
 
 ### Overwrites and destructive prompts
 
-Before uploading, a push asks **once** about every file whose upload would overwrite a platform
-version nobody here has seen: the platform has a `draft/` copy that differs from local and from the
-last push or pull here, or that was never synced here. New files and files already in sync never
-ask. Declining throws `Err.OverwriteDeclinedError` (a `UserCancelledError`) with the files in
-`paths`, before anything is written. To confirm without a prompt, pass their draft-relative paths:
+Before anything is pushed, a push asks **once** about every file it would overwrite that the platform changed since
+this folder was last synced (git: the draft branch moved on, or, for a folder with no repo of its own, the platform copy
+differs from what the sync record says this machine last had). Files only changed here never ask. Declining throws
+`Err.OverwriteDeclinedError` (a `UserCancelledError`) with the files in `paths`, before anything is pushed. Confirming
+pushes a merge commit, so the platform's commits stay in the history. To confirm without a prompt, pass the
+draft-relative paths:
 
 ```typescript
 await core.script.push({ rootPath, overwrite: ["scripts/app.ts"] });
 ```
+
+A second prompt covers platform files the platform gained since the last sync that have no local copy ("delete them from
+the platform?", `No` first); anything but `Yes` keeps them and reports them in `keptPlatformOnly`.
 
 Every prompt that overwrites or deletes puts its **safe option first** and marks itself with the
 optional third argument of `Prompt.confirm`:

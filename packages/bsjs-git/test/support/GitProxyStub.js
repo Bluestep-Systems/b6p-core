@@ -40,7 +40,10 @@ function createStub() {
   const repos = new Map(); // name -> { mode, locked, refusePublish }
   const backend = httpBackendPath();
 
-  function addRepo(name, { mode = "GIT", locked = false, files = { "main.ts": "export const v = 1;\n" } } = {}) {
+  function addRepo(
+    name,
+    { mode = "GIT", locked = false, hidden = false, files = { "main.ts": "export const v = 1;\n" } } = {}
+  ) {
     const bare = path.join(root, name);
     git(root, "init", "--bare", "-b", "master", bare);
     git(bare, "config", "http.receivepack", "true");
@@ -66,7 +69,7 @@ function createStub() {
     fs.rmSync(hook);
     git(seed, "push", bare, "master", "draft");
     fs.writeFileSync(hook, saved, { mode: 0o755 });
-    repos.set(name, { mode, locked, refusePublish: undefined, bare });
+    repos.set(name, { mode, locked, hidden, refusePublish: undefined, bare });
     return bare;
   }
 
@@ -278,7 +281,8 @@ function createStub() {
       return;
     }
     const entry = repos.get(match[1]);
-    if (!entry) {
+    // `hidden`: a script that publishes over WebDAV has no repo until git is switched on.
+    if (!entry || (entry.hidden && entry.mode !== "GIT")) {
       res.writeHead(404);
       res.end();
       return;

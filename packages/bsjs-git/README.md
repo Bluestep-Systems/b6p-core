@@ -23,8 +23,13 @@ await repo.ensureGitMode();            // WEBDAV script -> git (one-way); no-op 
 await repo.clone();                    // every branch; draft checked out (or clone({ ensureGit: true }) for both)
 await repo.writeFile("main.ts", "export {};\n");
 await repo.commit("Edit main");        // stages every working-tree change
+                                       // commit(msg, author, { parents }) makes a (merge) commit over the given parents even with nothing staged
 await repo.push();                     // the draft branch
 const { publishedSha, refreshed } = await repo.publish(); // the platform promotes draft to master
+
+await repo.sha("origin/draft");                 // a branch or sha as a commit sha
+await repo.isAncestor(a, b);                    // whether a is b or one of its ancestors
+await repo.resetDraft(sha);                     // move the local draft and its working tree to a commit
 
 await repo.log({ rev: "master", limit: 20 });   // CommitInfo[], newest first; page with `before`
 await repo.listTree(publishedSha);                       // files at a revision
@@ -57,8 +62,9 @@ and a refused one retried once. Session mode relies on the platform's git proxy 
 
 `ensureGitMode()` reads the script's `gitPublishing` / `gitCloneUrl` and, only if it is not in GIT mode, runs
 `enableGitPublishing: true` on the script's update mutation (synchronous, creates and seeds the repo, **one-way**).
-`clone({ ensureGit: true })` does it first; a plain `clone()` never flips a script.
+`ensureGitModeResult()` is the same, also saying whether this call did the switch. `clone({ ensureGit: true })` does it first; a plain `clone()` never flips a script.
 The mode is read with a real query, `remoteObject(id: "<classid>___<seqnum>") { ... on ScriptFormula|ScriptMergeReport|ScriptEndpoint { gitPublishing gitCloneUrl } }`, not a write.
+
 ## Publish
 
 `publish()` sends the platform's existing publish: a GraphQL `updateScript<Type>` mutation with `takeSnapshot: true`

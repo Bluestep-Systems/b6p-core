@@ -1,6 +1,6 @@
 {
   "name": "@bluestep-systems/b6p-core-bsjs-git",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Browser- and Node-safe git client for BlueStep BSJS scripts: draft-branch editing through the platform git proxy, publish, git history and the legacy history archive",
   "license": "MIT",
   "repository": {

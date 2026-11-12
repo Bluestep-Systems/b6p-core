@@ -318,6 +318,49 @@ test("ensureGitMode switches a WEBDAV script once and leaves a GIT script alone"
   assert.strictEqual(stub.state.enableCalls, already);
 });
 
+test("ensureGitModeResult says whether this call did the switch", async () => {
+  stub.addRepo("654015___7108", { mode: "WEBDAV" });
+  const repo = repoFor(key("654015___7108"));
+  assert.deepStrictEqual(await repo.ensureGitModeResult(), {
+    cloneUrl: "https://stub.example.test/git/654015___7108",
+    switched: true,
+  });
+  assert.strictEqual((await repo.ensureGitModeResult()).switched, false);
+});
+
+test("sha, isAncestor, a commit with explicit parents, and resetDraft", async () => {
+  stub.addRepo("654015___7109");
+  const a = repoFor(key("654015___7109"));
+  await a.clone();
+  const base = await a.sha("draft");
+  assert.strictEqual(await a.isAncestor(base, "draft"), true);
+  await a.writeFile("a.txt", "a");
+  const mine = await a.commit("mine");
+  assert.strictEqual(await a.isAncestor(base, mine), true);
+  assert.strictEqual(await a.isAncestor(mine, base), false);
+
+  const b = repoFor(key("654015___7109"));
+  await b.clone();
+  await b.writeFile("b.txt", "b");
+  await b.commit("theirs");
+  await b.push();
+  await a.fetch();
+  const theirs = await a.sha("origin/draft");
+  assert.strictEqual(await a.isAncestor(mine, theirs), false);
+  assert.strictEqual(await a.isAncestor(theirs, mine), false, "diverged");
+
+  // A merge commit over both parents, made with nothing to stage, is a descendant of both and pushes as a fast-forward.
+  const merge = await a.commit("merge", AUTHOR, { parents: [mine, theirs] });
+  assert.ok(merge);
+  assert.strictEqual(await a.isAncestor(theirs, merge), true);
+  assert.strictEqual(await a.isAncestor(mine, merge), true);
+  await a.push();
+
+  // resetDraft moves the local draft and its working tree to a commit.
+  await a.resetDraft(base);
+  assert.strictEqual(await a.sha("draft"), base);
+  assert.strictEqual(fs.existsSync(path.join(a.dir, "a.txt")), false);
+});
 test("clone({ensureGit}) switches a WEBDAV script so its push works; a plain clone does not", async () => {
   stub.addRepo("654015___8008", { mode: "WEBDAV" });
   await repoFor(key("654015___8008")).clone();

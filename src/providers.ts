@@ -1,3 +1,4 @@
+import type { ScriptRepoOptions } from "@bluestep-systems/b6p-core-bsjs-git";
 import type { B6PUri } from "./B6PUri";
 import type { OrgCacheSettings } from "./cache/OrgCache";
 import type { AuthParams } from "./types";
@@ -250,6 +251,18 @@ export interface B6PProviders {
    * @lastreviewed null
    */
   typescriptLibDirs?: readonly string[];
+  /**
+   * Optional Node-style file system (with `.promises`) the script git working trees live on. Defaults to `node:fs`.
+   * Pass one only to run against something other than the real disk the `fs` provider also reads (tests).
+   * @lastreviewed null
+   */
+  gitFs?: ScriptRepoOptions["fs"];
+  /**
+   * Optional environment commit authors are looked up in as a last resort (after an explicit author and `git config`).
+   * Defaults to `process.env`.
+   * @lastreviewed null
+   */
+  gitEnv?: Readonly<Record<string, string | undefined>>;
   /**
    * Optional update service configuration. If not provided, update checking is disabled.
    */

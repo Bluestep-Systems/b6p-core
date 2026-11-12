@@ -3,15 +3,19 @@ export { B6PCore } from "./B6PCore";
 export type { ReportResult } from "./B6PCore";
 export { B6PUri } from "./B6PUri";
 export { Err } from "./Err";
-export {
-  checkEmittedEntrypoint,
-  cleanupUnusedUpstairsPaths,
-  collectOverwriteCandidates,
-  confirmOverwrites,
-  executePush,
-  verifyLiveSnapshot,
-} from "./script/push";
-export type { EmittedEntrypointCheck, LiveSnapshotCheck, OverwriteCandidate, PushResult } from "./script/push";
+export { checkEmittedEntrypoint, executePush, legacySyncRecords } from "./script/push";
+export type { EmittedEntrypointCheck, PushResult } from "./script/push";
+export { resolveGitIdentity } from "./script/GitIdentity";
+export type { GitConfigReader, GitIdentitySources } from "./script/GitIdentity";
+export { GitSwitchDeclinedError, auditDraft, confirmOverwrittenFiles, pullDraft, pushDraft } from "./script/GitSync";
+export type {
+  DraftAudit,
+  DraftPullOutcome,
+  DraftPullOptions,
+  DraftPushOptions,
+  DraftPushOutcome,
+  LastSyncedLookup,
+} from "./script/GitSync";
 export type { PlatformContext } from "./PlatformContext";
 
 // ─── Provider interfaces ─────────────────────────────────────────────

@@ -1,25 +1,27 @@
 import * as path from "path";
-import { XMLParser } from "fast-xml-parser";
 import ts from "typescript";
-import { FileExtensions, FolderNames, Http, SpecialFiles } from "../constants";
+import type { GitIdentity } from "@bluestep-systems/b6p-core-bsjs-git";
+import { FileExtensions, FolderNames } from "../constants";
 import { B6PUri } from "../B6PUri";
-import { GlobMatcher } from "../data/GlobMatcher";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
 import { ScriptFactory } from "./ScriptFactory";
-import { SnapshotHistoryRecorder } from "./SnapshotHistoryRecorder";
 import type { ScriptContext } from "./ScriptContext";
-import type { FileSystem, ProgressTask } from "../providers";
-import { Err } from "../Err";
-import { ScriptFile } from "./ScriptFile";
+import type { FileSystem } from "../providers";
+import { resolveGitIdentity } from "./GitIdentity";
+import { pushDraft, type LastSyncedLookup } from "./GitSync";
+import type { ScriptRoot } from "./ScriptRoot";
 import { TsConfig } from "./TsConfig";
 
 /**
- * Recursively collect all files under a directory.
+ * Recursively collect all files under a directory, leaving out a git repository's own `.git` folder.
  */
 async function flattenDirectory(dirPath: string, fs: FileSystem): Promise<string[]> {
   const results: string[] = [];
   const entries = await fs.readDirectory(B6PUri.fromFsPath(dirPath));
   for (const [name, type] of entries) {
+    if (name === ".git") {
+      continue;
+    }
     const full = path.join(dirPath, name);
     if (type === "directory") {
       const nested = await flattenDirectory(full, fs);
@@ -32,48 +34,59 @@ async function flattenDirectory(dirPath: string, fs: FileSystem): Promise<string
 }
 
 /**
- * Read .gitignore patterns from the script root. Used only for the cleanup
- * pass; per-file gitignore filtering during upload is handled inside
- * ScriptFile.upload() / getReasonToNotPush().
+ * The hashes a pre-git push or pull recorded for the files of a draft folder, as the lookup the git side uses to tell a
+ * local edit from a platform change in a folder that has no repository yet.
+ * @param scriptRoot The script whose metadata holds the records
+ * @param draftPath The draft folder the records' paths are under
+ * @lastreviewed null
  */
-async function readGitIgnorePatterns(rootPath: string, fs: FileSystem): Promise<string[]> {
-  const gitignorePath = path.join(rootPath, SpecialFiles.GITIGNORE);
-  const uri = B6PUri.fromFsPath(gitignorePath);
-  try {
-    const raw = await fs.readFile(uri);
-    const text = Buffer.from(raw).toString("utf-8");
-    return text
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !l.startsWith("#"));
-  } catch {
-    return ["**/.DS_Store"];
-  }
+export async function legacySyncRecords(scriptRoot: ScriptRoot, draftPath: string): Promise<LastSyncedLookup> {
+  const metadata = await scriptRoot.getMetaData();
+  const records = new Map((metadata?.pushPullRecords ?? []).map((r) => [r.downstairsPath, r.lastVerifiedHash]));
+  return async (relative) =>
+    records.get(B6PUri.fromFsPath(path.join(draftPath, ...relative.split("/"))).fsPath) ?? null;
 }
 
 /**
  * Outcome of a push, for callers that need more signal than the human-facing
  * messages — e.g. a CLI that must exit non-zero or emit `--json` when nothing
- * was uploaded or a snapshot shipped without a history entry. Check `pushed`
- * before reading anything else: a push that aborted early uploaded nothing,
- * regardless of what the other fields say.
+ * was pushed or a snapshot did not publish. Check `pushed` before reading
+ * anything else: a push that aborted early pushed nothing, regardless of what
+ * the other fields say.
  * @lastreviewed null
  */
 export interface PushResult {
   /**
-   * True when the upload actually ran. False when the push aborted before
-   * uploading anything (draft folder missing, or empty; or, on a snapshot push,
-   * the compiled `scripts/app.js` missing or blank) — a state a machine
-   * consumer must not read as success.
+   * True when the draft is on the platform: the draft branch was pushed, or already matched. False when the push
+   * aborted before that (draft folder missing, or empty; or, on a snapshot push, the compiled `scripts/app.js`
+   * missing or blank) — a state a machine consumer must not read as success.
    * @lastreviewed null
    */
   pushed: boolean;
   /**
-   * False for a snapshot push whose history entry could not be recorded (no
-   * restore point exists), and for any push that did not run (`pushed: false`).
+   * The draft branch's head commit on the platform after the push: the commit this push made, or the one already
+   * there when nothing changed. `null` when `pushed` is false.
    * @lastreviewed null
    */
-  historyRecorded: boolean;
+  commitSha: string | null;
+  /**
+   * The commit the platform published, on a snapshot push. `null` on a plain push, when the push aborted, and when the
+   * publish failed (`publishError` says why); a consumer asking for a snapshot must treat `null` as a failure.
+   * @lastreviewed null
+   */
+  publishedSha: string | null;
+  /**
+   * Why the platform refused or failed the publish of a snapshot push, when it did; the draft was pushed regardless.
+   * `null` otherwise.
+   * @lastreviewed null
+   */
+  publishError: string | null;
+  /**
+   * True when this push switched the script from WebDAV to git publishing. The switch is one-way: the script's draft
+   * and snapshot no longer accept WebDAV writes.
+   * @lastreviewed null
+   */
+  switchedToGit: boolean;
   /**
    * Type-check outcome of the pre-publish transpile:
    *  - `null` — no platform-code type-check ran. A plain (non-snapshot) push
@@ -91,54 +104,42 @@ export interface PushResult {
    */
   typeCheckDiagnostics: number | null;
   /**
-   * Whether the live (`snapshot/`) copy of every file this push wrote reads back identical to the
-   * local bytes (compared by ETag, the platform's SHA-512 of the content):
-   *  - `null` — no read-back ran: a plain push, or a push that aborted before uploading.
-   *    Also `null` when no copy was wrong but at least one was served without a content hash
-   *    (ETag), so it could not be compared: those files are named in a warning, and cleanup and
-   *    history still run.
-   *  - `true` — every written file reads back identical. Files skipped as already in sync count as
-   *    verified, since the skip rule compared both copies.
-   *  - `false` — at least one file was still different, missing (`404`) or unreadable (another
-   *    non-2xx) after one re-upload; see `liveMismatches`. The push stopped there: no cleanup ran
-   *    and no history entry was recorded (`historyRecorded` is false), so a consumer that already
-   *    reads that field fails the run.
+   * Whether the platform's published branch reads back at the commit it reported publishing (`publishedSha`):
+   *  - `null` — no read-back ran: a plain push, an aborted one, a failed publish, or the published branch could not be
+   *    fetched to compare.
+   *  - `true` — the published branch is at `publishedSha`.
+   *  - `false` — it is at another commit; see `liveMismatches`.
    * @lastreviewed null
    */
   liveVerified: boolean | null;
   /**
-   * Draft-relative paths (`/`-separated, e.g. `.build/scripts/app.js`) whose live copy failed the
-   * read-back. Empty unless `liveVerified` is false.
+   * Draft-relative paths (`/`-separated) that differ between the commit the platform reported publishing and its
+   * published branch. Empty unless `liveVerified` is false (and then empty too when the difference can't be listed).
    * @lastreviewed null
    */
   liveMismatches: string[];
   /**
    * Draft-relative paths (`/`-separated) of files that exist only on the platform and were kept
    * because deleting them was not confirmed: declined, or answered with the safe default (an empty
-   * answer, or the CLI's `--yes`). Empty when there were none, when they were deleted, or when
-   * cleanup did not run.
+   * answer, or the CLI's `--yes`). They are part of the pushed commit. Empty when there were none or
+   * when they were deleted.
    * @lastreviewed null
    */
   keptPlatformOnly: string[];
 }
 
-/**
- * Outcome of {@link verifyLiveSnapshot}. Paths are draft-relative and `/`-separated.
- * @lastreviewed null
- */
-export interface LiveSnapshotCheck {
-  /**
-   * Files whose `snapshot/` copy still differs from local, is missing (`404`) or can't be read
-   * (another non-2xx) after one re-upload.
-   * @lastreviewed null
-   */
-  mismatches: string[];
-  /**
-   * Files the platform served (2xx) without a SHA-512 ETag, so neither match nor mismatch can be
-   * said.
-   * @lastreviewed null
-   */
-  indeterminate: string[];
+function notPushed(typeCheckDiagnostics: number | null): PushResult {
+  return {
+    pushed: false,
+    commitSha: null,
+    publishedSha: null,
+    publishError: null,
+    switchedToGit: false,
+    typeCheckDiagnostics,
+    liveVerified: null,
+    liveMismatches: [],
+    keptPlatformOnly: [],
+  };
 }
 
 /**
@@ -231,183 +232,24 @@ export async function checkEmittedEntrypoint(opts: {
 }
 
 /**
- * How the read-back retry warning describes each failed status.
- * @lastreviewed null
- */
-const READ_BACK_PROBLEMS = {
-  mismatch: "doesn't match what was pushed",
-  missing: "is missing (404)",
-  unreadable: "could not be read back",
-} as const;
-
-/**
- * Post-publish read-back for a snapshot push: `HEAD`s the `snapshot/` copy of each file the push
- * wrote and compares its ETag with the local SHA-512. The platform can accept a write (2xx) and
- * still serve different bytes, e.g. an empty or cut-off file, so a clean upload alone doesn't prove
- * the live version is right (ClickUp 86bbqnrtp).
+ * Core push implementation, on git: the draft folder is the script's git working tree, a push commits it and pushes the
+ * draft branch, and a snapshot then publishes it (see {@link pushDraft}).
  *
- * A copy that differs, is missing (`404`) or can't be read (another non-2xx) is re-sent once and
- * checked again; a re-send the platform refuses leaves it a mismatch. Only a 2xx without a content
- * hash is indeterminate. Files are checked one at a time, in the order given.
- * @param files The files this push wrote to `snapshot/`
- * @param ctx Where the retries are logged
- * @returns The files still mismatched, and the ones that could not be compared
- * @lastreviewed null
- */
-export async function verifyLiveSnapshot(
-  files: ScriptFile[],
-  ctx: Pick<ScriptContext, "logger">
-): Promise<LiveSnapshotCheck> {
-  const check: LiveSnapshotCheck = { mismatches: [], indeterminate: [] };
-  for (const file of files) {
-    const snapshotUrl = ScriptFile.snapshotUrl(await file.upstairsUrl());
-    const relative = file.pathWithRespectToDraftRoot().split(path.sep).join("/");
-    let status = await file.readBackStatus(snapshotUrl);
-    if (status === "mismatch" || status === "missing" || status === "unreadable") {
-      ctx.logger.warn(`Live copy of ${relative} ${READ_BACK_PROBLEMS[status]}; sending it again: ${snapshotUrl}`);
-      try {
-        await file.putTo(snapshotUrl);
-        status = await file.readBackStatus(snapshotUrl);
-      } catch (e) {
-        ctx.logger.warn(`Re-sending ${relative} failed: ${e instanceof Error ? e.message : e}`);
-      }
-    }
-    if (status === "indeterminate") {
-      check.indeterminate.push(relative);
-    } else if (status !== "match") {
-      check.mismatches.push(relative);
-    }
-  }
-  return check;
-}
-
-/**
- * A file whose upload would overwrite a platform version nobody here has seen.
- * @lastreviewed null
- */
-export interface OverwriteCandidate {
-  /**
-   * The file to upload.
-   * @lastreviewed null
-   */
-  file: ScriptFile;
-  /**
-   * Draft-relative, `/`-separated path, e.g. `scripts/app.ts`.
-   * @lastreviewed null
-   */
-  path: string;
-  /**
-   * Why it is at risk; see {@link ScriptFile.platformChangeAtRisk}.
-   * @lastreviewed null
-   */
-  risk: "changed" | "unsynced";
-}
-
-/**
- * Finds the files of a push whose upload would overwrite a platform version nobody here has seen,
- * by the rule in {@link ScriptFile.platformChangeAtRisk}. Files the push won't upload anyway
- * (ignored, declarations, already in sync) are left out, so they are never asked about.
+ * A snapshot push compiles first and stops before pushing anything if the compiled entrypoint is missing or blank. It
+ * is published as pushed: the compiled output is part of the commit. If the platform refuses the publish the draft
+ * stays pushed and the result carries `publishError`. A snapshot that compiled with diagnostics is published anyway and
+ * warned about loudly.
  *
- * Reads the platform one file at a time. The skip check it runs is cached on each file, so the
- * upload that follows doesn't repeat it.
- * @param files The push's files, the same instances the upload will use
- * @param opts.isSnapshot Whether the push also publishes to `snapshot/`
- * @returns The files at risk, in the order given
- * @lastreviewed null
- */
-export async function collectOverwriteCandidates(
-  files: ScriptFile[],
-  opts: { isSnapshot: boolean }
-): Promise<OverwriteCandidate[]> {
-  const candidates: OverwriteCandidate[] = [];
-  for (const file of files) {
-    if (await file.getReasonToNotPush({ isSnapshot: opts.isSnapshot })) {
-      continue;
-    }
-    const risk = await file.platformChangeAtRisk();
-    if (risk) {
-      candidates.push({ file, path: file.pathWithRespectToDraftRoot().split(path.sep).join("/"), risk });
-    }
-  }
-  return candidates;
-}
-
-/**
- * The push's one overwrite confirmation (ClickUp 86bbjennm). Before anything is uploaded, it finds
- * every file at risk ({@link collectOverwriteCandidates}) and asks once for all of them, so an
- * answer, or the lack of one, can no longer leave a push half done. Files the caller already
- * confirmed in `preConfirmed` are not asked about: that is how a consumer confirms without a
- * prompt, e.g. from a flag.
- * @param opts.files The push's files, the same instances the upload will use
- * @param opts.ctx Where the prompt goes
- * @param opts.isSnapshot Whether the push also publishes to `snapshot/`
- * @param opts.preConfirmed Draft-relative paths (`/`- or `\`-separated) the caller confirms up front
- * @returns The files whose overwrite is confirmed; `upload()` skips its own prompt for them
- * @throws an {@link Err.OverwriteDeclinedError} listing the files, when the answer is anything but
- *   "Overwrite all". Nothing has been uploaded at that point.
- * @lastreviewed null
- */
-export async function confirmOverwrites(opts: {
-  files: ScriptFile[];
-  ctx: Pick<ScriptContext, "prompt">;
-  isSnapshot: boolean;
-  preConfirmed?: string[];
-}): Promise<Set<ScriptFile>> {
-  const { prompt } = opts.ctx;
-  const preConfirmed = new Set((opts.preConfirmed ?? []).map((p) => p.replace(/\\/g, "/").replace(/^\.\//, "")));
-  const candidates = await collectOverwriteCandidates(opts.files, { isSnapshot: opts.isSnapshot });
-  const confirmed = new Set(candidates.filter((c) => preConfirmed.has(c.path)).map((c) => c.file));
-  const toAsk = candidates.filter((c) => !preConfirmed.has(c.path));
-  if (toAsk.length === 0) {
-    return confirmed;
-  }
-  const why = (c: OverwriteCandidate) =>
-    c.risk === "changed"
-      ? "changed on the platform since the last push or pull from here"
-      : "the platform has a different copy, never pulled or pushed from this machine";
-  const list = toAsk.map((c) => `${c.path} (${why(c)})`).join("\n");
-  // "Cancel" is FIRST: an empty answer and the CLI's --yes both take options[0] (ClickUp 86bc2h3ef).
-  const CANCEL = "Cancel";
-  const OVERWRITE_ALL = "Overwrite all";
-  const answer = await prompt.confirm(
-    `${toAsk.length} file(s) would overwrite a platform version nobody here has seen:\n\n${list}\n\n` +
-      `Nothing has been uploaded yet. Overwrite all of them with your local files?`,
-    [CANCEL, OVERWRITE_ALL],
-    { destructive: true, safeOption: CANCEL }
-  );
-  if (answer !== OVERWRITE_ALL) {
-    const kind = opts.isSnapshot ? "Snapshot push" : "Push";
-    await prompt.popup(`${kind} cancelled: nothing was uploaded.`);
-    // What was kept and why; how to confirm is the consumer's to say (it gets `paths`).
-    throw new Err.OverwriteDeclinedError(
-      `${kind} stopped before uploading anything: ${toAsk.length} file(s) were not overwritten, because ` +
-        `each would overwrite a platform version nobody here has seen:\n\n${list}\n\n` +
-        `Pull or audit them to see the platform versions before overwriting them.`,
-      toAsk.map((c) => c.path)
-    );
-  }
-  toAsk.forEach((c) => confirmed.add(c.file));
-  return confirmed;
-}
-
-/**
- * Core push implementation.
- *
- * Delegates the per-file work to {@link ScriptFile.upload}, which handles:
- *  - exclusion logic (declarations / .git / .gitignore / integrity match)
- *  - collision detection against last-verified hash with user prompt
- *  - snapshot dual-write (draft + snapshot)
- *  - metadata `lastVerifiedHash` updates via touch()
- *  - rich error wrapping
- *
- * Before any upload, one confirmation covers every file that would overwrite a platform version
- * nobody here has seen ({@link confirmOverwrites}); declining stops the push with nothing written.
- * A snapshot push then reads the live copies back ({@link verifyLiveSnapshot}). If any is still
- * wrong, the push stops before cleanup and history and returns `liveVerified: false`.
+ * Before anything is pushed, one confirmation covers every platform file the push would overwrite; declining stops the
+ * push with nothing sent.
  * @param opts.overwrite Draft-relative paths whose overwrite the caller confirms up front, so the
  *   push doesn't ask about them (e.g. a consumer's flag, after the user approved the files a
  *   declined push listed). Other at-risk files still ask.
+ * @param opts.author Who the commit is by. When absent: the folder's `git config`, then the environment.
+ * @param opts.adoptUnbound `false` for a deploy to a script the folder isn't the working copy of: the folder is then
+ *   never bound to the target's repo. Default `true`.
  * @throws an {@link Err.OverwriteDeclinedError} when an overwrite is not confirmed
+ * @throws {GitIdentityError} when no commit author can be found
  * @lastreviewed null
  */
 export async function executePush(opts: {
@@ -417,26 +259,24 @@ export async function executePush(opts: {
   snapshot: boolean;
   message?: string;
   overwrite?: string[];
+  author?: GitIdentity;
+  adoptUnbound?: boolean;
 }): Promise<PushResult> {
   const { ctx, targetUrl, rootPath, snapshot, message, overwrite } = opts;
-  const { fs, prompt, logger, sessionManager, progress } = ctx;
+  const { fs, prompt, logger, sessionManager } = ctx;
   const draftPath = path.join(rootPath, FolderNames.DRAFT);
 
   const draftUri = B6PUri.fromFsPath(draftPath);
   if (!(await fs.exists(draftUri))) {
     prompt.error(`Draft folder not found: ${draftPath}`);
-    return {
-      pushed: false,
-      historyRecorded: false,
-      typeCheckDiagnostics: null,
-      liveVerified: null,
-      liveMismatches: [],
-      keptPlatformOnly: [],
-    };
+    return notPushed(null);
   }
 
-  // Build a parser from the target URL so the ScriptRoot can resolve
-  // upstairs URLs (mirrors what executePull does on the pull side).
+  // Fail before the compile and before the platform is touched: a commit made as nobody must not happen, and a script
+  // must not be switched to git by a push that then cannot commit.
+  const author = await resolveGitIdentity({ explicit: opts.author, dir: draftPath, env: ctx.gitEnv });
+
+  // Build a parser from the target URL so the ScriptRoot can resolve the script's identity.
   const parser = new ScriptUrlParser(targetUrl, sessionManager, logger, prompt);
   const factory = new ScriptFactory(ctx);
 
@@ -447,9 +287,8 @@ export async function executePush(opts: {
   scriptRoot.withParser(parser);
 
   // Snapshots transpile TS into the draft build folder so both the source
-  // and emitted JS get uploaded and captured in history. Must run before
-  // flattenDirectory so the emitted files are included in the upload set.
-  // A plain (non-snapshot) push does not compile, so its type-check status is
+  // and emitted JS are part of the commit that gets published. A plain
+  // (non-snapshot) push does not compile, so its type-check status is
   // null rather than a count.
   let typeCheckDiagnostics: number | null = null;
   let typeCheckDetail = "";
@@ -465,16 +304,9 @@ export async function executePush(opts: {
         `Snapshot not published: the compiled entrypoint ${entrypoint.emittedPath} ` +
           `${entrypoint.status === "missing" ? "is missing" : "has no code"} after compiling scripts/app.ts. ` +
           `The platform runs that file, so publishing it would break the live version. Nothing was ` +
-          `uploaded. Check scripts/app.ts, the compile output and the draft ${TsConfig.NAME}.`
+          `pushed. Check scripts/app.ts, the compile output and the draft ${TsConfig.NAME}.`
       );
-      return {
-        pushed: false,
-        historyRecorded: false,
-        typeCheckDiagnostics,
-        liveVerified: null,
-        liveMismatches: [],
-        keptPlatformOnly: [],
-      };
+      return notPushed(typeCheckDiagnostics);
     }
   }
 
@@ -497,111 +329,55 @@ export async function executePush(opts: {
 
   if (allFiles.length === 0) {
     prompt.info("No files to push — draft folder is empty.");
-    return {
-      pushed: false,
-      historyRecorded: false,
-      typeCheckDiagnostics,
-      liveVerified: null,
-      liveMismatches: [],
-      keptPlatformOnly: [],
-    };
+    return notPushed(typeCheckDiagnostics);
   }
 
-  // One ScriptFile per file for the whole push: the confirmation pass and the upload share them,
-  // and with them each file's cached skip check.
-  const entries = allFiles.map((filePath) => ({
-    filePath,
-    file: factory.createFile(B6PUri.fromFsPath(filePath), scriptRoot),
-  }));
-  const confirmed = await confirmOverwrites({
-    files: entries.map((e) => e.file),
-    ctx,
-    isSnapshot: snapshot,
-    preConfirmed: overwrite,
-  });
-
-  // Files upload() actually wrote (a resolved Response); skipped files resolve with undefined.
-  const written: ScriptFile[] = [];
-  const uploadTasks: ProgressTask<void>[] = entries.map(({ filePath, file }) => ({
-    execute: async () => {
-      try {
-        if (await file.upload({ isSnapshot: snapshot, overwriteConfirmed: confirmed.has(file) })) {
-          written.push(file);
-        }
-      } catch (e) {
-        if (e instanceof Err.UserCancelledError) {
-          // Surface cancellation to the progress runner so it can stop the batch.
-          throw e;
-        }
-        logger.error(`Failed to push ${filePath}: ${e instanceof Error ? e.message : e}`);
-        throw e;
-      }
+  const outcome = await pushDraft(
+    {
+      ctx,
+      script: await parser.getScriptBaseKey(),
+      baseUrl: `${parser.url.origin}/`,
+      draftPath,
     },
-    description: path.basename(filePath),
-  }));
-
-  await progress.withProgress(uploadTasks, {
-    title: snapshot ? "Pushing Snapshot..." : "Pushing Script...",
-    showItemCount: true,
-    cleanupMessage: "Cleaning up...",
-  });
-
-  // A snapshot push is only done when the runtime serves what was pushed. If a live copy is still
-  // wrong, stop: deleting platform files or recording a restore point would build on a broken publish.
-  let liveVerified: boolean | null = null;
-  if (snapshot) {
-    const live = await verifyLiveSnapshot(written, ctx);
-    if (live.indeterminate.length > 0) {
-      prompt.warn(
-        `Could not verify the live copy of ${live.indeterminate.length} file(s): the platform served them ` +
-          `without a content hash (ETag).\n\n${live.indeterminate.join("\n")}`
-      );
+    {
+      message: message && message.trim() ? message : snapshot ? "Snapshot from b6p" : "Push from b6p",
+      author,
+      snapshot,
+      adoptUnbound: opts.adoptUnbound ?? true,
+      preConfirmed: overwrite,
+      lastSynced: await legacySyncRecords(scriptRoot, draftPath),
     }
-    if (live.mismatches.length > 0) {
-      prompt.error(
-        `The live (snapshot/) copy of ${live.mismatches.length} file(s) is missing, unreadable or does not ` +
-          `match what was pushed, ` +
-          `even after sending it again. The live version may be broken or out of date:\n\n` +
-          `${live.mismatches.join("\n")}\n\n` +
-          `No cleanup ran and no snapshot history was recorded. Run the snapshot push again.`
-      );
-      return {
-        pushed: true,
-        historyRecorded: false,
-        typeCheckDiagnostics,
-        liveVerified: false,
-        liveMismatches: live.mismatches,
-        keptPlatformOnly: [],
-      };
-    }
-    // Nothing was wrong, but a copy served without a content hash was never compared.
-    liveVerified = live.indeterminate.length > 0 ? null : true;
+  );
+
+  if (outcome.switchedToGit) {
+    prompt.warn(
+      "This script now publishes through git. The switch cannot be undone: its draft and snapshot no longer " +
+        "accept WebDAV writes, and its history is the git history from here on."
+    );
   }
 
-  // Cleanup: delete unused upstairs paths.
-  const gitignorePatterns = await readGitIgnorePatterns(rootPath, fs);
-  const gitignoreMatcher = new GlobMatcher(rootPath, gitignorePatterns);
-  const keptPlatformOnly = await cleanupUnusedUpstairsPaths({
-    ctx,
-    targetUrl,
-    draftPath,
-    gitignoreMatcher,
-  });
-
-  let historyRecorded = true;
-  if (snapshot) {
-    try {
-      await SnapshotHistoryRecorder.record(scriptRoot, message ?? "");
-    } catch (e) {
-      historyRecorded = false;
-      logger.warn(`Failed to record snapshot history: ${e instanceof Error ? e.message : e}`);
-    }
+  const publish = outcome.publish;
+  if (publish?.error) {
+    prompt.error(
+      `The draft was pushed (commit ${outcome.commitSha}) but the platform did not publish it: ${publish.error}`
+    );
+  }
+  if (publish && publish.liveVerified === false) {
+    prompt.error(
+      `The platform reports publishing commit ${publish.publishedSha}, but its published branch is at another ` +
+        `commit${publish.liveMismatches.length > 0 ? `; the files that differ:\n\n${publish.liveMismatches.join("\n")}` : ""}.\n\n` +
+        `The live version may be out of date. Run the snapshot push again.`
+    );
+  }
+  if (publish && publish.liveVerified === null && !publish.error) {
+    prompt.warn("Could not read the platform's published branch back to verify the publish.");
   }
 
   // A snapshot that compiled with diagnostics shipped un-type-checked JS. Say so
   // loudly and do NOT let the run read as a clean success — the platform never
   // type-checks, so this push was the only gate (ClickUp 86bbeb659).
-  const shippedWithDiagnostics = snapshot && typeCheckDiagnostics !== null && typeCheckDiagnostics > 0;
+  const shippedWithDiagnostics =
+    snapshot && !publish?.error && typeCheckDiagnostics !== null && typeCheckDiagnostics > 0;
   if (shippedWithDiagnostics) {
     prompt.warn(
       `Published WITHOUT a passing type-check: the pre-publish transpile reported ` +
@@ -612,153 +388,25 @@ export async function executePush(opts: {
     );
   }
 
-  if (snapshot && !historyRecorded) {
-    prompt.warn(
-      "Snapshot files uploaded and compiled, but the snapshot history entry could NOT be recorded — " +
-        "the browser IDE's Project History has no restore point for this snapshot. " +
-        "Run the snapshot push again to retry recording it."
+  if (!publish?.error && publish?.liveVerified !== false) {
+    prompt.info(
+      shippedWithDiagnostics
+        ? "Snapshot published — but see the type-check warning above."
+        : snapshot
+          ? "Snapshot complete!"
+          : "Push complete!"
     );
-  } else if (shippedWithDiagnostics) {
-    prompt.info("Snapshot uploaded — but see the type-check warning above.");
-  } else {
-    prompt.info(snapshot ? "Snapshot complete!" : "Push complete!");
   }
 
-  return { pushed: true, historyRecorded, typeCheckDiagnostics, liveVerified, liveMismatches: [], keptPlatformOnly };
-}
-
-/**
- * Delete remote files that no longer have a local counterpart, after one confirmation listing
- * them. Anything but an explicit "Yes" keeps them all, including a prompt that throws because it
- * got no answer. Files matched by `.gitignore` are never deleted. Failures are logged, never
- * thrown: a push that uploaded fine is not failed by cleanup.
- * @param opts.ctx Where requests, prompts and logs go
- * @param opts.targetUrl The script's WebDAV base URL, listed with `PROPFIND`
- * @param opts.draftPath The local draft folder to compare against
- * @param opts.gitignoreMatcher The script's `.gitignore` patterns
- * @returns Draft-relative paths of the platform-only files it kept because deleting them was not
- *   confirmed; empty when there were none, when they were deleted, or when cleanup failed
- * @lastreviewed null
- */
-export async function cleanupUnusedUpstairsPaths(opts: {
-  ctx: ScriptContext;
-  targetUrl: string;
-  draftPath: string;
-  gitignoreMatcher: GlobMatcher;
-}): Promise<string[]> {
-  const { ctx, targetUrl, draftPath, gitignoreMatcher } = opts;
-  const { fs, prompt, logger, sessionManager } = ctx;
-
-  try {
-    const parser = new XMLParser();
-
-    const response = await sessionManager.fetch(targetUrl, {
-      headers: {
-        [Http.Headers.ACCEPT]: Http.Headers.ACCEPT_ALL,
-        [Http.Headers.CACHE_CONTROL]: Http.Headers.NO_CACHE,
-      },
-      method: Http.Methods.PROPFIND,
-    });
-
-    if (!response.ok) {
-      logger.warn(`PROPFIND failed during cleanup: ${response.status}`);
-      return [];
-    }
-
-    const xml = await response.text();
-    const parsed = parser.parse(xml);
-    const responses = parsed?.["D:multistatus"]?.["D:response"];
-    if (!responses?.filter) {
-      return [];
-    }
-
-    const localFiles = await flattenDirectory(draftPath, fs);
-    const localRelatives = new Set(localFiles.map((f) => path.relative(draftPath, f).split(path.sep).join("/")));
-
-    const pathsToDelete: string[] = [];
-    const relativesToDelete: string[] = [];
-
-    for (const entry of responses) {
-      const href = entry["D:href"];
-      if (!href) {
-        continue;
-      }
-
-      const entryUrl = new URL(href, targetUrl);
-      const basePath = new URL(targetUrl).pathname;
-      const relative = entryUrl.pathname.slice(basePath.length);
-
-      if (!relative || relative === "/") {
-        continue;
-      }
-
-      const draftPrefix = FolderNames.DRAFT + "/";
-      if (!relative.startsWith(draftPrefix)) {
-        continue;
-      }
-
-      const draftRelative = relative.slice(draftPrefix.length);
-      if (!draftRelative) {
-        continue;
-      }
-
-      if (draftRelative.endsWith("/")) {
-        continue;
-      }
-
-      const localEquivalent = path.join(draftPath, ...draftRelative.split("/"));
-      if (gitignoreMatcher.matches(localEquivalent)) {
-        logger.info(`File is in .gitignore; skipping deletion: ${href}`);
-        continue;
-      }
-
-      if (!localRelatives.has(draftRelative)) {
-        pathsToDelete.push(entryUrl.href);
-        relativesToDelete.push(draftRelative);
-      }
-    }
-
-    if (pathsToDelete.length === 0) {
-      logger.info("No unused upstairs paths to delete.");
-      return [];
-    }
-
-    // "No" is FIRST: an empty answer and the CLI's --yes both take options[0], and a yes deletes
-    // platform files that may exist nowhere else (ClickUp 86bc2h3ef).
-    const NO = "No";
-    const YES = "Yes";
-    let answer: string | undefined;
-    try {
-      answer = await prompt.confirm(
-        `The following ${pathsToDelete.length} upstairs path(s) no longer have local counterparts:\n\n${pathsToDelete.join("\n")}\n\nDelete them?`,
-        [NO, YES],
-        { destructive: true, safeOption: NO }
-      );
-    } catch (e) {
-      // No answer at all (end of input, a dismissed dialog) is not a yes. The files stay, so they
-      // must be reported as kept, not lost in the catch below as a failed cleanup.
-      logger.warn(`Cleanup prompt got no answer: ${e instanceof Error ? e.message : e}`);
-    }
-
-    if (answer !== YES) {
-      // A warning, not info: consumers that quiet info (e.g. for machine-readable output) still
-      // show warnings, and an auto-answered prompt was never shown to anyone. It says what was
-      // kept; how to confirm a delete is the consumer's to explain.
-      prompt.warn(
-        `Kept ${pathsToDelete.length} platform-only file(s): they are on the platform but not in your local ` +
-          `draft folder, and deleting them was not confirmed.\n\n${pathsToDelete.join("\n")}\n\n` +
-          `Pull them to get them locally.`
-      );
-      return relativesToDelete;
-    }
-
-    for (const url of pathsToDelete) {
-      logger.info("Deleting unused upstairs path: " + url);
-      await sessionManager.fetch(url, { method: Http.Methods.DELETE });
-    }
-    return [];
-  } catch (e) {
-    logger.warn(`Cleanup failed: ${e instanceof Error ? e.message : e}`);
-    return [];
-  }
+  return {
+    pushed: true,
+    commitSha: outcome.commitSha,
+    publishedSha: publish?.publishedSha ?? null,
+    publishError: publish?.error ?? null,
+    switchedToGit: outcome.switchedToGit,
+    typeCheckDiagnostics,
+    liveVerified: publish?.liveVerified ?? null,
+    liveMismatches: publish?.liveMismatches ?? [],
+    keptPlatformOnly: outcome.keptPlatformOnly,
+  };
 }
