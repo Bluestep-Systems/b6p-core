@@ -1003,7 +1003,7 @@ export interface GatewayTokenRotateResult {
    */
   replaced: { id: string; alias: string };
   /**
-   * Its replacement: same alias, scopes and lifetime policy, with a new secret.
+   * Its replacement: same alias, scopes and absolute end date (`expiresAt`), with a new secret.
    * @lastreviewed null
    */
   token: GatewayMintedToken;

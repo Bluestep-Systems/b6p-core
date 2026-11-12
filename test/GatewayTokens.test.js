@@ -519,18 +519,32 @@ test("list derives expired, accepts a null createdAt, and keeps expired tokens",
   });
 });
 
-test("rotating an expired token or one with unknown createdAt is allowed (90 days)", async () => {
+test("rotating a token with unknown createdAt keeps its absolute end date", async () => {
   await withCore(async (fake, core) => {
+    const expiresAt = new Date(Date.now() + 5 * DAY_MS).toISOString();
     fake.grantToken("b6pt_unknown_created", [Gateway.Scopes.KB_READ], {
       id: "tok_u",
       alias: "unknown",
       createdAt: null,
-      expiresAt: new Date(Date.now() + 5 * DAY_MS).toISOString(),
+      expiresAt,
     });
     const rotated = await core.gateway.tokens.rotate("unknown");
     secrets.add(rotated.token.token);
-    const days = (Date.parse(rotated.token.expiresAt) - Date.now()) / DAY_MS;
-    assert.ok(days > 89 && days <= 90, `expected ~90 days, got ${days}`);
+    assert.strictEqual(rotated.token.expiresAt, expiresAt);
+  });
+});
+
+test("rotating an expired token → 400 invalid-request → GatewayInvalidRequestError, not retried, nothing rotated", async () => {
+  await withCore(async (fake, core) => {
+    fake.grantToken("b6pt_expired_target", [Gateway.Scopes.KB_READ], {
+      id: "tok_x",
+      alias: "expired",
+      expiresAt: new Date(Date.now() - DAY_MS).toISOString(),
+    });
+    const error = await rejectsWith(core.gateway.tokens.rotate("expired"), Err.GatewayInvalidRequestError);
+    assert.strictEqual(error.code, "invalid-request");
+    assert.strictEqual(fake.rotations, 0);
+    assert.strictEqual(tokenRequests(fake).filter((r) => r.method === "POST").length, 1, "a 400 is not retried");
   });
 });
 
@@ -679,7 +693,7 @@ test("revoking the stored token is allowed, reports revokedCurrent, and leaves t
 
 // ── rotate ──────────────────────────────────────────────────────────────
 
-test("rotating another token keeps its alias, scopes and lifetime, revokes the old, and leaves the stored token", async () => {
+test("rotating another token keeps its alias, scopes and end date, revokes the old, and leaves the stored token", async () => {
   await withCore(async (fake, core, env) => {
     const createdAt = new Date(Date.now() - 10 * DAY_MS).toISOString();
     const expiresAt = new Date(Date.now() + 20 * DAY_MS).toISOString();
@@ -690,8 +704,7 @@ test("rotating another token keeps its alias, scopes and lifetime, revokes the o
     assert.strictEqual(result.token.alias, "ci");
     assert.deepStrictEqual(result.token.scopes, [Gateway.Scopes.KB_READ]);
     assert.notStrictEqual(result.token.token, "b6pt_ci_old");
-    const days = (Date.parse(result.token.expiresAt) - Date.now()) / DAY_MS;
-    assert.ok(days > 29 && days <= 30, `same 30-day duration from now, got ${days}`);
+    assert.strictEqual(result.token.expiresAt, expiresAt, "the same absolute end date");
     assert.strictEqual(env.storedToken(), TOKEN);
     const secretsNow = fake.issuedTokens().map((t) => t.secret);
     assert.ok(!secretsNow.includes("b6pt_ci_old"), "the old token is revoked");
@@ -1069,6 +1082,157 @@ test("rev2 P2: a request that never reached the gateway stays a plain GatewayUna
   } finally {
     await fake.stop();
   }
+});
+
+// ── rotate: Idempotency-Key and the one retry ───────────────────────────
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const rotatePosts = (fake) => fake.requests.filter((r) => r.method === "POST" && r.path.endsWith("/rotate"));
+
+test("rotate sends an Idempotency-Key: a UUID, fresh per call", async () => {
+  await withCore(async (fake, core) => {
+    fake.grantToken("b6pt_ci_key", [Gateway.Scopes.KB_READ], { id: "tok_ci", alias: "ci" });
+    await core.gateway.tokens.rotate("ci");
+    await core.gateway.tokens.rotate("ci");
+    const keys = rotatePosts(fake).map((r) => r.idempotencyKey);
+    assert.strictEqual(keys.length, 2);
+    assert.ok(keys.every((k) => UUID.test(k)), `UUIDs, got ${keys.join(", ")}`);
+    assert.notStrictEqual(keys[0], keys[1], "a new key per call");
+    assert.strictEqual(fake.rotations, 2);
+    assert.ok(!logLines.some((line) => keys.some((k) => line.includes(k))), "the key is never logged");
+  });
+});
+
+test("a lost 503 after the stored token rotated: one retry with the same key and token gets the replay, which is stored", async () => {
+  await withCore(async (fake, core, env) => {
+    fake.loseNextRotateAnswer({ status: 503 });
+    const result = await core.gateway.tokens.rotate("laptop");
+    secrets.add(result.token.token);
+    assert.strictEqual(result.rotatedCurrent, true);
+    assert.strictEqual(fake.rotations, 1, "rotated once, not twice");
+    const posts = rotatePosts(fake);
+    assert.strictEqual(posts.length, 2, "one retry");
+    assert.strictEqual(posts[0].idempotencyKey, posts[1].idempotencyKey, "the same key");
+    assert.strictEqual(posts[0].authorization, posts[1].authorization, "the same presenting token");
+    assert.strictEqual(posts[1].authorization, `Bearer ${TOKEN}`);
+    assert.strictEqual(env.storedToken(), result.token.token, "the replayed replacement is stored");
+    assert.deepStrictEqual(
+      fake.issuedTokens().map((t) => t.secret),
+      [result.token.token],
+      "exactly one live replacement"
+    );
+  });
+});
+
+test("a dropped connection after a sibling rotated: the retry replays it and nothing rotates twice", async () => {
+  await withCore(async (fake, core, env) => {
+    fake.grantToken("b6pt_ci_sibling", [Gateway.Scopes.KB_READ], { id: "tok_ci", alias: "ci" });
+    fake.loseNextRotateAnswer("drop");
+    const result = await core.gateway.tokens.rotate("ci");
+    secrets.add(result.token.token);
+    assert.strictEqual(result.rotatedCurrent, false);
+    assert.strictEqual(fake.rotations, 1);
+    assert.strictEqual(rotatePosts(fake).length, 2);
+    assert.strictEqual(env.storedToken(), TOKEN, "the stored token is untouched");
+    assert.ok(fake.issuedTokens().some((t) => t.secret === result.token.token));
+  });
+});
+
+test("unavailable twice → GatewayOutcomeUnknownError (retried), one rotation, the store untouched", async () => {
+  await withCore(async (fake, core, env) => {
+    fake.loseNextRotateAnswer({ status: 502 });
+    fake.loseNextRotateAnswer({ status: 504 });
+    const error = await rejectsWith(core.gateway.tokens.rotate("laptop"), Err.GatewayOutcomeUnknownError);
+    assert.strictEqual(error.operation, "rotate");
+    assert.strictEqual(error.retried, true);
+    assert.strictEqual(error.status, 504);
+    assert.ok(/retry/.test(error.message) && /may have been rotated/.test(error.message), error.message);
+    assert.ok(!/--|flag/.test(error.message), "what happened, not how to respond");
+    const key = rotatePosts(fake)[0].idempotencyKey;
+    assert.ok(!error.message.includes(key), "the key is not in the message");
+    assert.strictEqual(rotatePosts(fake).length, 2, "retried once, no more");
+    assert.strictEqual(fake.rotations, 1);
+    assert.strictEqual(env.storedToken(), TOKEN, "nothing stored or cleared");
+  });
+});
+
+test("known gap: a self-rotation retry refused 401 → GatewayOutcomeUnknownError, never token-invalid, store untouched", async () => {
+  await withCore(async (fake, core, env) => {
+    fake.selfRotationRetryRefused = true;
+    fake.loseNextRotateAnswer({ status: 503 });
+    const error = await rejectsWith(core.gateway.tokens.rotate("laptop"), Err.GatewayOutcomeUnknownError);
+    assert.ok(!(error instanceof Err.GatewayAuthError), "not reported as an auth failure");
+    assert.strictEqual(error.retried, true);
+    assert.strictEqual(error.status, 503, "the unanswered attempt's status");
+    assert.ok(/most likely rotated/.test(error.message) && /left as it was/.test(error.message), error.message);
+    assert.ok(!/not accept the access token|invalid/.test(error.message), error.message);
+    assert.strictEqual(fake.rotations, 1);
+    assert.strictEqual(env.storedToken(), TOKEN, "the store is neither replaced nor cleared");
+  });
+});
+
+test("a 401 on a sibling's rotation retry passes through: the stored token was not the one rotated", async () => {
+  await withCore(async (fake, core) => {
+    fake.grantToken("b6pt_ci_401", [Gateway.Scopes.KB_READ], { id: "tok_ci", alias: "ci" });
+    fake.failNext({ method: "POST", status: 503, body: { error: "registry-unavailable" } });
+    fake.failNext({ method: "POST", status: 401, body: { error: "token-invalid" } });
+    const error = await rejectsWith(core.gateway.tokens.rotate("ci"), Err.GatewayAuthError);
+    assert.strictEqual(error.status, 401);
+  });
+});
+
+test("any other error on the retry passes through (here a 403 expiry refusal, still typed)", async () => {
+  await withCore(async (fake, core) => {
+    fake.failNext({ method: "POST", status: 503 });
+    fake.failNext({
+      method: "POST",
+      status: 403,
+      body: { error: "not-permitted", reason: "expiry-exceeds-presenting", presentingExpiresAt: "2031-01-01T00:00:00Z" },
+    });
+    await rejectsWith(core.gateway.tokens.rotate("laptop"), Err.GatewayTokenExpiryRefusedError);
+    assert.strictEqual(rotatePosts(fake).length, 2);
+  });
+});
+
+test("the fake: a malformed key, or a key reused for another token, is 400 invalid-request", async () => {
+  await withCore(async (fake) => {
+    fake.grantToken("b6pt_ci_a", [Gateway.Scopes.KB_READ], { id: "tok_a", alias: "a" });
+    fake.grantToken("b6pt_ci_b", [Gateway.Scopes.KB_READ], { id: "tok_b", alias: "b" });
+    const post = (id, key) =>
+      fetch(`${fake.url}${Gateway.Paths.TOKENS}/${id}/rotate`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${TOKEN}`, "Idempotency-Key": key },
+      });
+    const short = await post("tok_a", "too-short");
+    assert.strictEqual(short.status, 400);
+    assert.strictEqual((await short.json()).error, "invalid-request");
+    const key = "0123456789abcdef-key";
+    const first = await post("tok_a", key);
+    assert.strictEqual(first.status, 201);
+    secrets.add((await first.json()).token);
+    const reused = await post("tok_b", key);
+    assert.strictEqual(reused.status, 400);
+    assert.strictEqual(fake.rotations, 1);
+  });
+});
+
+test("GatewayRequestOptions.headers: extra headers are sent; Authorization, Cookie and the client's own are refused unsent", async () => {
+  await withCore(async (fake, core) => {
+    const client = core.gateway.client;
+    await client.request("GET", Gateway.Paths.TOKENS, { headers: { "Idempotency-Key": "abcdefghijklmnop-1" } });
+    assert.strictEqual(fake.requests.at(-1).idempotencyKey, "abcdefghijklmnop-1");
+    const before = fake.requests.length;
+    for (const name of ["Authorization", "authorization", "Cookie", "Proxy-Authorization", "Accept", "content-type"]) {
+      const error = await rejectsWith(
+        client.request("GET", Gateway.Paths.TOKENS, { headers: { [name]: "Bearer b6pt_overridden" } }),
+        Err.GatewayConfigError
+      );
+      assert.ok(!error.message.includes("b6pt_overridden"), "the value is never quoted");
+    }
+    await rejectsWith(client.request("GET", Gateway.Paths.TOKENS, { headers: { "X-Bad": "a\r\nb" } }), Err.GatewayConfigError);
+    await rejectsWith(client.request("GET", Gateway.Paths.TOKENS, { headers: { "Bad Name": "x" } }), Err.GatewayConfigError);
+    assert.strictEqual(fake.requests.length, before, "nothing was sent");
+  });
 });
 
 // ── Run ─────────────────────────────────────────────────────────────────

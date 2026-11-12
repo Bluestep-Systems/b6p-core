@@ -29,6 +29,57 @@ export interface GatewayRequestOptions {
    * @lastreviewed null
    */
   body?: JsonValue;
+  /**
+   * Extra request headers, e.g. `Idempotency-Key`. A name the client sets itself (`Authorization`,
+   * `Accept`, `Content-Type`) or a credential header (`Cookie`, `Proxy-Authorization`) is refused
+   * with {@link Err.GatewayConfigError} and nothing is sent, as is a name that is not an HTTP token
+   * or a value with control characters. No message quotes a value.
+   * @lastreviewed null
+   */
+  headers?: Readonly<Record<string, string>>;
+}
+
+/**
+ * Header names (lower case) a caller's {@link GatewayRequestOptions.headers} may not set: the ones
+ * the client sets itself, and every header that carries a credential.
+ * @lastreviewed null
+ */
+const RESERVED_HEADERS = new Set(["authorization", "proxy-authorization", "cookie", "accept", "content-type"]);
+
+/**
+ * An HTTP header name (RFC 9110 token).
+ * @lastreviewed null
+ */
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/**
+ * An HTTP header value: visible ASCII, spaces and tabs only.
+ * @lastreviewed null
+ */
+const HEADER_VALUE = /^[\t\x20-\x7e]*$/;
+
+/**
+ * Check a caller's extra headers before anything is sent. Messages name the header, never its value.
+ * @lastreviewed null
+ */
+function checkExtraHeaders(headers: Readonly<Record<string, string>>): void {
+  for (const [name, value] of Object.entries(headers)) {
+    if (!HEADER_NAME.test(name)) {
+      throw new Err.GatewayConfigError(
+        "A gateway request header name is not a valid HTTP header name; nothing was sent."
+      );
+    }
+    if (RESERVED_HEADERS.has(name.toLowerCase())) {
+      throw new Err.GatewayConfigError(
+        `A gateway request may not carry a caller-set ${name} header (the client owns it); nothing was sent.`
+      );
+    }
+    if (typeof value !== "string" || !HEADER_VALUE.test(value)) {
+      throw new Err.GatewayConfigError(
+        `The gateway request header ${name} has a value that is not valid; nothing was sent.`
+      );
+    }
+  }
 }
 
 /**
@@ -396,9 +447,14 @@ export class GatewayClient {
       }
     }
     const what = `${method} ${url.pathname}${url.search}`;
+    if (options.headers) {
+      checkExtraHeaders(options.headers);
+    }
     const token = await readToken();
 
+    // The caller's headers go first, so the client's own (already refused above) could never be overridden.
     const headers: Record<string, string> = {
+      ...options.headers,
       [Http.Headers.AUTHORIZATION]: `${AuthTypes.BEARER_PREFIX}${token}`,
       [Http.Headers.ACCEPT]: MimeTypes.APPLICATION_JSON,
     };

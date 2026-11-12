@@ -39,6 +39,19 @@ export namespace Gateway {
   export const GIT_IDLE_TIMEOUT_MS = 60_000;
 
   /**
+   * Request headers specific to the gateway contract.
+   * @lastreviewed null
+   */
+  export namespace Headers {
+    /**
+     * Sent on a token rotation so a retry of it is answered with the first attempt's result
+     * instead of rotating again (16–128 visible ASCII characters; b6p sends a UUID).
+     * @lastreviewed null
+     */
+    export const IDEMPOTENCY_KEY = "Idempotency-Key";
+  }
+
+  /**
    * REST paths, relative to the gateway origin.
    * @lastreviewed null
    */

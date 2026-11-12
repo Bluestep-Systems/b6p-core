@@ -25,6 +25,35 @@ const DEFAULT_TOKEN_LIFETIME_MS = 90 * 24 * 60 * 60 * 1_000;
 const LIVE_TOKEN_LIMIT = 50;
 
 /**
+ * How long the gateway remembers a rotation's `Idempotency-Key` for replay.
+ * @lastreviewed null
+ */
+const IDEMPOTENCY_WINDOW_MS = 10 * 60 * 1_000;
+
+/**
+ * A valid `Idempotency-Key`: 16–128 visible ASCII characters.
+ * @lastreviewed null
+ */
+const IDEMPOTENCY_KEY = /^[\x21-\x7e]{16,128}$/;
+
+/**
+ * What the gateway answers in place of a rotation's real answer, after acting: a status, or a
+ * dropped connection.
+ * @lastreviewed null
+ */
+export type FakeGatewayLostAnswer = { status: 502 | 503 | 504 } | "drop";
+
+/**
+ * A remembered rotation, replayed for a retry with the same presenting token and key.
+ * @lastreviewed null
+ */
+interface RotationReplay {
+  targetId: string;
+  at: number;
+  body: GatewayMintedTokenBody;
+}
+
+/**
  * Whether `expiresAt` has passed.
  * @lastreviewed null
  */
@@ -102,6 +131,11 @@ export interface FakeGatewayRequest {
    * @lastreviewed null
    */
   body: string;
+  /**
+   * The raw `Idempotency-Key` header, if any.
+   * @lastreviewed null
+   */
+  idempotencyKey: string | undefined;
 }
 
 /**
@@ -152,6 +186,8 @@ export interface FakeGatewayRoute {
  * `GET /api/v1/registry/repos` (scope `registry:read`), the self-service token routes
  * (`GET`/`POST /api/v1/tokens`, `DELETE /api/v1/tokens/{id}`, `POST /api/v1/tokens/{id}/rotate`,
  * scope `tokens:self`, with `scope-escalation` and `alias-taken`), and `404 not-found` for anything else.
+ * A rotation honours `Idempotency-Key`: a retry with the same presenting token and key within 10
+ * minutes gets the first attempt's answer and rotates nothing (see {@link loseNextRotateAnswer}).
  * Tokens are granted explicitly with their scopes; a request without one is `401 token-missing`,
  * an unknown or expired one `401 token-invalid`, a missing scope `403 scope-missing` with `scope`.
  * @lastreviewed null
@@ -170,6 +206,20 @@ export class FakeGateway {
    * @lastreviewed null
    */
   rewriteNotPermitted = false;
+
+  /**
+   * When `true`, simulates the gateway before web-global #81's fix: a rotation retry that presents
+   * the token the first attempt rotated away is `401 token-invalid` instead of a replay. When
+   * `false` (the contract), the replay is served even though the presenting token is now revoked.
+   * @lastreviewed null
+   */
+  selfRotationRetryRefused = false;
+
+  /**
+   * How many rotations actually happened (a replay does not count).
+   * @lastreviewed null
+   */
+  rotations = 0;
 
   /**
    * Every request received, in arrival order.
@@ -209,6 +259,8 @@ export class FakeGateway {
   private tokenSerial = 0;
   private readonly failures: FakeGatewayFailure[] = [];
   private readonly routes: FakeGatewayRoute[] = [];
+  private readonly replays = new Map<string, RotationReplay>();
+  private readonly lostAnswers: FakeGatewayLostAnswer[] = [];
 
   private constructor(
     private readonly server: http.Server,
@@ -296,6 +348,16 @@ export class FakeGateway {
   }
 
   /**
+   * Act on the next rotation (or replay of one) as usual, then answer `lost` instead of its result:
+   * the lost `503` (or dropped connection) after which a client cannot tell whether it rotated.
+   * Defaults to `{ status: 503 }`. Queued losses are used in order.
+   * @lastreviewed null
+   */
+  loseNextRotateAnswer(lost: FakeGatewayLostAnswer = { status: 503 }): void {
+    this.lostAnswers.push(lost);
+  }
+
+  /**
    * Mount an extra route; see {@link FakeGatewayRoute}.
    * @lastreviewed null
    */
@@ -334,6 +396,7 @@ export class FakeGateway {
         query: Object.fromEntries(url.searchParams),
         authorization: req.headers.authorization,
         body,
+        idempotencyKey: headerOf(req, "idempotency-key"),
       });
 
       const at = this.failures.findIndex((f) => f.method === undefined || f.method === req.method);
@@ -377,6 +440,9 @@ export class FakeGateway {
         return;
       }
       if (url.pathname === Gateway.Paths.TOKENS || url.pathname.startsWith(`${Gateway.Paths.TOKENS}/`)) {
+        if (this.replayRotation(method, url.pathname, req, res)) {
+          return;
+        }
         if (this.authorize(req, res, Gateway.Scopes.TOKENS_SELF)) {
           this.handleTokens(method, url.pathname, body, req, res);
         }
@@ -524,6 +590,24 @@ export class FakeGateway {
       return;
     }
     if (rest.length === 2 && rest[1] === "rotate" && method === "POST") {
+      const key = headerOf(req, "idempotency-key");
+      if (key !== undefined && !IDEMPOTENCY_KEY.test(key)) {
+        sendJson(res, 400, { error: "invalid-request", message: "The Idempotency-Key is malformed." });
+        return;
+      }
+      const remembered = key === undefined ? undefined : this.freshReplay(caller.secret, key);
+      if (remembered && remembered.targetId !== target.id) {
+        sendJson(res, 400, { error: "invalid-request", message: "The Idempotency-Key was used for another token." });
+        return;
+      }
+      if (remembered) {
+        this.answerRotation(res, remembered.body);
+        return;
+      }
+      if (isExpired(target.expiresAt)) {
+        sendJson(res, 400, { error: "invalid-request", message: "An expired token cannot be rotated." });
+        return;
+      }
       if (this.rewriteNotPermitted && target.scopes.includes("kb:rewrite")) {
         sendJson(res, 403, {
           error: "not-permitted",
@@ -541,21 +625,61 @@ export class FakeGateway {
         });
         return;
       }
-      const createdAt = new Date().toISOString();
-      const expiresAt =
-        target.expiresAt === null
-          ? null
-          : new Date(
-              Date.now() +
-                (target.createdAt === null
-                  ? DEFAULT_TOKEN_LIFETIME_MS
-                  : Date.parse(target.expiresAt) - Date.parse(target.createdAt))
-            ).toISOString();
+      // The replacement keeps the target's absolute end date.
       this.tokens.delete(target.secret);
-      sendJson(res, 201, this.mint(target.owner, target.alias, target.scopes, createdAt, expiresAt));
+      this.rotations++;
+      const minted = this.mint(target.owner, target.alias, target.scopes, new Date().toISOString(), target.expiresAt);
+      if (key !== undefined) {
+        this.replays.set(replayKey(caller.secret, key), { targetId: target.id, at: Date.now(), body: minted });
+      }
+      this.answerRotation(res, minted);
       return;
     }
     notFound();
+  }
+
+  /**
+   * Serve a remembered rotation to a retry before the usual auth check, so a retry presenting the
+   * token that rotation revoked still gets its answer (unless {@link selfRotationRetryRefused}).
+   * Returns `false`, having sent nothing, when the request is not such a retry.
+   * @lastreviewed null
+   */
+  private replayRotation(method: string, path: string, req: http.IncomingMessage, res: http.ServerResponse): boolean {
+    const rest = path.slice(Gateway.Paths.TOKENS.length + 1).split("/");
+    const presenter = tokenFrom(req.headers.authorization);
+    const key = headerOf(req, "idempotency-key");
+    if (method !== "POST" || rest.length !== 2 || rest[1] !== "rotate" || !presenter || key === undefined) {
+      return false;
+    }
+    const remembered = this.freshReplay(presenter, key);
+    if (!remembered || remembered.targetId !== decodeURIComponent(rest[0])) {
+      return false;
+    }
+    if (!this.tokens.has(presenter) && this.selfRotationRetryRefused) {
+      return false;
+    }
+    this.answerRotation(res, remembered.body);
+    return true;
+  }
+
+  private freshReplay(presenter: string, key: string): RotationReplay | undefined {
+    const remembered = this.replays.get(replayKey(presenter, key));
+    return remembered && Date.now() - remembered.at < IDEMPOTENCY_WINDOW_MS ? remembered : undefined;
+  }
+
+  /**
+   * Send a rotation's answer, or the next {@link loseNextRotateAnswer} loss in its place.
+   * @lastreviewed null
+   */
+  private answerRotation(res: http.ServerResponse, body: GatewayMintedTokenBody): void {
+    const lost = this.lostAnswers.shift();
+    if (lost === "drop") {
+      res.socket?.destroy();
+    } else if (lost) {
+      sendJson(res, lost.status, { error: "unavailable", message: "The answer was lost on the way back." });
+    } else {
+      sendJson(res, 201, body);
+    }
   }
 
   private mint(
@@ -619,6 +743,15 @@ function tokenFrom(header: string | undefined): string | undefined {
     return colon >= 0 ? decoded.slice(colon + 1) || undefined : undefined;
   }
   return undefined;
+}
+
+function headerOf(req: http.IncomingMessage, name: string): string | undefined {
+  const value = req.headers[name];
+  return Array.isArray(value) ? value.join(", ") : value;
+}
+
+function replayKey(presenter: string, key: string): string {
+  return `${presenter}\n${key}`;
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {

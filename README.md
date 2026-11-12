@@ -238,6 +238,14 @@ await core.gateway.tokens.rotate("laptop"); // → { replaced, token, rotatedCur
   create or rotate request) is `GatewayOutcomeUnknownError` (a `GatewayUnavailableError`,
   `operation` `create` or `rotate`): the token may have been minted or rotated, and for a rotation
   the old one may already be revoked. Any new secret is lost; the error says the outcome is unknown.
+- **Rotation is retried once.** `rotate` sends an `Idempotency-Key` (a fresh UUID per call). When the
+  rotate request goes unanswered, it is retried once with the same key and presenting token, and the
+  gateway answers the retry with the first attempt's result without rotating again; a successful
+  retry is the normal path. `GatewayOutcomeUnknownError` (`retried: true`) follows only when the
+  retry is unanswered too, or is refused `401`/`404` while rotating the stored token (the first
+  attempt most likely rotated and so revoked it); the store is then left untouched. A create is
+  never retried. A rotated token keeps its absolute end date; an expired one cannot be rotated
+  (`GatewayInvalidRequestError`).
 - **Revoking the stored token** is allowed. The result says `revokedCurrent: true` and the stored
   (now dead) token is left in place; what to do next is the consumer's call.
 - Core never logs a secret or puts one in an error message. Warning about a token that never

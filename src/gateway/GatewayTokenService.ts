@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Gateway } from "../constants/Gateway";
 import { Http } from "../constants/Http";
 import { Err } from "../Err";
@@ -156,7 +157,7 @@ export class GatewayTokenService {
 
   /**
    * Rotate one of the caller's tokens, by id or alias: the gateway atomically mints a replacement
-   * with the same alias, scopes and lifetime policy and revokes the old one. When the rotated
+   * with the same alias, scopes and absolute end date and revokes the old one. When the rotated
    * token is the stored one, the replacement is stored in its place.
    *
    * The list, the rotate request and the store run as one entry in the client's queue and present
@@ -164,7 +165,21 @@ export class GatewayTokenService {
    * store replaces exactly the token that was rotated. A secret the gateway returns is never
    * dropped, whatever fails after it arrives.
    *
+   * **Idempotency.** Each call generates one `Idempotency-Key` (a UUID) and sends it on the rotate
+   * request. When that request goes unanswered ({@link Err.GatewayUnavailableError}: a dropped
+   * connection, a timeout, `502`/`503`/`504`), it is retried once, at once, in the same queue
+   * entry, with the same key and the same presenting token; the gateway answers such a retry with
+   * the first attempt's result and never rotates twice. A successful retry is the normal path (a
+   * stored token's replacement is stored). An unanswered retry is
+   * {@link Err.GatewayOutcomeUnknownError} (`retried: true`), and so is a retry refused `401` or
+   * `404` when the target is the stored token: the first attempt most likely rotated, and so
+   * revoked, the very token the retry presents. The store is then left untouched. Any other error on
+   * the retry passes through. The key is not a secret, but it is never logged or put in a message.
+   *
    * @throws {Err.GatewayNotFoundError} no token of the caller's has that id or alias
+   * @throws {Err.GatewayInvalidRequestError} the gateway refused the rotation (`400 invalid-request`),
+   *   e.g. the target has expired
+   * @throws {Err.GatewayOutcomeUnknownError} the rotation may have happened and its answer never arrived
    * @throws {Err.GatewayTokenAmbiguousError} it matches one token's id and another's alias
    * @throws {Err.GatewayRewriteNotPermittedError} the token holds `kb:rewrite` and the account may not
    * @throws {Err.GatewayTokenStoreError} the stored token was rotated (so it is already revoked) but
@@ -182,10 +197,16 @@ export class GatewayTokenService {
       const target = pick(await listVia(seq.request), wanted);
       const path = `${Gateway.Paths.TOKENS}/${encodeURIComponent(target.id)}/rotate`;
       const what = `${Http.Methods.POST} ${path}`;
-      const answer = await outcomeUnknownOnUnavailable(
-        () => seq.request(Http.Methods.POST, path).catch(explainMintRefusal(undefined)),
-        "rotate",
-        `the token "${target.alias}" may have been rotated, in which case the old one is revoked and its replacement was never received`
+      // One key per call, reused only by this call's one retry. Not a secret, but never logged or quoted.
+      const idempotencyKey = randomUUID();
+      const answer = await sendRotate(
+        () =>
+          seq
+            .request(Http.Methods.POST, path, { headers: { [Gateway.Headers.IDEMPOTENCY_KEY]: idempotencyKey } })
+            .catch(explainMintRefusal(undefined)),
+        what,
+        target,
+        this.ctx.logger
       );
       const parsed = parseMinted(answer, what, "the token may have been rotated");
       const secret = parsed.minted ? parsed.minted.token : parsed.secret;
@@ -341,14 +362,15 @@ function explainMintRefusal(requested: string | null | undefined): (error: unkno
 }
 
 /**
- * Send a mint or rotate request. A {@link Err.GatewayUnavailableError} there (a dropped connection,
- * a timeout, or `502`/`503`/`504`) does not say whether the gateway acted, so it becomes
- * {@link Err.GatewayOutcomeUnknownError}; every other error passes through.
+ * Send a mint request, never retried (a mint has no idempotency key). A
+ * {@link Err.GatewayUnavailableError} there (a dropped connection, a timeout, or `502`/`503`/`504`)
+ * does not say whether the gateway acted, so it becomes {@link Err.GatewayOutcomeUnknownError};
+ * every other error passes through. A rotation goes through {@link sendRotate} instead.
  * @lastreviewed null
  */
 async function outcomeUnknownOnUnavailable(
   send: () => Promise<JsonValue | undefined>,
-  operation: "create" | "rotate",
+  operation: "create",
   consequence: string
 ): Promise<JsonValue | undefined> {
   try {
@@ -359,6 +381,57 @@ async function outcomeUnknownOnUnavailable(
         `${error.message} The outcome is unknown: ${consequence}.`,
         operation,
         error.status
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * Send a rotate request and, when it goes unanswered, retry it once (`send` carries the same
+ * idempotency key and presents the same token both times); see {@link GatewayTokenService.rotate}
+ * for what each outcome of the retry becomes.
+ * @lastreviewed null
+ */
+async function sendRotate(
+  send: () => Promise<JsonValue | undefined>,
+  what: string,
+  target: GatewayTokenSummary,
+  logger: GatewayContext["logger"]
+): Promise<JsonValue | undefined> {
+  const lost = `the token "${target.alias}" may have been rotated, in which case the old one is revoked and its replacement was never received`;
+  let first: Err.GatewayUnavailableError;
+  try {
+    return await send();
+  } catch (error) {
+    if (!(error instanceof Err.GatewayUnavailableError)) {
+      throw error;
+    }
+    first = error;
+  }
+  logger.debug(`${what}: no answer (${first.status ?? "no status"}); retrying once with the same idempotency key`);
+  try {
+    return await send();
+  } catch (error) {
+    if (error instanceof Err.GatewayUnavailableError) {
+      throw new Err.GatewayOutcomeUnknownError(
+        `${error.message} The first attempt went unanswered too, and so did its one retry. The outcome is unknown: ${lost}.`,
+        "rotate",
+        error.status,
+        true
+      );
+    }
+    const refusedAsRevoked =
+      (error instanceof Err.GatewayAuthError && error.status === 401) || error instanceof Err.GatewayNotFoundError;
+    if (target.current && refusedAsRevoked) {
+      // The retry presents the stored token, which the first attempt, if it went through, revoked.
+      // That is not the stored token being invalid, and the store must not be cleared over it.
+      // Only the status: the code (`token-invalid`, `not-found`) would misreport what happened.
+      throw new Err.GatewayOutcomeUnknownError(
+        `${what}: the first attempt went unanswered, and its one retry was refused (${error.status}) as if the stored token "${target.alias}" were already revoked. The first attempt most likely rotated it, which revokes the old token, and its replacement was never received. The stored token was left as it was.`,
+        "rotate",
+        first.status,
+        true
       );
     }
     throw error;

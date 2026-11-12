@@ -1151,6 +1151,11 @@ export namespace Err {
    * which case the old one is revoked), and any new secret was never received. It extends
    * {@link GatewayUnavailableError}, so a generic handler still sees "unavailable", but it is a
    * distinct type so a consumer can tell it apart from a request that never reached the gateway.
+   *
+   * A rotation is retried once, with the same `Idempotency-Key` and the same presenting token,
+   * before this is thrown (`retried: true`): when the retry is also unanswered, or when it is a
+   * `401`/`404` for the stored token (the first attempt most likely rotated it, which revoked it).
+   * A create is never retried.
    * @lastreviewed null
    */
   export class GatewayOutcomeUnknownError extends GatewayUnavailableError {
@@ -1159,10 +1164,16 @@ export namespace Err {
      * @lastreviewed null
      */
     readonly operation: "create" | "rotate";
-    constructor(message: string, operation: "create" | "rotate", status: number | null) {
+    /**
+     * `true` when the request was retried once (with the same idempotency key) before giving up.
+     * @lastreviewed null
+     */
+    readonly retried: boolean;
+    constructor(message: string, operation: "create" | "rotate", status: number | null, retried: boolean = false) {
       super(message, status, "outcome-unknown");
       this.name = "GatewayOutcomeUnknownError";
       this.operation = operation;
+      this.retried = retried;
     }
   }
 

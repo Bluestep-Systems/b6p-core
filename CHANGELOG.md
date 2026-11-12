@@ -9,6 +9,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Idempotent token rotation.** `core.gateway.tokens.rotate()` sends an `Idempotency-Key` (a fresh UUID per call)
+  on the rotate request. When that request goes unanswered (dropped connection, timeout, `502`/`503`/`504`) it is
+  retried once, at once, with the same key and presenting token; the gateway replays the first attempt's result and
+  never rotates twice, so a replayed replacement of the stored token is stored as usual. An unanswered retry, or a
+  `401`/`404` retry for the stored token (the first attempt most likely rotated and so revoked it), is
+  `GatewayOutcomeUnknownError` with the new `retried: true`; the store is left untouched. Other retry errors pass
+  through. A rotated token keeps its absolute end date, and an expired target is `400 invalid-request`
+  (`GatewayInvalidRequestError`). `GatewayRequestOptions.headers` carries extra request headers; `Authorization`,
+  `Cookie`, `Proxy-Authorization`, `Accept` and `Content-Type` are refused unsent. `Gateway.Headers.IDEMPOTENCY_KEY`.
+  `FakeGateway` replays a rotation per presenting token and key for 10 minutes, refuses a malformed or reused key
+  (`400`), counts `rotations`, can lose the next rotation's answer after acting (`loseNextRotateAnswer`), and with
+  `selfRotationRetryRefused` simulates the gateway's pre-fix `401` on a self-rotation retry.
 - **`Err.GatewayRewriteNotPermittedError { scope }`**: a `403 not-permitted` with reason `rewrite-not-permitted` on a token
   mint or rotate (this account may not hold `kb:rewrite`). `FakeGateway.rewriteNotPermitted` switches the refusal on.
   A reason web-global does not know, or an off-contract refusal, arrives as `503 registry-unavailable` (already
