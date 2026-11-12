@@ -68,3 +68,50 @@ jobs:
       # spec only runs if it is listed in package.json's `test` script.
       - name: Test
         run: npm test
+
+  # The suite must pass on Windows as well as POSIX (see test/README.md).
+  validate-windows:
+    name: Validate (Windows, Node 24)
+    runs-on: windows-latest
+
+    steps:
+      # Repo blobs are LF; force LF before checkout so format-check does not
+      # false-fail on a CRLF working tree (AGENTS.md "Line endings").
+      - name: Force LF line endings
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+        shell: bash
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: |
+          for i in 1 2 3; do
+            npm ci --prefer-offline --no-audit && break
+            echo "Attempt $i failed, retrying..."
+            sleep 5
+          done
+        shell: bash
+
+      - name: Type check
+        run: npm run check-types
+
+      - name: Format check
+        run: npm run format-check
+
+      - name: Compile
+        run: npm run compile
+
+      - name: Test
+        run: npm test

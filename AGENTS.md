@@ -145,7 +145,7 @@ number to make the check pass** — tag the JSDoc instead.
 - **Commits** are conventional (`fix(scope):`, `feat:`, `docs:`, `release: vX.Y.Z — summary`) and
   reference the task as `(CU-<taskid>)`. AI-authored commits carry their `Co-Authored-By` trailer.
 - **PRs** target `master`. CI must pass — type-check, format-check, compile and the full suite on Node
-  20 and 22. Address automated review rounds as follow-up commits on the same branch.
+  20 and 22, and again on windows-latest (Node 24). Address automated review rounds as follow-up commits on the same branch.
 - **Releases**: a `release: vX.Y.Z — summary` commit bumps `package.json` / `package-lock.json` and
   dates the CHANGELOG block. After it merges, push an annotated tag
   (`git tag -a vX.Y.Z -m "vX.Y.Z — summary" && git push origin vX.Y.Z`). `publish.yml` publishes to
