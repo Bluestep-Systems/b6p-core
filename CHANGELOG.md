@@ -9,6 +9,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`GatewayKnowledgeBase.id` and `.status`**: the listing's rows now carry the tenant record's `id` (`string | null`)
+  and a `status` (`ok`, `branch-mismatch`, `repo-only`, `row-only`, `unconfirmed`, `undescribed`; any other value reads
+  as `"unknown"` with `rawStatus`). A row without a `status` or with a malformed `id` is an invalid listing. Pulling a
+  `row-only` knowledge base stays a `GatewayNotFoundError` (its repository does not exist yet).
 - **`Err.GatewayLiveBranchUnprotectedError`** (extends `GatewayConflictError`): `409 live-branch-unprotected`, a push to a
   knowledge base's live branch refused because its forge protection rule is missing or drifted; nothing was pushed.
 - **`GatewayNotPermittedError.scope`**: the `scope` a `403 not-permitted` body names (kept only when it is a short

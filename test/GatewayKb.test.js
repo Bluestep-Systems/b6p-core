@@ -49,6 +49,8 @@ function entry(fake, overrides) {
   const tenant = overrides.tenant ?? null;
   const org = tenant ? `${tenant}-system` : "knowledge-base";
   return {
+    id: `00000000-0000-4000-8000-${String(name.length).padStart(12, "0")}`,
+    status: "ok",
     ref: tenant ? `tenant/${tenant}/${name}` : `global/${name}`,
     scope: tenant ? "tenant" : "global",
     tenant,
@@ -135,7 +137,7 @@ test("list returns typed entries and sends the scope and tenant filters", async 
     assert.strictEqual(all.length, 4);
     assert.deepStrictEqual(
       Object.keys(all[0]).sort(),
-      ["canPush", "gitUrl", "liveBranch", "name", "ref", "scope", "tenant", "title"]
+      ["canPush", "gitUrl", "id", "liveBranch", "name", "ref", "scope", "status", "tenant", "title"]
     );
     assert.strictEqual(all[0].ref, "global/demo");
     assert.strictEqual(all[1].canPush, false);
@@ -150,7 +152,7 @@ test("list returns typed entries and sends the scope and tenant filters", async 
 });
 
 test("list refuses a body that is not the promised shape", async () => {
-  const good = { ref: "global/a", scope: "global", tenant: null, name: "a", title: "A", liveBranch: "master", canPush: true, gitUrl: "http://x/a.git" };
+  const good = { id: null, status: "ok", ref: "global/a", scope: "global", tenant: null, name: "a", title: "A", liveBranch: "master", canPush: true, gitUrl: "http://x/a.git" };
   const cases = [
     "not json",
     [],
@@ -164,6 +166,13 @@ test("list refuses a body that is not the promised shape", async () => {
     { knowledgeBases: [{ ...good, scope: "tenant", tenant: null }] },
     { knowledgeBases: [{ ...good, gitUrl: undefined }] },
     { knowledgeBases: [{ ...good, title: "" }] },
+    { knowledgeBases: [{ ...good, status: undefined }] },
+    { knowledgeBases: [{ ...good, status: "" }] },
+    { knowledgeBases: [{ ...good, status: 3 }] },
+    { knowledgeBases: [{ ...good, id: undefined }] },
+    { knowledgeBases: [{ ...good, id: "" }] },
+    { knowledgeBases: [{ ...good, id: 7 }] },
+    { knowledgeBases: [{ ...good, id: "ab\u200bcd" }] },
   ];
   for (const body of cases) {
     await withBody(body, async (kb) => {
@@ -182,6 +191,8 @@ test("list: an unknown or invisible tenant is an empty list, not an error; globa
     assert.strictEqual((await kb.list({ scope: "global" })).every((k) => k.tenant === null), true);
   });
   const row = (name, tenant) => ({
+    id: null,
+    status: "ok",
     ref: tenant ? `tenant/${tenant}/${name}` : `global/${name}`,
     scope: tenant ? "tenant" : "global",
     tenant: tenant ?? null,
@@ -194,6 +205,29 @@ test("list: an unknown or invisible tenant is an empty list, not an error; globa
   const served = [row("zeta"), row("alpha"), row("b", "U9"), row("a", "U2")];
   await withBody({ knowledgeBases: served }, async (kb) => {
     assert.deepStrictEqual((await kb.list()).map((k) => k.ref), served.map((k) => k.ref), "not re-sorted");
+  });
+});
+
+test("list carries id and status per row; an unknown status is \"unknown\" with rawStatus; the known ones pass through", async () => {
+  const base = { ref: "global/a", scope: "global", tenant: null, name: "a", title: "A", liveBranch: "master", canPush: true, gitUrl: "http://x/a.git" };
+  const statuses = ["ok", "branch-mismatch", "repo-only", "row-only", "unconfirmed", "undescribed"];
+  const rows = statuses.map((status, i) => ({ ...base, name: `n${i}`, ref: `global/n${i}`, status, id: i % 2 ? "7f1c2b9e-0000-4000-8000-000000000001" : null }));
+  rows.push({ ...base, name: "future", ref: "global/future", status: "quarantined", id: null });
+  await withBody({ knowledgeBases: rows }, async (kb) => {
+    const listed = await kb.list();
+    assert.deepStrictEqual(listed.slice(0, 6).map((k) => k.status), statuses);
+    assert.deepStrictEqual(listed.slice(0, 6).map((k) => k.id), rows.slice(0, 6).map((k) => k.id));
+    assert.strictEqual(listed.slice(0, 6).some((k) => "rawStatus" in k), false);
+    assert.strictEqual(listed[6].status, "unknown");
+    assert.strictEqual(listed[6].rawStatus, "quarantined");
+  });
+});
+
+test("pull of a row-only KB (no repository yet): the clone's 404 stays GatewayNotFoundError", async () => {
+  await withKb(async ({ fake, kb }) => {
+    fake.knowledgeBases.push(entry(fake, { name: "unborn", tenant: "U1", status: "row-only", canPush: false }));
+    const cwd = tmp();
+    await rejectsWith(kb.pull("U1/unborn", { cwd }), Err.GatewayNotFoundError);
   });
 });
 
@@ -481,7 +515,7 @@ test("push resolves a relative dir against the cwd it is given, never process.cw
 });
 
 test("a listing entry with control or format characters in a text field is an invalid listing", async () => {
-  const good = { ref: "global/a", scope: "global", tenant: null, name: "a", title: "A", liveBranch: "master", canPush: true, gitUrl: "http://x/a.git" };
+  const good = { id: null, status: "ok", ref: "global/a", scope: "global", tenant: null, name: "a", title: "A", liveBranch: "master", canPush: true, gitUrl: "http://x/a.git" };
   const bad = ["\u001b[31mred", "a\u0007b", "a\u200bb", "a\u202eb", "a\ufeffb", "a\u007fb"];
   for (const field of ["ref", "name", "title", "liveBranch"]) {
     for (const value of bad) {

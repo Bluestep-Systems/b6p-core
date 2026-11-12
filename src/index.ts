@@ -162,6 +162,7 @@ export type {
   GatewayErrorCode,
   GatewayErrorBody,
   GatewayKnowledgeBase,
+  GatewayKnowledgeBaseStatus,
   GatewayKnowledgeBaseList,
   GatewayMarketplaceRepo,
   GatewayMarketplaceRepoList,

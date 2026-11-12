@@ -2,7 +2,7 @@ import * as nodeFs from "node:fs";
 import * as path from "node:path";
 import { Gateway } from "../constants/Gateway";
 import { Err } from "../Err";
-import type { GatewayKnowledgeBase } from "../types";
+import type { GatewayKnowledgeBase, GatewayKnowledgeBaseStatus } from "../types";
 import type { GatewayClient } from "./GatewayClient";
 import type { GatewayGit } from "./GatewayGit";
 
@@ -148,6 +148,19 @@ function absoluteDir(dir: string, cwd: string | undefined): string {
   return path.resolve(cwd, dir);
 }
 
+/**
+ * The statuses this version of core knows; any other string reads as `"unknown"` with `rawStatus`.
+ * @lastreviewed null
+ */
+const KNOWN_STATUSES: ReadonlySet<string> = new Set([
+  "ok",
+  "branch-mismatch",
+  "repo-only",
+  "row-only",
+  "unconfirmed",
+  "undescribed",
+]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -195,7 +208,20 @@ function knowledgeBaseFrom(entry: unknown, index: number): GatewayKnowledgeBase 
   if (typeof entry.canPush !== "boolean") {
     throw bad("canPush");
   }
+  const idField = entry.id;
+  if (idField !== null && (typeof idField !== "string" || idField.length === 0 || HIDDEN_CHARACTERS.test(idField))) {
+    throw bad("id");
+  }
+  const rawStatus = entry.status;
+  if (typeof rawStatus !== "string" || rawStatus.length === 0 || HIDDEN_CHARACTERS.test(rawStatus)) {
+    throw bad("status");
+  }
+  const known = KNOWN_STATUSES.has(rawStatus);
+  const status: GatewayKnowledgeBaseStatus = known ? (rawStatus as GatewayKnowledgeBaseStatus) : "unknown";
   return {
+    id: idField,
+    status,
+    ...(known ? {} : { rawStatus }),
     ref: text("ref"),
     scope,
     tenant,
