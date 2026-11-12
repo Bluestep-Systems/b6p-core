@@ -7,7 +7,16 @@ export { checkEmittedEntrypoint, executePush, legacySyncRecords } from "./script
 export type { EmittedEntrypointCheck, PushResult } from "./script/push";
 export { resolveGitIdentity } from "./script/GitIdentity";
 export type { GitConfigReader, GitIdentitySources } from "./script/GitIdentity";
-export { GitSwitchDeclinedError, auditDraft, confirmOverwrittenFiles, pullDraft, pushDraft } from "./script/GitSync";
+export {
+  GitSwitchDeclinedError,
+  GitWrongBranchError,
+  GitStagedChangesError,
+  legacyIgnoreRulesForDraft,
+  auditDraft,
+  confirmOverwrittenFiles,
+  pullDraft,
+  pushDraft,
+} from "./script/GitSync";
 export type {
   DraftAudit,
   DraftPullOutcome,

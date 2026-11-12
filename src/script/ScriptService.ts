@@ -64,6 +64,11 @@ export interface DeployConfig {
    * @lastreviewed null
    */
   message?: string;
+  /**
+   * The caller already confirmed switching WebDAV targets to git (one-way), so do not ask.
+   * @lastreviewed null
+   */
+  enableGit?: boolean;
 }
 
 /**
@@ -153,6 +158,7 @@ export class ScriptService {
     overwrite?: string[];
     author?: GitIdentity;
     adoptUnbound?: boolean;
+    enableGit?: boolean;
   }): Promise<PushResult | null> {
     const targetUrl = opts.targetUrl ?? (await this.ctx.prompt.inputBox({ prompt: "Paste in the target formula URI" }));
     if (targetUrl === undefined) {
@@ -169,6 +175,7 @@ export class ScriptService {
       overwrite: opts.overwrite,
       author: opts.author,
       adoptUnbound: opts.adoptUnbound,
+      enableGit: opts.enableGit,
     });
   }
 
@@ -178,6 +185,7 @@ export class ScriptService {
     message?: string;
     overwrite?: string[];
     author?: GitIdentity;
+    enableGit?: boolean;
   }): Promise<PushResult | null> {
     this.ctx.logger.info(`Push current for file: ${opts.filePath}`);
     const baseUrl = await this.deriveBaseUrl(opts.filePath);
@@ -197,6 +205,7 @@ export class ScriptService {
         message: opts.message,
         overwrite: opts.overwrite,
         author: opts.author,
+        enableGit: opts.enableGit,
       });
     }
     const parser = new DownstairsPathParser(opts.filePath);
@@ -207,6 +216,7 @@ export class ScriptService {
       message: opts.message,
       overwrite: opts.overwrite,
       author: opts.author,
+      enableGit: opts.enableGit,
     });
   }
 
@@ -393,16 +403,20 @@ export class ScriptService {
     return { keptLocalPaths, switchedToGit };
   }
 
-  async pullCurrent(opts: { filePath: string; workspacePath: string }): Promise<PullResult | null> {
+  async pullCurrent(opts: {
+    filePath: string;
+    workspacePath: string;
+    enableGit?: boolean;
+  }): Promise<PullResult | null> {
     const baseUrl = await this.deriveBaseUrl(opts.filePath);
     if (!baseUrl) {
       const url = await this.ctx.prompt.inputBox({ prompt: "Could not determine script URL. Paste the formula URL:" });
       if (!url) {
         return null;
       }
-      return await this.pull({ formulaUrl: url, workspacePath: opts.workspacePath });
+      return await this.pull({ formulaUrl: url, workspacePath: opts.workspacePath, enableGit: opts.enableGit });
     }
-    return await this.pull({ formulaUrl: baseUrl, workspacePath: opts.workspacePath });
+    return await this.pull({ formulaUrl: baseUrl, workspacePath: opts.workspacePath, enableGit: opts.enableGit });
   }
 
   // ── Audit ─────────────────────────────────────────────────────────
@@ -536,6 +550,7 @@ export class ScriptService {
           message: config.message,
           author: config.author,
           adoptUnbound: false,
+          enableGit: config.enableGit,
         });
       } catch (error) {
         this.ctx.logger.error(`Failed to deploy to ${target.url}: ${error instanceof Error ? error.message : error}`);

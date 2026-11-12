@@ -386,7 +386,7 @@ test("a folder from before git (files, no repository) is bound to the repo by a 
   put(target, "extra.ts", "export {};\n");
   // The pre-git sync recorded what main.ts held when it was last pulled: the platform still holds it.
   const lastSynced = async (rel) => (rel === "main.ts" ? sha512("export const v = 1;\n") : null);
-  const outcome = await pushDraft(target, { ...PUSH, lastSynced });
+  const outcome = await pushDraft(target, { ...PUSH, lastSynced, enableGit: true });
   assert.strictEqual(outcome.switchedToGit, true);
   assert.strictEqual(stub.state.enableCalls >= 1, true);
   assert.deepStrictEqual(prompt.calls, [], "a local edit over an unchanged platform file asks nothing");
@@ -621,6 +621,254 @@ test("executePush on an empty draft folder pushes nothing and says so in the res
   assert.deepStrictEqual([result.pushed, result.commitSha, result.publishedSha], [false, null, null]);
 });
 
+// ── review follow-ups ─────────────────────────────────────────────────
+
+const { legacyIgnoreRulesForDraft, GitWrongBranchError, GitStagedChangesError } = require("../dist/script/GitSync.js");
+const { ScriptService } = require("../dist/script/ScriptService.js");
+
+function trySymlink(target, link) {
+  try {
+    fs.symlinkSync(target, link);
+    return true;
+  } catch {
+    return false; // no permission to create links here (some Windows set-ups): nothing to test
+  }
+}
+
+test("1. consents come before anything is installed: a cancelled overwrite leaves the folder without a .git, and the retry asks again", async () => {
+  stub.addRepo("654015___9001", { mode: "WEBDAV", files: { "main.ts": "platform copy\n" } });
+  const asked = [];
+  const prompt = recordingPrompt((options) => {
+    asked.push(options[0]);
+    return options[0] === "Cancel" && options.includes("Switch to git") ? "Switch to git" : options[0];
+  });
+  const target = targetFor(prompt, { classid: "654015", seqnum: "9001" });
+  put(target, "main.ts", "export const v = 'mine';\n");
+  const declined = recordingPrompt(firstOption);
+  const first = { ...target, ctx: { ...target.ctx, prompt: declined } };
+  await rejects(pushDraft(first, PUSH), (e) => assert.ok(e instanceof GitSwitchDeclinedError));
+  assert.strictEqual(stub.repos.get("654015___9001").mode, "WEBDAV", "a declined switch switches nothing");
+  assert.ok(!fs.existsSync(path.join(target.draftPath, ".git")));
+
+  await rejects(pushDraft(target, PUSH), (e) => assert.ok(e instanceof Err.OverwriteDeclinedError));
+  assert.ok(!fs.existsSync(path.join(target.draftPath, ".git")), "no .git was installed by a cancelled push");
+  assert.ok(!fs.existsSync(path.join(path.dirname(target.draftPath), ".b6p-adopt")), "the scratch clone is gone");
+  assert.strictEqual(read(target, "main.ts"), "export const v = 'mine';\n");
+  const askedOverwrite = prompt.calls.filter((c) => c.options.includes("Overwrite all")).length;
+  await rejects(pushDraft(target, PUSH), (e) => assert.ok(e instanceof Err.OverwriteDeclinedError));
+  assert.strictEqual(
+    prompt.calls.filter((c) => c.options.includes("Overwrite all")).length,
+    askedOverwrite + 1,
+    "the retry asks again"
+  );
+});
+
+test("2. a draft folder with another branch checked out is refused: nothing is committed, no commitSha is reported", async () => {
+  stub.addRepo("654015___9002");
+  const target = targetFor(recordingPrompt(), { classid: "654015", seqnum: "9002" });
+  await pullDraft(target);
+  stub.git(target.draftPath, "checkout", "-q", "-b", "feature");
+  put(target, "new.ts", "x\n");
+  const before = stub.git(bare("654015___9002"), "rev-parse", "draft");
+  await rejects(pushDraft(target, PUSH), (e) => assert.ok(e instanceof GitWrongBranchError, String(e && e.message)));
+  assert.strictEqual(
+    stub.git(target.draftPath, "rev-list", "--count", "feature"),
+    stub.git(target.draftPath, "rev-list", "--count", "draft"),
+    "feature was not advanced"
+  );
+  assert.strictEqual(stub.git(bare("654015___9002"), "rev-parse", "draft"), before);
+});
+
+test("3. the old script-root .gitignore rules carry over: an ignored secret is never committed (push and deploy)", async () => {
+  assert.deepStrictEqual(
+    legacyIgnoreRulesForDraft("# c\ndraft/secret.txt\n**/*.key\n!draft/keep.key\n/declarations/x\n*.log\n.DS_Store\n"),
+    ["/secret.txt", "**/*.key", "!/keep.key"]
+  );
+  for (const [id, adopt] of [
+    ["9003", true],
+    ["9004", false],
+  ]) {
+    stub.addRepo(`654015___${id}`);
+    const target = targetFor(recordingPrompt(pick("Overwrite all")), { classid: "654015", seqnum: id });
+    fs.mkdirSync(path.dirname(target.draftPath), { recursive: true });
+    fs.writeFileSync(
+      path.join(path.dirname(target.draftPath), ".gitignore"),
+      "**/.DS_Store\ndraft/secret.txt\n**/*.key\n"
+    );
+    if (adopt) {
+      await pullDraft(target);
+    }
+    put(target, "secret.txt", "api-key\n");
+    put(target, "deep/server.key", "private\n");
+    put(target, "ok.ts", "export {};\n");
+    await pushDraft(target, { ...PUSH, adoptUnbound: adopt });
+    assert.strictEqual(remoteFile("ok.ts", `654015___${id}`), "export {};");
+    assert.throws(() => remoteFile("secret.txt", `654015___${id}`), `${id}: secret.txt must not be committed`);
+    assert.throws(() => remoteFile("deep/server.key", `654015___${id}`), `${id}: *.key must not be committed`);
+  }
+});
+
+test("4. symlinks are never followed out of the draft folder (deploy reads, pull writes)", async () => {
+  stub.addRepo("654015___9005");
+  const target = targetFor(recordingPrompt(pick("Overwrite all")), { classid: "654015", seqnum: "9005" });
+  const outside = path.join(tmp, `outside${++n}`);
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, "secret.txt"), "outside\n");
+  put(target, "main.ts", "export {};\n");
+  if (
+    !trySymlink(outside, path.join(target.draftPath, "linkdir")) ||
+    !trySymlink(path.join(outside, "secret.txt"), path.join(target.draftPath, "linkfile"))
+  ) {
+    return;
+  }
+  const warnings = target.ctx.prompt.warnings;
+  await pushDraft(target, { ...PUSH, adoptUnbound: false });
+  assert.throws(() => remoteFile("linkfile", "654015___9005"));
+  assert.throws(() => remoteFile("linkdir/secret.txt", "654015___9005"));
+  assert.ok(warnings.some((w) => /symbolic link/.test(w) && w.includes("linkfile")));
+
+  // A pull whose incoming file would be written through a link is refused, and nothing lands outside.
+  stub.addRepo("654015___9006");
+  const pulled = targetFor(recordingPrompt(), { classid: "654015", seqnum: "9006" });
+  await pullDraft(pulled);
+  await platformEdit({ "evil/x.txt": "pwned\n" }, "654015___9006");
+  if (!trySymlink(outside, path.join(pulled.draftPath, "evil"))) {
+    return;
+  }
+  await rejects(pullDraft(pulled), (e) => assert.strictEqual(e.name, "GitSymlinkError"));
+  assert.ok(!fs.existsSync(path.join(outside, "x.txt")));
+});
+
+test("5. a pull refuses to discard index-only changes, and keeps an ignored local file the platform started tracking", async () => {
+  stub.addRepo("654015___9007");
+  const target = targetFor(recordingPrompt(), { classid: "654015", seqnum: "9007" });
+  await pullDraft(target);
+  put(target, "main.ts", "export const staged = 1;\n");
+  stub.git(target.draftPath, "add", "main.ts");
+  put(target, "main.ts", "export const edited = 2;\n");
+  await platformEdit({ "other.ts": "o\n" }, "654015___9007");
+  await rejects(pullDraft(target), (e) => assert.ok(e instanceof GitStagedChangesError && e.paths.includes("main.ts")));
+  assert.strictEqual(read(target, "main.ts"), "export const edited = 2;\n", "nothing was changed");
+  assert.ok(!fs.existsSync(path.join(target.draftPath, "other.ts")));
+  stub.git(target.draftPath, "reset", "-q");
+
+  fs.appendFileSync(path.join(target.draftPath, ".git", "info", "exclude"), "local.txt\n");
+  put(target, "local.txt", "mine\n");
+  await platformEdit({ "local.txt": "theirs\n" }, "654015___9007");
+  const outcome = await pullDraft(target);
+  assert.ok(outcome.keptLocalPaths.includes(path.join(target.draftPath, "local.txt")));
+  assert.strictEqual(read(target, "local.txt"), "mine\n");
+  assert.strictEqual(read(target, "other.ts"), "o\n", "the rest of the platform's changes still arrived");
+});
+
+test("6. a file the platform deleted is not resurrected by a push without the confirmation", async () => {
+  stub.addRepo("654015___9008", { files: { "main.ts": "a\n", "old.ts": "b\n" } });
+  const prompt = recordingPrompt(firstOption);
+  const target = targetFor(prompt, { classid: "654015", seqnum: "9008" });
+  await pullDraft(target);
+  await platformEdit({ "old.ts": null }, "654015___9008", "Delete old");
+  put(target, "main.ts", "export const v = 'mine';\n");
+  await rejects(pushDraft(target, PUSH), (e) => {
+    assert.ok(e instanceof Err.OverwriteDeclinedError);
+    assert.deepStrictEqual(e.paths, ["old.ts"]);
+    assert.ok(/deleted on the platform/.test(e.message));
+  });
+  assertSafeFirst(prompt.calls[0], "Cancel", "Overwrite all");
+  assert.throws(() => remoteFile("old.ts", "654015___9008"), "still deleted on the platform");
+  const yes = targetFor(recordingPrompt(pick("Overwrite all")), { classid: "654015", seqnum: "9008" });
+  await pullDraft(yes);
+  assert.ok(!fs.existsSync(path.join(yes.draftPath, "old.ts")), "a pull deletes it");
+});
+
+test("7. a read-only mirror bound to a WEBDAV script: the push asks for the switch (decline changes nothing), then pushes", async () => {
+  stub.addRepo("654015___9009", { mode: "WEBDAV", files: { "main.ts": "a\n" } });
+  const target = targetFor(recordingPrompt(firstOption), { classid: "654015", seqnum: "9009" });
+  fs.mkdirSync(target.draftPath, { recursive: true });
+  const mirror = new bsjsGit.ScriptRepo({
+    fs,
+    dir: target.draftPath,
+    script: target.script,
+    baseUrl,
+    auth: { kind: "token", token: stub.TOKEN },
+  });
+  await mirror.clone();
+  put(target, "main.ts", "export const v = 'edited the mirror';\n");
+  const before = stub.state.enableCalls;
+  await rejects(pushDraft(target, PUSH), (e) => assert.ok(e instanceof GitSwitchDeclinedError));
+  assert.strictEqual(stub.state.enableCalls, before);
+  const outcome = await pushDraft(target, { ...PUSH, enableGit: true });
+  assert.strictEqual(outcome.switchedToGit, true);
+  assert.strictEqual(remoteFile("main.ts", "654015___9009"), "export const v = 'edited the mirror';");
+});
+
+test("8. deploy uses real git ignore semantics: a negated pattern keeps its file", async () => {
+  stub.addRepo("654015___9010");
+  const target = targetFor(recordingPrompt(pick("Overwrite all")), { classid: "654015", seqnum: "9010" });
+  put(target, ".gitignore", "*.txt\n!keep.txt\n");
+  put(target, "a.txt", "drop\n");
+  put(target, "keep.txt", "keep\n");
+  put(target, "main.ts", "export {};\n");
+  await pushDraft(target, { ...PUSH, adoptUnbound: false });
+  assert.strictEqual(remoteFile("keep.txt", "654015___9010"), "keep");
+  assert.throws(() => remoteFile("a.txt", "654015___9010"));
+});
+
+test("9. a confirmed audit-pull overwrite takes the fetched platform copy, not the local branch's", async () => {
+  stub.addRepo("654015___9011", { files: { "main.ts": "platform\n" } });
+  const target = targetFor(recordingPrompt(), { classid: "654015", seqnum: "9011" });
+  await pullDraft(target);
+  const local = await openRepoFor(target);
+  put(target, "main.ts", "local commit\n");
+  await local.commit("local only", AUTHOR);
+  const outcome = await pullDraft(target, { overwrite: ["main.ts"] });
+  assert.deepStrictEqual(outcome.keptLocalPaths, []);
+  assert.strictEqual(read(target, "main.ts"), "platform\n");
+});
+
+async function openRepoFor(target) {
+  return new bsjsGit.ScriptRepo({
+    fs,
+    dir: target.draftPath,
+    script: target.script,
+    baseUrl,
+    auth: { kind: "token", token: stub.TOKEN },
+    author: AUTHOR,
+  });
+}
+
+test("10. a garbled publish answer after a successful push keeps the partial result: commitSha and publish.error", async () => {
+  stub.addRepo("654015___9012");
+  stub.repos.get("654015___9012").garblePublish = true;
+  const target = targetFor(recordingPrompt(), { classid: "654015", seqnum: "9012" });
+  await pullDraft(target);
+  put(target, "main.ts", "export const v = 'x';\n");
+  const outcome = await pushDraft(target, { ...PUSH, snapshot: true });
+  assert.strictEqual(outcome.commitSha, stub.git(bare("654015___9012"), "rev-parse", "draft"));
+  assert.strictEqual(outcome.publish.publishedSha, null);
+  assert.ok(outcome.publish.error);
+});
+
+test("11. pullCurrent passes enableGit through to pull", async () => {
+  const service = new ScriptService({ logger, prompt: recordingPrompt() });
+  const pulls = [];
+  service.deriveBaseUrl = async () => "https://org.bluestep.net/files/1/";
+  service.pull = async (opts) => {
+    pulls.push(opts);
+    return null;
+  };
+  await service.pullCurrent({ filePath: path.join(tmp, "f"), workspacePath: tmp, enableGit: true });
+  assert.strictEqual(pulls[0].enableGit, true);
+});
+
+test("12. a snapshot push publishes the draft commit it pushed (the publish names it: expectedDraftSha)", async () => {
+  stub.addRepo("654015___9013");
+  const target = targetFor(recordingPrompt(), { classid: "654015", seqnum: "9013" });
+  await pullDraft(target);
+  put(target, "main.ts", "export const v = 'named';\n");
+  const outcome = await pushDraft(target, { ...PUSH, snapshot: true });
+  assert.strictEqual(stub.state.publishInputs.at(-1).expectedDraftSha, outcome.commitSha);
+  assert.strictEqual(outcome.publish.publishedSha, outcome.commitSha);
+});
 (async () => {
   baseUrl = await stub.listen();
   stub.addRepo(REPO);

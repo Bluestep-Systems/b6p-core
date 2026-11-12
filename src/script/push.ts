@@ -261,6 +261,7 @@ export async function executePush(opts: {
   overwrite?: string[];
   author?: GitIdentity;
   adoptUnbound?: boolean;
+  enableGit?: boolean;
 }): Promise<PushResult> {
   const { ctx, targetUrl, rootPath, snapshot, message, overwrite } = opts;
   const { fs, prompt, logger, sessionManager } = ctx;
@@ -344,6 +345,7 @@ export async function executePush(opts: {
       author,
       snapshot,
       adoptUnbound: opts.adoptUnbound ?? true,
+      enableGit: opts.enableGit,
       preConfirmed: overwrite,
       lastSynced: await legacySyncRecords(scriptRoot, draftPath),
     }
