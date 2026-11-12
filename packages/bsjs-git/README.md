@@ -70,7 +70,7 @@ The mode is read with a real query, `remoteObject(id: "<classid>___<seqnum>") { 
 
 ## Publish
 
-The mutation carries `expectedDraftSha`: the local draft head `publish()` verified equals the platform's. If the platform's draft moved since (someone pushed in between), it refuses with reason `draft moved`, thrown as `PublishDraftMovedError` (a `PublishRefusedError`), and publishes nothing. `gitMode()` reads the mode without switching anything.
+The mutation carries `expectedDraftSha`: the local draft head `publish()` verified equals the platform's. If the platform's draft moved since (someone pushed in between), it refuses with reason `DRAFT_MOVED`, thrown as `PublishDraftMovedError` (a `PublishRefusedError`), and publishes nothing. `gitMode()` reads the mode without switching anything.
 
 `publish()` sends the platform's existing publish: a GraphQL `updateScript<Type>` mutation with `takeSnapshot: true`
 on `/gql`, reading `config.publishedSha` from the answer. The local draft must already be pushed. `/gql` enforces

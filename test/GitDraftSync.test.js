@@ -912,6 +912,40 @@ test("deploy returns a result per target: a target failing on identity does not 
   assert.ok(!infos.some((m) => /Deploy complete/.test(m)), "no success while a target failed");
   assert.ok(errors.some((m) => m.includes("1 of 2") && m.includes("https://b.example.test/files/2/")));
 });
+
+test("a declined overwrite after the switch says the switch stands (OverwriteDeclinedError.switchedToGit), and so does a deploy target result", async () => {
+  stub.addRepo("654015___9101", { mode: "WEBDAV", files: { "main.ts": "platform copy\n" } });
+  const target = targetFor(recordingPrompt(firstOption), { classid: "654015", seqnum: "9101" });
+  put(target, "main.ts", "export const v = 'mine';\n");
+  await rejects(pushDraft(target, { ...PUSH, enableGit: true }), (e) => {
+    assert.ok(e instanceof Err.OverwriteDeclinedError);
+    assert.strictEqual(e.switchedToGit, true);
+  });
+  assert.strictEqual(stub.repos.get("654015___9101").mode, "GIT", "the switch is permanent");
+
+  // Already git: declined, and nothing was switched by this push.
+  stub.addRepo("654015___9102", { files: { "main.ts": "platform copy\n" } });
+  const gitTarget = targetFor(recordingPrompt(firstOption), { classid: "654015", seqnum: "9102" });
+  put(gitTarget, "main.ts", "mine\n");
+  await rejects(pushDraft(gitTarget, { ...PUSH, adoptUnbound: false, lastSynced: async () => null }), (e) => {
+    assert.ok(e instanceof Err.OverwriteDeclinedError);
+    assert.strictEqual(e.switchedToGit, false);
+  });
+
+  const config = JSON.stringify({ sourceRootPath: tmp, targets: [{ url: "https://a.example.test/files/1/" }] });
+  const service = new ScriptService({
+    ...fakeCtx(recordingPrompt()),
+    fs: { exists: async () => true, readFile: async () => Buffer.from(config) },
+  });
+  service.push = async () => {
+    const error = new Err.OverwriteDeclinedError("declined", ["main.ts"]);
+    error.switchedToGit = true;
+    throw error;
+  };
+  const results = await service.deploy({ configPath: path.join(tmp, "deploy.json") });
+  assert.strictEqual(results[0].switchedToGit, true);
+  assert.ok(results[0].error instanceof Err.OverwriteDeclinedError);
+});
 (async () => {
   baseUrl = await stub.listen();
   stub.addRepo(REPO);

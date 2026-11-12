@@ -584,7 +584,7 @@ export class ScriptService {
           commitSha: null,
           publishedSha: null,
           publishError: null,
-          switchedToGit: false,
+          switchedToGit: (error as { switchedToGit?: boolean } | null)?.switchedToGit === true,
           error,
         });
       }

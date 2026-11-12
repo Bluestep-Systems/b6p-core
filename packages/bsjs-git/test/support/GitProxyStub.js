@@ -238,6 +238,11 @@ function createStub() {
       const draft = git(entry.bare, "rev-parse", "refs/heads/draft");
       // The contract: a publish names the draft commit the caller verified; a draft that moved since is refused.
       state.publishInputs.push(input);
+      if (input.expectedDraftSha !== undefined && !/^[0-9a-f]{40}$/.test(input.expectedDraftSha)) {
+        // The server treats anything but a full commit id as bad input.
+        res.end(JSON.stringify({ errors: [{ message: "expectedDraftSha must be a full 40-hex commit id", extensions: { code: "BAD_USER_INPUT" } }] }));
+        return;
+      }
       if (input.expectedDraftSha !== undefined && input.expectedDraftSha !== draft) {
         res.end(
           JSON.stringify({
@@ -246,7 +251,7 @@ function createStub() {
                 message: "The draft changed after it was checked",
                 extensions: {
                   code: "PUBLISH_REFUSED",
-                  reason: "draft moved",
+                  reason: "DRAFT_MOVED",
                   publish: { expected: input.expectedDraftSha, actual: draft },
                 },
               },

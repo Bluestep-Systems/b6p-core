@@ -389,6 +389,7 @@ test("publish names the draft it verified (expectedDraftSha); a draft that moved
   const { publishedSha } = await repo.publish();
   assert.strictEqual(publishedSha, sha);
   assert.strictEqual(stub.state.publishInputs.at(-1).expectedDraftSha, sha);
+  assert.match(stub.state.publishInputs.at(-1).expectedDraftSha, /^[0-9a-f]{40}$/, "always the full sha");
 
   await repo.writeFile("q.txt", "q");
   await repo.commit("q");
@@ -410,7 +411,7 @@ test("publish names the draft it verified (expectedDraftSha); a draft that moved
   const masterBefore = stub.git(entry.bare, "rev-parse", "master");
   await rejects(repo.publish(), lib.PublishDraftMovedError, (e) => {
     assert.ok(e instanceof lib.PublishRefusedError);
-    assert.strictEqual(e.reason, "draft moved");
+    assert.strictEqual(e.reason, "DRAFT_MOVED");
   });
   assert.strictEqual(stub.git(entry.bare, "rev-parse", "master"), masterBefore, "nothing was published");
 });

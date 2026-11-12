@@ -252,7 +252,7 @@ export class GitModeError extends BsjsGitError {
  * and asked to publish (`expectedDraftSha`).
  * @lastreviewed null
  */
-export const DRAFT_MOVED_REASON = "draft moved";
+export const DRAFT_MOVED_REASON = "DRAFT_MOVED";
 
 /**
  * The publish was refused because the platform's draft moved after this client verified it (someone pushed in between):

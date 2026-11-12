@@ -58,6 +58,32 @@ export interface DraftTarget {
 export type LastSyncedLookup = (draftRelative: string) => Promise<string | null>;
 
 /**
+ * Whether a push or pull has switched the script to git yet, so an error thrown afterwards can say so.
+ * @lastreviewed null
+ */
+interface SwitchTracker {
+  switched: boolean;
+}
+
+/**
+ * Tells a consumer that the one-way switch to git had already happened when this error was thrown, by setting
+ * `switchedToGit` on it (a field of `OverwriteDeclinedError`, an added property on any other error). The error is
+ * returned for rethrowing.
+ * @lastreviewed null
+ */
+function markSwitched(error: unknown, tracker: SwitchTracker): unknown {
+  if (tracker.switched && typeof error === "object" && error !== null) {
+    Object.defineProperty(error, "switchedToGit", {
+      value: true,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+  }
+  return error;
+}
+
+/**
  * Thrown when the script still publishes over WebDAV and switching it to git (which cannot be undone) was not confirmed.
  * Nothing was switched and nothing local was changed.
  * @lastreviewed null
@@ -554,8 +580,11 @@ export interface DraftPullOptions {
  */
 export async function pullDraft(target: DraftTarget, options: DraftPullOptions = {}): Promise<DraftPullOutcome> {
   const files = new WorkTreeFiles(target.ctx);
+  const tracker: SwitchTracker = { switched: false };
   try {
-    return await pullDraftInner(target, options, files);
+    return await pullDraftInner(target, options, files, tracker);
+  } catch (error) {
+    throw markSwitched(error, tracker);
   } finally {
     files.reportSkipped();
   }
@@ -564,7 +593,8 @@ export async function pullDraft(target: DraftTarget, options: DraftPullOptions =
 async function pullDraftInner(
   target: DraftTarget,
   options: DraftPullOptions,
-  files: WorkTreeFiles
+  files: WorkTreeFiles,
+  tracker: SwitchTracker
 ): Promise<DraftPullOutcome> {
   const { ctx, draftPath } = target;
   const scriptRoot = path.dirname(draftPath);
@@ -577,6 +607,7 @@ async function pullDraftInner(
     if (!(await repo.gitMode()).gitPublishing) {
       await requireSwitchConsent(ctx, options.enableGit);
       switchedToGit = (await repo.ensureGitModeResult()).switched;
+      tracker.switched = switchedToGit;
     }
     if (!(await files.hasEntries(draftPath))) {
       await files.mkdirp(draftPath);
@@ -954,8 +985,11 @@ export async function confirmOverwrittenFiles(opts: {
  */
 export async function pushDraft(target: DraftTarget, options: DraftPushOptions): Promise<DraftPushOutcome> {
   const files = new WorkTreeFiles(target.ctx);
+  const tracker: SwitchTracker = { switched: false };
   try {
-    return await pushDraftInner(target, options, files);
+    return await pushDraftInner(target, options, files, tracker);
+  } catch (error) {
+    throw markSwitched(error, tracker);
   } finally {
     files.reportSkipped();
   }
@@ -964,7 +998,8 @@ export async function pushDraft(target: DraftTarget, options: DraftPushOptions):
 async function pushDraftInner(
   target: DraftTarget,
   options: DraftPushOptions,
-  files: WorkTreeFiles
+  files: WorkTreeFiles,
+  tracker: SwitchTracker
 ): Promise<DraftPushOutcome> {
   const { ctx, draftPath } = target;
   const scriptRoot = path.dirname(draftPath);
@@ -995,6 +1030,7 @@ async function pushDraftInner(
   if (!inGitMode) {
     await requireSwitchConsent(ctx, options.enableGit);
     switchedToGit = (await probe.ensureGitModeResult()).switched;
+    tracker.switched = switchedToGit;
   }
 
   let repo = probe;
