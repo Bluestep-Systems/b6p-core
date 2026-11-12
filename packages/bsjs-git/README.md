@@ -15,11 +15,12 @@ const repo = new ScriptRepo({
   dir: "/work/654015___1001",
   script: parseCompoundId("654015___1001"),
   baseUrl: "https://org.bluestep.net/",
-  token,                               // the b6pt_ bearer token
+  auth: { kind: "token", token },      // a b6pt_ token; or { kind: "session" } in a signed-in browser
   author: { name: "Ada", email: "ada@example.com" }, // always the caller's; there is no default identity
 });
 
-await repo.clone();                    // every branch; draft checked out
+await repo.ensureGitMode();            // WEBDAV script -> git (one-way); no-op when already git. Returns the clone URL
+await repo.clone();                    // every branch; draft checked out (or clone({ ensureGit: true }) for both)
 await repo.writeFile("main.ts", "export {};\n");
 await repo.commit("Edit main");        // stages every working-tree change
 await repo.push();                     // the draft branch
@@ -30,7 +31,7 @@ await repo.listTree(publishedSha);                       // files at a revision
 await repo.readText(publishedSha, "main.ts");
 await repo.diff(a, b);                          // FileChange[] between two revisions
 
-const legacy = new LegacyHistoryClient({ baseUrl, token });
+const legacy = new LegacyHistoryClient({ baseUrl, auth: { kind: "token", token } });
 const entries = await legacy.list("654015___1001", { limit: 50 });   // newest first
 const tree = await legacy.get("654015___1001", entries[0].id);       // saveState v1 or v0, one tree type
 ```
@@ -44,6 +45,20 @@ publishes over WebDAV, so its repo is read-only), `GitCodeLockedError`, `GitPerm
 `GitRepoNotFoundError` (404: no repo, not visible, or git integration off), `GitPushRejectedError` (the forge refused
 the ref; `protectedBranch` for master), `GitNotFastForwardError`, `PublishRefusedError` (`reason` is the server's
 `PUBLISH_REFUSED` reason), `GitUnpushedChangesError`, `GitIdentityError`, `GitTransportError`.
+
+## Auth modes
+
+`auth: { kind: "token", token }` sends the `b6pt_` token (Basic to the git proxy, Bearer to `/gql` and REST). `auth:
+{ kind: "session" }` is for a browser already signed in: no `Authorization` header, `credentials: "include"`, and the
+`B6P-CSRF-TOKEN` from `/csrf-token` on every request (git smart-HTTP, `/gql`, legacy history), refreshed tokens adopted
+and a refused one retried once. Session mode relies on the platform's git proxy accepting the session (web item W6).
+
+## Switching a script to git
+
+`ensureGitMode()` reads the script's `gitPublishing` / `gitCloneUrl` and, only if it is not in GIT mode, runs
+`enableGitPublishing: true` on the script's update mutation (synchronous, creates and seeds the repo, **one-way**).
+`clone({ ensureGit: true })` does it first; a plain `clone()` never flips a script. The mode is read through a no-op
+update of the script (`{ id gitPublishing gitCloneUrl }`), since scripts have no stable read query to rely on.
 
 ## Publish
 

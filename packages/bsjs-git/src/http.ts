@@ -95,22 +95,31 @@ async function* stream(body: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Ar
 }
 
 /**
- * The isomorphic-git transport for the platform's git proxy: `fetch` underneath, the bearer token sent as Basic on
- * every request (no per-call `onAuth` round trip), and every non-200 answer thrown as a typed {@link BsjsGitError}
- * rather than isomorphic-git's generic `HttpError`.
+ * A `fetch` that sends the token as Basic (the form the git proxy takes), for {@link createProxyHttp}.
  * @lastreviewed null
  */
-export function createProxyHttp(token: string, fetchImpl?: FetchLike): HttpClient {
+export function basicTokenFetch(token: string, fetchImpl?: FetchLike): FetchLike {
   const doFetch: FetchLike = fetchImpl ?? ((input, init) => fetch(input, init));
   const authorization = gitAuthHeader(token);
+  return (url, init) =>
+    doFetch(url, { ...init, headers: { ...(init?.headers as Record<string, string>), Authorization: authorization } });
+}
+
+/**
+ * The isomorphic-git transport for the platform's git proxy: `send` underneath (a token's Basic header, or a session's
+ * CSRF-carrying fetch), and every non-200 answer thrown as a typed {@link BsjsGitError} rather than isomorphic-git's
+ * generic `HttpError`.
+ * @lastreviewed null
+ */
+export function createProxyHttp(send: FetchLike): HttpClient {
   return {
     async request(req: GitHttpRequest): Promise<GitHttpResponse> {
       const body = await collect(req.body);
       let response: Response;
       try {
-        response = await doFetch(req.url, {
+        response = await send(req.url, {
           method: req.method ?? "GET",
-          headers: { ...req.headers, Authorization: authorization },
+          headers: { ...req.headers },
           body: body as BodyInit | undefined,
         });
       } catch (cause) {

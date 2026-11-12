@@ -19,6 +19,7 @@ export type BsjsGitErrorCode =
   | "UNPUSHED_CHANGES"
   | "PUBLISH_REFUSED"
   | "PUBLISH_FAILED"
+  | "GIT_MODE_FAILED"
   | "UNKNOWN_SCRIPT_TYPE"
   | "LEGACY_HISTORY"
   | "BAD_SAVE_STATE";
@@ -233,5 +234,15 @@ export class LegacyHistoryError extends BsjsGitError {
 export class BadSaveStateError extends BsjsGitError {
   constructor(message: string) {
     super("BAD_SAVE_STATE", message);
+  }
+}
+
+/**
+ * Switching the script to git publishing failed, or left it without a clone URL.
+ * @lastreviewed null
+ */
+export class GitModeError extends BsjsGitError {
+  constructor(message: string, cause?: unknown) {
+    super("GIT_MODE_FAILED", `Could not switch the script to git publishing: ${message}`, { cause });
   }
 }

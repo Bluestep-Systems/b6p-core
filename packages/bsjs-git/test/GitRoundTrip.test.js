@@ -36,10 +36,10 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bsjs-git-work-"));
 let baseUrl;
 let n = 0;
 
-function repoFor(script, { token = stub.TOKEN, author = AUTHOR } = {}) {
+function repoFor(script, { token = stub.TOKEN, author = AUTHOR, auth, fetch } = {}) {
   const dir = path.join(tmp, `wt${++n}`);
   fs.mkdirSync(dir);
-  return new lib.ScriptRepo({ fs, dir, script, baseUrl, token, author });
+  return new lib.ScriptRepo({ fs, dir, script, baseUrl, auth: auth ?? { kind: "token", token }, author, fetch });
 }
 const key = (id) => lib.parseCompoundId(id);
 
@@ -221,7 +221,7 @@ test("a transport failure is typed", async () => {
     dir,
     script: key(REPO),
     baseUrl: "http://127.0.0.1:1/",
-    token: stub.TOKEN,
+    auth: { kind: "token", token: stub.TOKEN },
     author: AUTHOR,
   });
   await rejects(repo.clone(), lib.GitTransportError);
@@ -300,6 +300,60 @@ test("log pages across a merge without losing the other parent", async () => {
     ["left", "root"],
     "page 2 keeps the merge's left parent"
   );
+});
+
+test("ensureGitMode switches a WEBDAV script once and leaves a GIT script alone", async () => {
+  stub.addRepo("654015___7007", { mode: "WEBDAV" });
+  const repo = repoFor(key("654015___7007"));
+  const enableBefore = stub.state.enableCalls;
+  const url = await repo.ensureGitMode();
+  assert.strictEqual(url, "https://stub.example.test/git/654015___7007");
+  assert.strictEqual(stub.state.enableCalls - enableBefore, 1, "the WEBDAV script was switched");
+  assert.strictEqual(stub.repos.get("654015___7007").mode, "GIT");
+  assert.strictEqual(await repo.ensureGitMode(), url);
+  assert.strictEqual(stub.state.enableCalls - enableBefore, 1, "a GIT script gets no enable mutation");
+  const already = stub.state.enableCalls;
+  await repoFor(key(REPO)).ensureGitMode();
+  assert.strictEqual(stub.state.enableCalls, already);
+});
+
+test("clone({ensureGit}) switches a WEBDAV script so its push works; a plain clone does not", async () => {
+  stub.addRepo("654015___8008", { mode: "WEBDAV" });
+  await repoFor(key("654015___8008")).clone();
+  assert.strictEqual(stub.repos.get("654015___8008").mode, "WEBDAV", "a plain clone leaves the mode alone");
+  const repo = repoFor(key("654015___8008"));
+  await repo.clone({ ensureGit: true });
+  assert.strictEqual(stub.repos.get("654015___8008").mode, "GIT");
+  await repo.writeFile("x.txt", "x");
+  await repo.commit("x");
+  await repo.push();
+});
+
+test("session mode: clone, commit, push and publish with a cookie and the CSRF header, no Authorization", async () => {
+  // A browser's jar sends the session cookie by itself; this fetch plays that part and records any Authorization.
+  const seen = [];
+  const browserFetch = (url, init) => {
+    const headers = { ...init.headers, Cookie: "JSESSIONID=stub-session" };
+    seen.push(headers.Authorization);
+    return fetch(url, { ...init, headers });
+  };
+  const repo = repoFor(key(REPO), { auth: { kind: "session" }, fetch: browserFetch });
+  const before = stub.state.sessionGitRequests;
+  await repo.clone();
+  assert.ok(stub.state.sessionGitRequests - before >= 2, "the clone's git requests went through the session lane");
+  await repo.writeFile("session.txt", "s");
+  const sha = await repo.commit("from a session");
+  await repo.push();
+  assert.strictEqual(stub.git(stub.repos.get(REPO).bare, "rev-parse", "refs/heads/draft"), sha);
+  assert.strictEqual((await repo.publish()).publishedSha, sha);
+  assert.ok(
+    seen.every((a) => a === undefined),
+    "no Authorization header was sent in session mode"
+  );
+});
+
+test("session mode without the session is refused", async () => {
+  await rejects(repoFor(key(REPO), { auth: { kind: "session" } }).clone(), Error);
 });
 
 (async () => {

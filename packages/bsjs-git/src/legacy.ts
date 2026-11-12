@@ -5,6 +5,7 @@ import {
   GitRepoNotFoundError,
   LegacyHistoryError,
 } from "./errors";
+import { CsrfFetch, type ScriptAuth } from "./csrf";
 import type { FetchLike } from "./http";
 
 /**
@@ -177,10 +178,10 @@ export interface LegacyHistoryClientOptions {
    */
   readonly baseUrl: string | URL;
   /**
-   * The b6pt_ bearer token.
+   * Who is calling: a `b6pt_` token (sent as Bearer), or the signed-in browser session (cookie plus CSRF header).
    * @lastreviewed null
    */
-  readonly token: string;
+  readonly auth: ScriptAuth;
   readonly fetch?: FetchLike;
 }
 
@@ -192,13 +193,22 @@ export interface LegacyHistoryClientOptions {
  */
 export class LegacyHistoryClient {
   readonly #origin: string;
-  readonly #token: string;
-  readonly #fetch: FetchLike;
+  readonly #send: FetchLike;
 
   constructor(options: LegacyHistoryClientOptions) {
     this.#origin = `${new URL(String(options.baseUrl)).origin}/`;
-    this.#token = options.token;
-    this.#fetch = options.fetch ?? ((input, init) => fetch(input, init));
+    const doFetch: FetchLike = options.fetch ?? ((input, init) => fetch(input, init));
+    const { auth } = options;
+    if (auth.kind === "token") {
+      this.#send = (url, init) =>
+        doFetch(url, {
+          ...init,
+          headers: { ...(init?.headers as Record<string, string>), Authorization: `Bearer ${auth.token}` },
+        });
+    } else {
+      const csrf = new CsrfFetch(doFetch, this.#origin, auth);
+      this.#send = (url, init) => csrf.request(url, init ?? {});
+    }
   }
 
   /**
@@ -248,9 +258,7 @@ export class LegacyHistoryClient {
   async #getJson(url: string): Promise<Json> {
     let response: Response;
     try {
-      response = await this.#fetch(url, {
-        headers: { Authorization: `Bearer ${this.#token}`, Accept: "application/json" },
-      });
+      response = await this.#send(url, { headers: { Accept: "application/json" } });
     } catch (cause) {
       throw new LegacyHistoryError(`Could not reach the platform: ${cause instanceof Error ? cause.message : cause}`);
     }

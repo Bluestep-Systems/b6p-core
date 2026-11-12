@@ -32,6 +32,7 @@ const ENTRIES = [
   { id: "e1", author: "Al", timestamp: "2026-01-01T00:00:00.000Z", message: "first" },
 ];
 const requests = [];
+const sessionRequests = [];
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
@@ -40,7 +41,17 @@ const server = http.createServer((req, res) => {
     res.writeHead(status, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
   };
-  if (req.headers.authorization !== `Bearer ${TOKEN}`) {
+  const session = (req.headers.cookie || "").includes("JSESSIONID=legacy-session");
+  if (url.pathname === "/csrf-token") {
+    res.writeHead(session ? 200 : 401);
+    return res.end("csrf-legacy");
+  }
+  if (session) {
+    sessionRequests.push(req.headers["b6p-csrf-token"]);
+    if (req.headers.authorization || req.headers["b6p-csrf-token"] !== "csrf-legacy") {
+      return send(403, {});
+    }
+  } else if (req.headers.authorization !== `Bearer ${TOKEN}`) {
     return send(401, {});
   }
   const base = `/api/v1/legacy-script-history/${SCRIPT}`;
@@ -99,7 +110,7 @@ test("parseSaveState refuses what is neither version", () => {
 });
 
 test("list pages newest first and sends the token, limit and before", async () => {
-  const client = new lib.LegacyHistoryClient({ baseUrl: base, token: TOKEN });
+  const client = new lib.LegacyHistoryClient({ baseUrl: base, auth: { kind: "token", token: TOKEN } });
   const first = await client.list(SCRIPT, { limit: 2 });
   assert.deepStrictEqual(
     first.map((e) => e.id),
@@ -115,7 +126,7 @@ test("list pages newest first and sends the token, limit and before", async () =
 });
 
 test("get parses the stored tree of either version", async () => {
-  const client = new lib.LegacyHistoryClient({ baseUrl: base, token: TOKEN });
+  const client = new lib.LegacyHistoryClient({ baseUrl: base, auth: { kind: "token", token: TOKEN } });
   assert.strictEqual((await client.get(SCRIPT, "e3")).version, 1);
   assert.strictEqual((await client.get(SCRIPT, "e1")).version, 0);
   await assert.rejects(client.get(SCRIPT, "e2"), lib.BadSaveStateError);
@@ -123,13 +134,25 @@ test("get parses the stored tree of either version", async () => {
 
 test("refusals are typed", async () => {
   await assert.rejects(
-    new lib.LegacyHistoryClient({ baseUrl: base, token: "b6pt_bad" }).list(SCRIPT),
+    new lib.LegacyHistoryClient({ baseUrl: base, auth: { kind: "token", token: "b6pt_bad" } }).list(SCRIPT),
     lib.GitAuthError
   );
-  const client = new lib.LegacyHistoryClient({ baseUrl: base, token: TOKEN });
+  const client = new lib.LegacyHistoryClient({ baseUrl: base, auth: { kind: "token", token: TOKEN } });
   await assert.rejects(client.list("654015___403"), lib.GitPermissionError);
   await assert.rejects(client.list("654015___404"), lib.GitRepoNotFoundError);
   await assert.rejects(client.get(SCRIPT, "missing"), lib.GitRepoNotFoundError);
+});
+
+test("session mode sends the cookie and the CSRF header and no Authorization", async () => {
+  const browserFetch = (url, init) =>
+    fetch(url, { ...init, headers: { ...init.headers, Cookie: "JSESSIONID=legacy-session" } });
+  const client = new lib.LegacyHistoryClient({ baseUrl: base, auth: { kind: "session" }, fetch: browserFetch });
+  assert.deepStrictEqual(
+    (await client.list(SCRIPT, { limit: 1 })).map((e) => e.id),
+    ["e3"]
+  );
+  assert.strictEqual((await client.get(SCRIPT, "e3")).version, 1);
+  assert.deepStrictEqual(sessionRequests, ["csrf-legacy", "csrf-legacy"]);
 });
 
 let base;

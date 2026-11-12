@@ -37,5 +37,6 @@ export {
   type PublishMutation,
   type ScriptRef,
 } from "./scriptKey";
-export { createProxyHttp, gitAuthHeader, refusalFor, type FetchLike } from "./http";
+export { CsrfFetch, type ScriptAuth } from "./csrf";
+export { basicTokenFetch, createProxyHttp, gitAuthHeader, refusalFor, type FetchLike } from "./http";
 export * from "./errors";

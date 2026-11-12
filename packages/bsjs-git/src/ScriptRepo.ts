@@ -3,14 +3,15 @@ import git, { type HttpClient, type PromiseFsClient, type PushResult } from "iso
 import {
   BsjsGitError,
   GitIdentityError,
+  GitModeError,
   GitNotFastForwardError,
   GitPushRejectedError,
   GitUnpushedChangesError,
   PublishFailedError,
   PublishRefusedError,
 } from "./errors";
-import { CsrfFetch } from "./csrf";
-import { createProxyHttp, type FetchLike } from "./http";
+import { CsrfFetch, type ScriptAuth } from "./csrf";
+import { basicTokenFetch, createProxyHttp, type FetchLike } from "./http";
 import { compoundId, publishMutationFor, type ScriptRef } from "./scriptKey";
 
 /**
@@ -63,10 +64,10 @@ export interface ScriptRepoOptions {
    */
   readonly baseUrl: string | URL;
   /**
-   * The b6pt_ bearer token.
+   * Who is calling: a `b6pt_` token, or the signed-in browser session (see {@link ScriptAuth}).
    * @lastreviewed null
    */
-  readonly token: string;
+  readonly auth: ScriptAuth;
   /**
    * The default commit author. Optional here; a commit without one passed to {@link ScriptRepo.commit} throws.
    * @lastreviewed null
@@ -245,16 +246,27 @@ export class ScriptRepo {
     this.url = `${this.#origin}git/${compoundId(options.script)}`;
     this.#author = options.author;
     this.#fetch = options.fetch ?? ((input, init) => fetch(input, init));
-    this.#csrf = new CsrfFetch(this.#fetch, this.#origin, options.token);
-    this.#http = createProxyHttp(options.token, this.#fetch);
+    this.#csrf = new CsrfFetch(this.#fetch, this.#origin, options.auth);
+    this.#http = createProxyHttp(
+      options.auth.kind === "token"
+        ? basicTokenFetch(options.auth.token, this.#fetch)
+        : (url, init) => this.#csrf.request(url, init ?? {})
+    );
   }
 
   /**
    * Clones every branch of the script's repo into {@link dir} and checks out the draft branch.
+   *
+   * @param options `ensureGit: true` first runs {@link ensureGitMode}, so a script still publishing over WebDAV is
+   *        switched to git (one-way, irreversible on the platform) and gets its repo. Off by default: a read-only
+   *        clone must not flip a script.
    * @throws {GitRepoNotFoundError} when the script has no repo or is not visible.
    * @lastreviewed null
    */
-  async clone(): Promise<void> {
+  async clone(options: { readonly ensureGit?: boolean } = {}): Promise<void> {
+    if (options.ensureGit) {
+      await this.ensureGitMode();
+    }
     await git.clone({
       fs: this.#fs,
       http: this.#http,
@@ -436,6 +448,63 @@ export class ScriptRepo {
   }
 
   /**
+   * Makes sure the script publishes over git. Reads the script's `gitPublishing` and `gitCloneUrl` and, only when it is
+   * not already in GIT mode, runs the platform's own switch (`enableGitPublishing: true` on the script's update
+   * mutation: synchronous, creates the repo and seeds `master` and `draft` from the WebDAV copy, and **one-way**).
+   * Uses the same CSRF-carrying path as {@link publish}.
+   *
+   * @returns the script's clone URL as the platform reports it.
+   * @throws {GitModeError} when the platform refuses or does not answer with a clone URL.
+   * @lastreviewed null
+   */
+  async ensureGitMode(): Promise<string> {
+    const { mutationName, inputType } = publishMutationFor(this.script);
+    const query = `mutation GitMode($inputs: [${inputType}!]!) { ${mutationName}(inputs: $inputs) { id gitPublishing gitCloneUrl } }`;
+    const call = async (extra: Record<string, unknown>): Promise<GraphQlScript | undefined> => {
+      const body = await this.#gql(
+        query,
+        { inputs: [{ topId: compoundId(this.script), ...extra }] },
+        (m, c) => new GitModeError(m, c)
+      );
+      const node = body.data?.[mutationName];
+      return Array.isArray(node) ? node[0] : node;
+    };
+    let item = await call({});
+    if (!item?.gitPublishing) {
+      item = await call({ enableGitPublishing: true });
+    }
+    if (!item?.gitPublishing || !item.gitCloneUrl) {
+      throw new GitModeError("the script is not in git mode after enabling it, or the platform gave no clone URL");
+    }
+    return item.gitCloneUrl;
+  }
+
+  async #gql(
+    query: string,
+    variables: unknown,
+    fail: (message: string, cause?: unknown) => BsjsGitError
+  ): Promise<GraphQlBody> {
+    let response: Response;
+    try {
+      response = await this.#csrf.postJson("gql", JSON.stringify({ query, variables }));
+    } catch (cause) {
+      throw fail(cause instanceof Error ? cause.message : String(cause), cause);
+    }
+    if (!response.ok) {
+      throw fail(`HTTP ${response.status}`);
+    }
+    const body = (await response.json()) as GraphQlBody;
+    if (body.errors?.length) {
+      const first = body.errors[0];
+      if (first.extensions?.code === "PUBLISH_REFUSED") {
+        throw new PublishRefusedError(first.extensions.reason, first.extensions.publish, first.message);
+      }
+      throw fail(body.errors.map((e) => e.message).join("; "));
+    }
+    return body;
+  }
+
+  /**
    * Publishes the draft: asks the platform to promote the pushed draft to the published branch (the same publish
    * the platform runs for any script, a `takeSnapshot` update) and returns the commit it published.
    *
@@ -454,29 +523,11 @@ export class ScriptRepo {
     }
     const { mutationName, inputType } = publishMutationFor(this.script);
     const query = `mutation Publish($inputs: [${inputType}!]!) { ${mutationName}(inputs: $inputs) { id config { publishedSha } } }`;
-    let response: Response;
-    try {
-      response = await this.#csrf.postJson(
-        "gql",
-        JSON.stringify({
-          query,
-          variables: { inputs: [{ topId: compoundId(this.script), takeSnapshot: true }] },
-        })
-      );
-    } catch (cause) {
-      throw new PublishFailedError(cause instanceof Error ? cause.message : String(cause), { cause });
-    }
-    if (!response.ok) {
-      throw new PublishFailedError(`HTTP ${response.status}`);
-    }
-    const body = (await response.json()) as GraphQlBody;
-    if (body.errors?.length) {
-      const first = body.errors[0];
-      if (first.extensions?.code === "PUBLISH_REFUSED") {
-        throw new PublishRefusedError(first.extensions.reason, first.extensions.publish, first.message);
-      }
-      throw new PublishFailedError(body.errors.map((e) => e.message).join("; "));
-    }
+    const body = await this.#gql(
+      query,
+      { inputs: [{ topId: compoundId(this.script), takeSnapshot: true }] },
+      (m, c) => new PublishFailedError(m, { cause: c })
+    );
     const node = body.data?.[mutationName];
     const item = Array.isArray(node) ? node[0] : node;
     const sha = item?.config?.publishedSha;
@@ -620,6 +671,8 @@ interface GraphQlBody {
 
 interface GraphQlScript {
   config?: { publishedSha?: string };
+  gitPublishing?: boolean;
+  gitCloneUrl?: string | null;
 }
 
 function isGitError(error: unknown, ...codes: string[]): boolean {

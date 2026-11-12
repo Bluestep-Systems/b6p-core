@@ -127,14 +127,26 @@ function createStub() {
     });
   }
 
-  const state = { csrfRequests: 0, gqlRequests: 0, rejectNextCsrf: false, failGitAfterPublish: false };
+  const state = {
+    csrfRequests: 0,
+    gqlRequests: 0,
+    enableCalls: 0,
+    modeQueries: 0,
+    sessionGitRequests: 0,
+    sessionAuthorizationSeen: false,
+    rejectNextCsrf: false,
+    failGitAfterPublish: false,
+  };
+
+  /** A signed-in browser session: the cookie alone, no Authorization header. */
+  const hasSessionCookie = (req) => (req.headers.cookie || "").includes(SESSION);
 
   function gql(req, res) {
     const chunks = [];
     req.on("data", (c) => chunks.push(c));
     req.on("end", () => {
       res.setHeader("Content-Type", "application/json");
-      if (!authorized(req.headers.authorization, "Bearer")) {
+      if (!authorized(req.headers.authorization, "Bearer") && !hasSessionCookie(req)) {
         res.writeHead(401);
         res.end("{}");
         return;
@@ -153,8 +165,31 @@ function createStub() {
       const mutation = /\{\s*(\w+)\(inputs/.exec(query)[1];
       const input = variables.inputs[0];
       const entry = repos.get(input.topId);
-      if (!entry || !input.takeSnapshot) {
+      if (!entry) {
         res.end(JSON.stringify({ errors: [{ message: "no such script" }] }));
+        return;
+      }
+      if (!input.takeSnapshot) {
+        if (input.enableGitPublishing) {
+          state.enableCalls++;
+          entry.mode = "GIT";
+        } else {
+          state.modeQueries++;
+        }
+        const gitMode = entry.mode === "GIT";
+        res.end(
+          JSON.stringify({
+            data: {
+              [mutation]: [
+                {
+                  id: input.topId,
+                  gitPublishing: gitMode,
+                  gitCloneUrl: gitMode ? `https://stub.example.test/git/${input.topId}` : null,
+                },
+              ],
+            },
+          })
+        );
         return;
       }
       if (entry.refusePublish) {
@@ -189,7 +224,7 @@ function createStub() {
     }
     if (url.pathname === "/csrf-token") {
       state.csrfRequests++;
-      if (!authorized(req.headers.authorization, "Bearer")) {
+      if (!authorized(req.headers.authorization, "Bearer") && !hasSessionCookie(req)) {
         res.writeHead(401);
         res.end();
         return;
@@ -204,7 +239,15 @@ function createStub() {
       res.end();
       return;
     }
-    if (!authorized(req.headers.authorization, "Basic")) {
+    if (!authorized(req.headers.authorization, "Basic") && hasSessionCookie(req) && !req.headers.authorization) {
+      // The session lane: the cookie plus the CSRF header on every git request, none of the token machinery.
+      state.sessionGitRequests++;
+      if (req.headers["b6p-csrf-token"] !== CSRF) {
+        res.writeHead(403, { "Content-Type": "text/plain" });
+        res.end("CSRF token missing or wrong");
+        return;
+      }
+    } else if (!authorized(req.headers.authorization, "Basic")) {
       res.writeHead(401, { "WWW-Authenticate": 'Basic realm="BlueStep Git"', "Content-Type": "text/plain" });
       res.end("Authentication required");
       return;
