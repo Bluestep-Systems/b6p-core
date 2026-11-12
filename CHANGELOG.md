@@ -5,6 +5,82 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **A push first checks the org's server version** (`GET /appinfo/version`) and picks a route
+  (`PushResult.route`: `mode` `server` | `draft-only`, `reason`, `serverVersion`, `required`). One
+  floor, `MIN_SERVER_VERSION`, is `26.11.09.00`: the first web release containing web #1961 and
+  #1957. A development build (`dev`, or `latest` from web's fast local build) or a version at or
+  above the floor takes the server
+  flow below. Anything else (below the floor, a non-200, a failed request, a non-release string, or
+  the floor unset) takes the draft-only route: the sources are PUT to `draft/` with the usual
+  platform-only cleanup, and no `compileDraft` or snapshot call is made, because an older server
+  lacks them. A plain push is never refused. A snapshot push on the draft-only route saves the draft
+  and takes no snapshot: the server does not support server-side compile, and
+  `PushResult.snapshotRefused` (`reason` `too-old` | `unknown` | `floor-unset`, `serverVersion`,
+  `required`) says so. That is a result, not an error, because the sources were saved. New exports:
+  `resolvePushRoute`, `snapshotRefusalFor`, `meetsMinimumVersion`, `parseReleaseTag`,
+  `MIN_SERVER_VERSION` and the types `PushRoute`, `SnapshotRefusal` (CU-86bczwj62).
+- **Compile and publish go through the platform.** After the sources are PUT to `draft/`, a push
+  calls the GraphQL `compileDraft` input and returns its outcome as `PushResult.compile`
+  (`DraftCompileOutcome`: `status`, error and warning counts, files written and deleted,
+  `diagnostics` + `diagnosticsOmitted`, and the `gate` block). `BUSY` is retried 3 times 5 s apart,
+  `INPUT_INCOMPLETE` 3 times 2 s apart, `COMPILER_UNAVAILABLE` and a network failure once. A tripped
+  gate (`GATE_TRIPPED`) or a withheld emit (`EMIT_WITHHELD`) is a result with the sources saved, not
+  an exception. If a PUT fails, uploading stops, `compileDraft` is still sent when any file went up,
+  and the PUT error is thrown. New exports: `compileDraft`, `takeSnapshot`, `uploadAndCompile`,
+  `compileAllowsPublish`, `parseDraftCompileOutcome`, `parsePublishOutcome`, `COMPILE_RETRY`,
+  `KNOWN_DRAFT_COMPILE_STATUSES`, `KNOWN_PUBLISH_REFUSAL_REASONS`, `PUBLISHABLE_COMPILE_STATUSES` and
+  the types `DraftCompileOutcome`, `DraftCompileStatus`, `PublishOutcome`, `PublishRefusalReason`,
+  `GateReport`, `GateProblem`, `CompileDiagnostic`, `RetryPolicy`, `ServerCompileOptions`,
+  `ServerCompileTarget`, `PushResult`, `OverwriteCandidate` (CU-86bczwj62).
+- **`Err.PublishRefusedError` (`reason`, `rawReason`, `publish`) and `Err.ServerCompileRequestError`
+  (`phase`, `messages`, `networkFailure`).** The first is thrown when the platform refuses a
+  `takeSnapshot` (`PUBLISH_REFUSED`; `BUSY` and `INPUT_INCOMPLETE` are retried first); core reads
+  the error's `extensions.reason` / `extensions.publish`, never its message. The second is thrown
+  for any other failed compile or publish request (a GraphQL error such as not being allowed to edit
+  the script, or a request that failed twice).
+
+### Changed
+
+- **BREAKING: a snapshot push now goes through the server.** `push --snapshot` no longer PUTs files
+  into `snapshot/`: it uploads to `draft/`, calls `compileDraft`, and, when the compile status is
+  `COMPILED`, `NOTHING_TO_COMPILE` or `SKIPPED_EXTERNALLY_BUILT`, calls the `takeSnapshot` mutation,
+  which recompiles against sibling snapshots and refuses on a gate trip, a withheld emit, a missing
+  entrypoint output and similar (`Err.PublishRefusedError`). Any other compile status publishes
+  nothing and is returned in `PushResult.compile` (and `PushResult.publish` is `null`). The history
+  entry is recorded only after a publish. Removed with it: `verifyLiveSnapshot`, `LiveSnapshotCheck`,
+  `PushResult.liveVerified` and `liveMismatches` (the platform writes `snapshot/` itself, so there is
+  no copy of ours to read back), `ScriptFile.snapshotUrl`, `ScriptFile.readBackStatus`, the
+  `isSnapshot` option of `ScriptFile.upload`, `getReasonToNotPush`, `collectOverwriteCandidates`
+  and `ScriptRoot.getPushableNodes` (the skip rule now looks at `draft/` only), and the two floor
+  constants `MIN_SERVER_VERSION_PUSH` / `MIN_SERVER_VERSION_SNAPSHOT` (replaced by one
+  `MIN_SERVER_VERSION`). `PushResult` gains `compile`, `publish`, `route` and `snapshotRefused` (ClickUp 86bczwj62).
+- **BREAKING: a snapshot push to a server without server-side compile saves the draft and takes no
+  snapshot** (see the version check above). Nothing is thrown for the version: there is no
+  `Err.ServerVersionUnsupportedError` and no `assertServerVersion`, and core bundles no fallback
+  compiler.
+- **BREAKING: core no longer compiles or type-checks; `push` uploads sources only.** The platform
+  now compiles BSJS server-side, on save and again when a snapshot is published, so the in-process
+  TypeScript compiler is gone (ClickUp 86bczwj62). Hold the release until that server-side
+  compile is deployed everywhere.
+  - Removed exports: `TsLibResolver`, the `TranspileOutcome` type, `checkEmittedEntrypoint` and the
+    `EmittedEntrypointCheck` type.
+  - Removed `PushResult.typeCheckDiagnostics`. A snapshot push no longer compiles, stops on a
+    missing or empty `scripts/app.js`, warns about stale client bundles, or reports "published
+    without a passing type-check".
+  - Removed `B6PProviders.typescriptLibDirs` (and the matching `ScriptContext` member): there is
+    no compiler left to give a lib directory to.
+  - Removed `ScriptRoot.compileDraftFolder`, `deleteBuildFolder`, `findStaleClientBundles`,
+    `selectStaleBundles`, `getDraftTsConfigPath` and `getDraftBuildFolder`.
+  - A push neither uploads nor deletes files under a tsconfig's build folder (`.build` by default):
+    the platform owns what it compiles there. `PushResult.pushed` is now `false` only when the
+    draft folder is missing or empty.
+- `typescript` moved from `dependencies` to `devDependencies`, pinned to 7.0.2; it builds the
+  package and nothing in `src/` imports it.
+
 ## [0.8.1] - 2026-10-20
 
 ### Fixed
@@ -13,7 +89,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ([b6p-cli#35](https://github.com/Bluestep-Systems/b6p-cli/issues/35), ClickUp 86bcn314g). The
   platform sends files last saved before about May 2026 with `W/"<ms>-<id>"`, which matched none of
   the ETag patterns, so `ScriptFile.download()` threw `Err.EtagParsingError` (`Could not parse
-  upstairs etag`) and the pull ended there, before `declarations/` was refreshed. A weak numeric
+upstairs etag`) and the pull ended there, before `declarations/` was refreshed. A weak numeric
   ETag is now handled like a strong one: it carries no content hash, so the integrity check is
   skipped (logged at debug), the file is written and its sync record kept. `getUpstairsHash()`
   already returned `null` for it and still does; audit and push read it as indeterminate, as before.

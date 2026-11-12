@@ -1,6 +1,6 @@
 import path from "path";
 import { ScriptMetaData } from "../types";
-import { FileExtensions, FolderNames, SpecialFiles } from "../constants";
+import { FolderNames, SpecialFiles } from "../constants";
 import { DownstairsPathParser } from "../data/DownstairsPathParser";
 import { OrgWorker } from "../data/OrgWorker";
 import { ScriptKey } from "../data/ScriptKey";
@@ -8,10 +8,8 @@ import { ScriptUrlParser } from "../data/ScriptUrlParser";
 import { Err } from "../Err";
 import { ScriptFactory } from "./ScriptFactory";
 import { B6PUri } from "../B6PUri";
-import { ScriptFile } from "./ScriptFile";
 import type { ScriptFolder } from "./ScriptFolder";
 import { ScriptNode } from "./ScriptNode";
-import { ScriptTranspiler, type TranspileOutcome } from "./ScriptTranspiler";
 import { TsConfig } from "./TsConfig";
 import type { ScriptContext } from "./ScriptContext";
 
@@ -269,198 +267,8 @@ export class ScriptRoot {
     return this.rootUri.fsPath === b.rootUri.fsPath;
   }
 
-  public async deleteBuildFolder() {
-    const buildFolder = await this.getDraftBuildFolder();
-    const buildUri = buildFolder.uri();
-    if (!(await this.ctx.fs.exists(buildUri))) {
-      // Not an error: a fresh clone has no build folder yet. Route through the
-      // logger (not console.log) so it honors --verbose and keeps stdout clean
-      // for --json.
-      this.ctx.logger.info("Build folder doesn't exist yet (this is fine); nothing to delete.");
-      return;
-    }
-    await this.ctx.fs.delete(buildUri, { recursive: true });
-  }
-
-  /**
-   * Find client-bundle sub-projects whose compiled output is stale — a source
-   * `.ts`/`.tsx` is newer than the newest compiled `.js` in that sub-project's
-   * build folder (or the build folder has no JS at all while sources exist).
-   *
-   * `b6p push` does NOT transpile client TypeScript. A MergeReport `static/`
-   * bundle compiles `static/script.ts` into `static/.build/script.js` (its
-   * `outDir`), and the platform serves that emitted JS verbatim — it does NOT
-   * recompile it server-side (verified against a live org). Editing only the
-   * `.ts` therefore silently ships stale client JS (b6p-cli#9). We surface it
-   * as a loud warning at push time.
-   *
-   * Only NESTED tsconfig sub-projects are client bundles: the draft-root
-   * `tsconfig.json` governs `scripts/*.ts`, which the platform DOES compile
-   * server-side, so a stale root build folder is harmless and must not warn.
-   * Any tsconfig below the draft root (e.g. `static/tsconfig.json`) is a client
-   * bundle whose emitted JS is the deployed artifact. This needs no hardcoded
-   * `static/` path.
-   * @lastreviewed null
-   */
-  public async findStaleClientBundles(): Promise<{ bundle: string; buildFolder: string }[]> {
-    const draftRootTsConfigPath = this.getDraftTsConfigPath();
-    const bundles: { sourceRoot: string; buildFolder: string }[] = [];
-    for (const tsConfig of await this.findTsConfigFiles()) {
-      if (path.normalize(tsConfig.path()) === draftRootTsConfigPath) {
-        // Draft-root project → platform-compiled scripts; not a client bundle.
-        continue;
-      }
-      try {
-        const buildFolder = await tsConfig.getBuildFolder();
-        bundles.push({ sourceRoot: tsConfig.folder().uri().fsPath, buildFolder: buildFolder.uri().fsPath });
-      } catch (e) {
-        // A malformed sub-project tsconfig can't be assessed; skip it — staleness
-        // detection is best-effort and must never block a push.
-        this.ctx.logger.info(
-          `Skipping stale-bundle check for ${tsConfig.path()}: ${e instanceof Error ? e.message : e}`
-        );
-      }
-    }
-    if (bundles.length === 0) {
-      return [];
-    }
-    const uris = await this.getDraftFolder().flattenRaw();
-    const files: { fsPath: string; mtime: number }[] = [];
-    for (const uri of uris) {
-      // flattenRaw() also yields directory markers (produced via asDirectory(), so
-      // their fsPath ends with a separator). Skip them up front to avoid a
-      // needless stat() per directory on large draft trees. The type check below
-      // is kept as defense-in-depth.
-      if (/[\\/]$/.test(uri.fsPath)) {
-        continue;
-      }
-      try {
-        const stat = await this.ctx.fs.stat(uri);
-        if (stat.type === "file") {
-          files.push({ fsPath: uri.fsPath, mtime: stat.mtime });
-        }
-      } catch {
-        // Ignore entries we can't stat; staleness detection is best-effort.
-      }
-    }
-    return ScriptRoot.selectStaleBundles({ files, bundles });
-  }
-
-  /**
-   * Pure core of {@link findStaleClientBundles}: given draft files with mtimes
-   * and a set of client-bundle sub-projects (each a source root + its build
-   * folder), return the bundles whose newest source `.ts`/`.tsx` is newer than
-   * the newest compiled `.js` in the build folder — or whose build folder has
-   * no compiled JS at all while sources exist. `.d.ts` files are never sources.
-   * Extracted (and static) so it is unit-testable without a filesystem.
-   * @lastreviewed null
-   */
-  static selectStaleBundles(input: {
-    files: { fsPath: string; mtime: number }[];
-    bundles: { sourceRoot: string; buildFolder: string }[];
-  }): { bundle: string; buildFolder: string }[] {
-    const { files, bundles } = input;
-    // Both sides go through the shared marker strip. `path.normalize` PRESERVES a
-    // trailing separator, so comparing normalized-only paths silently fails whenever
-    // either side carries the folder marker — which is exactly how the stale-bundle
-    // warning went dead once `B6PUri.dirname` briefly started marking its result.
-    const isUnder = (p: string, dir: string) => {
-      const np = B6PUri.stripDirectoryMarker(path.normalize(p));
-      const nd = B6PUri.stripDirectoryMarker(path.normalize(dir));
-      return np === nd || np.startsWith(nd + path.sep);
-    };
-    const isTsSource = (p: string) => {
-      const lower = p.toLowerCase();
-      if (lower.endsWith(".d.ts")) {
-        return false;
-      }
-      return lower.endsWith(FileExtensions.TYPESCRIPT) || lower.endsWith(FileExtensions.TYPESCRIPT_JSX);
-    };
-    const stale: { bundle: string; buildFolder: string }[] = [];
-    for (const { sourceRoot, buildFolder } of bundles) {
-      let newestSource = -Infinity;
-      let newestBuild = -Infinity;
-      for (const f of files) {
-        if (isUnder(f.fsPath, buildFolder)) {
-          if (f.fsPath.toLowerCase().endsWith(FileExtensions.JAVASCRIPT)) {
-            newestBuild = Math.max(newestBuild, f.mtime);
-          }
-          continue;
-        }
-        if (isUnder(f.fsPath, sourceRoot) && isTsSource(f.fsPath)) {
-          newestSource = Math.max(newestSource, f.mtime);
-        }
-      }
-      if (newestSource === -Infinity) {
-        // No source files under this bundle → nothing to be stale against.
-        continue;
-      }
-      if (newestSource > newestBuild) {
-        stale.push({ bundle: sourceRoot, buildFolder });
-      }
-    }
-    return stale;
-  }
-
-  public async compileDraftFolder(): Promise<TranspileOutcome> {
-    await this.deleteBuildFolder();
-    const draftFolder = this.getDraftFolder();
-    const allDraftFiles = await draftFolder.flatten();
-    const transpiler = new ScriptTranspiler(this.ctx);
-    for (const file of allDraftFiles) {
-      if (
-        ((await file.isFile()) && (file as ScriptFile).isMarkdown()) ||
-        (await file.isInItsRespectiveBuildFolder()) ||
-        (await file.isFolder())
-      ) {
-        continue;
-      }
-
-      if ([FileExtensions.TYPESCRIPT, FileExtensions.TYPESCRIPT_JSX].some((ext) => file.path().endsWith(ext))) {
-        await transpiler.addFile(file);
-      }
-    }
-    const outcome = await transpiler.transpile(this);
-    this.ctx.logger.info(`Transpiled ${outcome.emittedFiles.length} TypeScript files.`);
-    this.ctx.logger.info(`Emitted Files: \n${outcome.emittedFiles.join("\n")}`);
-    const emittedScriptNodes = outcome.emittedFiles.map((e) => this.factory.createNode(B6PUri.fromFsPath(e), this));
-    this.ctx.logger.info(`Emitted ScriptNodes: \n${emittedScriptNodes.map((n) => n.path()).join("\n")}`);
-    await this.tidyMetadataFile();
-    return outcome;
-  }
-
-  private async tidyMetadataFile() {
-    const draftFolder = this.getDraftFolder();
-    const draftFiles = (await draftFolder.flattenRaw()).map((uri) => uri.fsPath);
-    await this.modifyMetaData((meta) => {
-      meta.pushPullRecords = meta.pushPullRecords.filter((record) => {
-        return draftFiles.includes(record.downstairsPath);
-      });
-    });
-  }
-
   public getDraftFolder() {
     return this.factory.createFolder(this.rootUri.joinPath(FolderNames.DRAFT), this);
-  }
-
-  /**
-   * The normalized absolute path of the draft-root `tsconfig.json` — the project
-   * that governs the platform-compiled `scripts/*.ts`. Single source of truth so
-   * that {@link findStaleClientBundles} (which EXCLUDES this project as
-   * platform-compiled) and {@link ScriptTranspiler.transpile} (which GATES the
-   * push on it) partition projects identically. A divergence would silently
-   * mis-gate — cf. the folder-marker regression that once killed
-   * {@link selectStaleBundles}. `joinPath` drops the draft folder's directory
-   * marker, so the result ends in `tsconfig.json` with no trailing separator.
-   * @lastreviewed null
-   */
-  public getDraftTsConfigPath(): string {
-    return path.normalize(this.getDraftFolder().uri().joinPath(TsConfig.NAME).fsPath);
-  }
-
-  public async getDraftBuildFolder() {
-    const tsConfig = await this.getDraftTsConfig();
-    return tsConfig.getBuildFolder();
   }
 
   public getDeclarationsFolder() {
@@ -483,20 +291,18 @@ export class ScriptRoot {
     return badFiles;
   }
 
-  public async getPushableNodes(snapshot: boolean = false): Promise<ScriptNode[]> {
+  public async getPushableNodes(): Promise<ScriptNode[]> {
     const flattenedDraft = await this.getDraftFolder().flatten();
     const pushableNodes: ScriptNode[] = [];
     for (const f of flattenedDraft) {
-      // A snapshot push skips a file only when its snapshot/ copy matches too (ClickUp 86bbqnrtp).
-      const reason = await f.getReasonToNotPush({ isSnapshot: snapshot });
+      const reason = await f.getReasonToNotPush();
       if (reason) {
         this.ctx.logger.info(`Excluding draft file from push: ${f.path()} (${reason})`);
         continue;
       }
-      const isSnapshotOrNotInBuild = snapshot || !(await f.isInItsRespectiveBuildFolder());
 
       const fileName = f.path();
-      if (isSnapshotOrNotInBuild) {
+      if (!(await f.isInItsRespectiveBuildFolder())) {
         pushableNodes.push(f);
       } else {
         this.ctx.logger.info(`Excluding file in build folder from push: ${fileName}`);

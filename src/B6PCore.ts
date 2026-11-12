@@ -117,7 +117,6 @@ export class B6PCore {
       ...platform,
       scriptMetadataStore: this.scriptMetadataStore,
       orgCache: this.orgCache,
-      typescriptLibDirs: providers.typescriptLibDirs,
     });
 
     // Initialize update service if configuration is provided

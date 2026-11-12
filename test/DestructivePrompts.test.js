@@ -152,7 +152,7 @@ test("overwrite prompt: --yes declines, nothing is written, and the error says w
   const prompt = recordingPrompt(firstOption);
   const { file, puts } = overwriteScenario(prompt, CHANGED);
   await assert.rejects(
-    () => file.upload({ isSnapshot: false }),
+    () => file.upload(),
     (e) =>
       e instanceof Err.OverwriteDeclinedError &&
       e instanceof Err.UserCancelledError &&
@@ -170,21 +170,21 @@ test("overwrite prompt: --yes declines, nothing is written, and the error says w
 test("overwrite prompt: a dismissed prompt (undefined) declines too", async () => {
   const prompt = recordingPrompt(() => undefined);
   const { file, puts } = overwriteScenario(prompt, CHANGED);
-  await assert.rejects(() => file.upload({ isSnapshot: false }), Err.OverwriteDeclinedError);
+  await assert.rejects(() => file.upload(), Err.OverwriteDeclinedError);
   assert.deepStrictEqual(puts(), []);
 });
 
 test("overwrite prompt: an explicit Overwrite still writes", async () => {
   const prompt = recordingPrompt(pick("Overwrite"));
   const { file, puts } = overwriteScenario(prompt, CHANGED);
-  await file.upload({ isSnapshot: false });
+  await file.upload();
   assert.deepStrictEqual(puts(), [DRAFT_URL]);
 });
 
 test("overwrite rule: a new file the platform doesn't have → no prompt, so --yes still pushes it", async () => {
   const prompt = recordingPrompt(firstOption);
   const { file, puts } = overwriteScenario(prompt, { platform: null, record: null });
-  await file.upload({ isSnapshot: false });
+  await file.upload();
   assert.strictEqual(prompt.calls.length, 0);
   assert.deepStrictEqual(puts(), [DRAFT_URL]);
 });
@@ -192,7 +192,7 @@ test("overwrite rule: a new file the platform doesn't have → no prompt, so --y
 test("overwrite rule: a normal local edit (platform = last sync) → no prompt", async () => {
   const prompt = recordingPrompt(firstOption);
   const { file, puts } = overwriteScenario(prompt, { platform: "base", record: "base" });
-  await file.upload({ isSnapshot: false });
+  await file.upload();
   assert.strictEqual(prompt.calls.length, 0);
   assert.deepStrictEqual(puts(), [DRAFT_URL]);
 });
@@ -200,7 +200,7 @@ test("overwrite rule: a normal local edit (platform = last sync) → no prompt",
 test("overwrite rule: the platform already holds the local bytes → no prompt, nothing to write", async () => {
   const prompt = recordingPrompt(firstOption);
   const { file, puts } = overwriteScenario(prompt, { platform: LOCAL, record: "base" });
-  await file.upload({ isSnapshot: false });
+  await file.upload();
   assert.strictEqual(prompt.calls.length, 0);
   assert.deepStrictEqual(puts(), []);
 });
@@ -209,7 +209,7 @@ test("overwrite rule: never synced here and the platform differs → asks, and s
   const prompt = recordingPrompt(firstOption);
   const { file, puts } = overwriteScenario(prompt, { platform: "theirs", record: null });
   await assert.rejects(
-    () => file.upload({ isSnapshot: false }),
+    () => file.upload(),
     (e) => e instanceof Err.OverwriteDeclinedError && e.message.includes("never pulled or pushed")
   );
   assert.ok(prompt.calls[0].message.includes("never pulled or pushed"));
@@ -219,7 +219,7 @@ test("overwrite rule: never synced here and the platform differs → asks, and s
 test("overwrite rule: a platform copy with no content hash can't be compared → asks", async () => {
   const prompt = recordingPrompt(firstOption);
   const { file, puts } = overwriteScenario(prompt, { platform: "hashless", record: "base" });
-  await assert.rejects(() => file.upload({ isSnapshot: false }), Err.OverwriteDeclinedError);
+  await assert.rejects(() => file.upload(), Err.OverwriteDeclinedError);
   assert.strictEqual(prompt.calls.length, 1);
   assert.deepStrictEqual(puts(), []);
 });
@@ -401,7 +401,7 @@ const MIXED = {
 
 test("candidates: only files that would overwrite an unseen platform version", async () => {
   const { files } = pushScenario(recordingPrompt(firstOption), MIXED);
-  const found = await collectOverwriteCandidates(files, { isSnapshot: false });
+  const found = await collectOverwriteCandidates(files);
   assert.deepStrictEqual(
     found.map((c) => [c.path, c.risk]),
     [
@@ -444,7 +444,7 @@ test("one confirmation: confirmed files upload without asking again; the rest st
   const { files, ctx, puts } = pushScenario(prompt, MIXED);
   const confirmed = await confirmOverwrites({ files, ctx, isSnapshot: false });
   for (const file of files) {
-    await file.upload({ isSnapshot: false, overwriteConfirmed: confirmed.has(file) });
+    await file.upload({ overwriteConfirmed: confirmed.has(file) });
   }
   assert.strictEqual(prompt.calls.length, 1, "upload() must not prompt for a confirmed file");
   assert.deepStrictEqual(puts(), ["scripts/app.ts", "scripts/util.ts", "scripts/new.ts", "scripts/edit.ts"]);
@@ -476,7 +476,7 @@ test("caller-confirmed paths: covering every drifted file → no prompt at all",
 test("fallback: a file not confirmed up front that is at risk at upload time still asks", async () => {
   const prompt = recordingPrompt(firstOption);
   const { files, puts } = pushScenario(prompt, { "scripts/app.ts": { platform: "theirs", record: "base" } });
-  await assert.rejects(() => files[0].upload({ isSnapshot: false }), Err.OverwriteDeclinedError);
+  await assert.rejects(() => files[0].upload(), Err.OverwriteDeclinedError);
   assert.strictEqual(prompt.calls.length, 1);
   assert.deepStrictEqual(puts(), []);
 });

@@ -167,11 +167,9 @@ test("asDirectory() preserves query and fragment (an href append would corrupt t
 
 test("dirname() does NOT carry the folder marker", () => {
   // An intermediate revision of 0.5.0 marked it, reasoning that a parent is a
-  // directory in every case. That broke the stale-client-bundle push warning:
-  // TsConfig.folder() is built from dirname, so findStaleClientBundles began
-  // emitting a marker-terminated sourceRoot, and selectStaleBundles' containment
-  // test (path.normalize, which PRESERVES a trailing separator) matched nothing.
-  // See test/StaleClientBundles.test.js. A caller that wants the marked spelling
+  // directory in every case. That broke a containment test (since removed):
+  // TsConfig.folder() is built from dirname, so a marker-terminated folder path
+  // reached it, and path.normalize PRESERVES a trailing separator, so nothing matched. A caller that wants the marked spelling
   // asks for it with .asDirectory(); the misclassification the marker guarded
   // against is unreachable, since every dirname call site either calls
   // createFolder explicitly or takes .fsPath.

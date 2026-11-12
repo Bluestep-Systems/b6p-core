@@ -1,3 +1,5 @@
+import type { PublishOutcome, PublishRefusalReason } from "./script/ServerCompile";
+
 /**
  * Centralized error namespace containing all custom error types used throughout the application.
  * All error classes extend {@link Error} and have descriptive names that indicate why the error was thrown.
@@ -788,6 +790,57 @@ export namespace Err {
       super(message);
       this.name = "OverwriteDeclinedError";
       this.paths = paths;
+    }
+  }
+
+  /**
+   * Thrown when the platform refuses a snapshot publish (`takeSnapshot`): nothing was written to
+   * `snapshot/` and the published script is unchanged. The draft's sources are saved and its compile
+   * was committed either way. Read `reason` and `publish`, never the message.
+   * @lastreviewed null
+   */
+  export class PublishRefusedError extends Error {
+    /** The refusal, one of the platform's nine reasons, or `UNKNOWN` for one core does not know. @lastreviewed null */
+    readonly reason: PublishRefusalReason;
+    /** The reason text exactly as the platform sent it. @lastreviewed null */
+    readonly rawReason: string;
+    /** The refused publish's detail: diagnostics, withheld projects, entrypoint and gate report. @lastreviewed null */
+    readonly publish: PublishOutcome;
+    constructor(
+      message: string,
+      details: { reason: PublishRefusalReason; rawReason: string; publish: PublishOutcome }
+    ) {
+      super(message);
+      this.name = "PublishRefusedError";
+      this.reason = details.reason;
+      this.rawReason = details.rawReason;
+      this.publish = details.publish;
+    }
+  }
+
+  /**
+   * Thrown when a `compileDraft` or `takeSnapshot` request to the platform fails without an outcome
+   * to report: a GraphQL error other than a publish refusal (e.g. the caller may not edit the
+   * script), an unreadable answer, or a request that failed twice. After a request that failed
+   * twice, the platform may or may not have run it. The pushed sources are saved either way.
+   * @lastreviewed null
+   */
+  export class ServerCompileRequestError extends Error {
+    /** Which call failed: the draft compile or the snapshot publish. @lastreviewed null */
+    readonly phase: "compile" | "publish";
+    /** The platform's error messages, or the failure text; empty when there are none. @lastreviewed null */
+    readonly messages: string[];
+    /** True when the request itself failed (twice), so it may or may not have run. @lastreviewed null */
+    readonly networkFailure: boolean;
+    constructor(
+      message: string,
+      details: { phase: "compile" | "publish"; messages: string[]; networkFailure: boolean }
+    ) {
+      super(message);
+      this.name = "ServerCompileRequestError";
+      this.phase = details.phase;
+      this.messages = details.messages;
+      this.networkFailure = details.networkFailure;
     }
   }
 

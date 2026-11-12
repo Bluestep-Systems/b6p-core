@@ -69,8 +69,7 @@ are load-bearing rather than stylistic — each records something this repo undi
   coalesce `save()` before parallelizing anything.
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
-CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
-snapshot history), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
+CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, server compile/publish calls, snapshot history), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
 parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles).
 
 ## Commands
@@ -95,20 +94,31 @@ no matter what. Correctness comes from `check-types` under `strict` + `noUnusedL
 in `tsconfig.base.json` — strictness belongs there, and `tsconfig.json` carries only this package's
 output settings. Do not reintroduce a linter without wiring it to a **failing** exit code.
 
-**`typescript` is an exact-pinned runtime `dependency` at 5.9.2**, not a devDependency: this library
-compiles TypeScript *while running* (a `push --snapshot` transpiles in-process), so it needs the
-compiler as a library, and the same version builds the package. Do not float the pin, do not add a
-second compiler, and read `b6p-cli/docs/adr/0002-typescript-version-strategy.md` before touching it —
-it records why TypeScript 7 cannot serve this role and what would have to change first.
+**`typescript` is an exact-pinned `devDependency` (7.x) and builds the package only.** This library
+ships no compiler and nothing in `src/` may import `typescript`: the platform compiles BSJS
+server-side, so `push` uploads sources and never emits, uploads `.build` or type-checks. Do not move it back to `dependencies`, do not float the
+pin, and read `b6p-cli/docs/adr/0003-*` (the TypeScript version strategy, superseding 0002) before
+changing this.
+
+**The push flow is PUT `draft/` → `compileDraft` → (snapshot push) `takeSnapshot`, all against the
+server's contract** (`src/script/ServerCompile.ts`, `push.ts`). Core never PUTs into `snapshot/` or a
+build folder, reads no `X-Bluestep-Compile` header, and parses a publish refusal from the error's
+`extensions.reason` / `extensions.publish`, never its message. A tripped gate or withheld emit is a
+`PushResult.compile` result, not an exception. `MIN_SERVER_VERSION` (`data/ServerVersion.ts`) _routes_
+every push and is `26.11.09.00`, the first web release containing the flow: a `dev` server or
+one at or above it takes the flow above; any other (below it, unreadable version, floor unset) takes the
+**draft-only route** (sources PUT to `draft/`, no GraphQL compile or snapshot call), and a snapshot push
+there is not an error but a result, `PushResult.snapshotRefused` (ruling 46). A plain push is never
+refused, and core has no local compiler to fall back on.
 
 ## Documentation, in the same change
 
-| File | Update when |
-|------|-------------|
-| `README.md` | public API, install or usage changes |
+| File                    | Update when                                             |
+| ----------------------- | ------------------------------------------------------- |
+| `README.md`             | public API, install or usage changes                    |
 | `AGENTS.md` (this file) | architecture, subsystem, conventions or process changes |
-| `test/README.md` | how tests are written or run changes |
-| `CHANGELOG.md` | any user-visible change, fix, or breaking change |
+| `test/README.md`        | how tests are written or run changes                    |
+| `CHANGELOG.md`          | any user-visible change, fix, or breaking change        |
 
 `CLAUDE.md` is a one-line bridge to this file; do not put rules there. Outdated documentation is worse
 than none — if uncertain, leave a `//HUMAN-REVIEW-NEEDED` note.
@@ -120,7 +130,7 @@ with the review date. Modifying an already-reviewed block resets its tag to `nul
 not cover the new text.
 
 `test/JsdocLastReviewed.test.js` enforces this as a **ratchet, and only half of it**: it fails when a
-file gains net-new *untagged* blocks beyond the tolerated count in
+file gains net-new _untagged_ blocks beyond the tolerated count in
 `test/jsdoc-lastreviewed.baseline.json`. It **cannot catch a modified block** — a rewritten block
 keeps its old count and its stale review date, so resetting that date is reviewer diligence, not
 something CI verifies. Moving an untagged grandfathered block between files reads as new in the
@@ -135,7 +145,7 @@ number to make the check pass** — tag the JSDoc instead.
 - **Commits** are conventional (`fix(scope):`, `feat:`, `docs:`, `release: vX.Y.Z — summary`) and
   reference the task as `(CU-<taskid>)`. AI-authored commits carry their `Co-Authored-By` trailer.
 - **PRs** target `master`. CI must pass — type-check, format-check, compile and the full suite on Node
-  20 and 22. Address automated review rounds as follow-up commits on the same branch.
+  20 and 22, and again on windows-latest (Node 24). Address automated review rounds as follow-up commits on the same branch.
 - **Releases**: a `release: vX.Y.Z — summary` commit bumps `package.json` / `package-lock.json` and
   dates the CHANGELOG block. After it merges, push an annotated tag
   (`git tag -a vX.Y.Z -m "vX.Y.Z — summary" && git push origin vX.Y.Z`). `publish.yml` publishes to
