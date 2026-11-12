@@ -9,6 +9,12 @@ This package contains the headless orchestration logic shared by the
 anywhere Node does. You supply the platform adapters (file system, prompts, logging, progress,
 persistence) through provider interfaces.
 
+## Packages
+
+This repo holds two npm packages: `@bluestep-systems/b6p-core` (this one, Node) and
+[`@bluestep-systems/b6p-core-bsjs-git`](packages/bsjs-git/README.md) (browser and Node: git editing, publish and history
+of BSJS scripts through the platform's git proxy). The first depends on the second and re-exports it as `bsjsGit`.
+
 ## Installation
 
 ```bash
