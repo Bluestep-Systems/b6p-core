@@ -86,6 +86,9 @@ platform's git proxy, publish, git history, and the legacy history archive clien
   from this package (the dependency runs one way).
 - Its own scripts mirror this package's (`compile`, `check-types`, `format-check`, `test`); the root scripts build and
   run both, so `npm test` and `npm run check-types` here cover both packages.
+- `npm run watch` (root) is `tsc -b` over project references, so it builds and watches both packages.
+- The `buffer` shim (`src/bufferShim.ts`) is the one allowed mention of `Buffer`; `BrowserBundle.test.js` bundles the
+  package for a browser to prove it still resolves.
 - It is published first (see `publish.yml`); bump its version when its API changes.
 
 ## Commands

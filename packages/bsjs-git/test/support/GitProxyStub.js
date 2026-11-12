@@ -12,13 +12,20 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, execFileSync } = require("node:child_process");
 
+const SESSION = "JSESSIONID=stub-session";
+const CSRF = "csrf-abc";
 const TOKEN = "b6pt_good-token";
 
 function git(cwd, ...args) {
+  return gitEnv(cwd, {}, ...args);
+}
+
+function gitEnv(cwd, extraEnv, ...args) {
   return execFileSync("git", args, {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_SYSTEM: os.devNull },
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, ...extraEnv, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_SYSTEM: os.devNull },
   }).trim();
 }
 
@@ -120,6 +127,8 @@ function createStub() {
     });
   }
 
+  const state = { csrfRequests: 0, gqlRequests: 0, rejectNextCsrf: false, failGitAfterPublish: false };
+
   function gql(req, res) {
     const chunks = [];
     req.on("data", (c) => chunks.push(c));
@@ -127,6 +136,16 @@ function createStub() {
       res.setHeader("Content-Type", "application/json");
       if (!authorized(req.headers.authorization, "Bearer")) {
         res.writeHead(401);
+        res.end("{}");
+        return;
+      }
+      // Production /gql enforces the CSRF header (bound to the session cookie) on every call, bearer included.
+      state.gqlRequests++;
+      const hasSession = (req.headers.cookie || "").includes(SESSION);
+      if (state.rejectNextCsrf || !hasSession || req.headers["b6p-csrf-token"] !== CSRF) {
+        const forced = state.rejectNextCsrf;
+        state.rejectNextCsrf = false;
+        res.writeHead(403, forced ? { "B6P-CSRF-TOKEN": CSRF } : {});
         res.end("{}");
         return;
       }
@@ -157,6 +176,7 @@ function createStub() {
       }
       const draft = git(entry.bare, "rev-parse", "refs/heads/draft");
       git(entry.bare, "update-ref", "refs/heads/master", draft);
+      state.failGitAfterPublish = entry.failFetchAfterPublish === true;
       res.end(JSON.stringify({ data: { [mutation]: [{ id: input.topId, config: { publishedSha: draft } }] } }));
     });
   }
@@ -165,6 +185,17 @@ function createStub() {
     const url = new URL(req.url, "http://localhost");
     if (url.pathname === "/gql") {
       gql(req, res);
+      return;
+    }
+    if (url.pathname === "/csrf-token") {
+      state.csrfRequests++;
+      if (!authorized(req.headers.authorization, "Bearer")) {
+        res.writeHead(401);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "Set-Cookie": `${SESSION}; Path=/; HttpOnly`, "Content-Type": "text/plain" });
+      res.end(CSRF);
       return;
     }
     const match = /^\/git\/([^/]+)\/(.+)$/.exec(url.pathname);
@@ -176,6 +207,11 @@ function createStub() {
     if (!authorized(req.headers.authorization, "Basic")) {
       res.writeHead(401, { "WWW-Authenticate": 'Basic realm="BlueStep Git"', "Content-Type": "text/plain" });
       res.end("Authentication required");
+      return;
+    }
+    if (state.failGitAfterPublish) {
+      res.writeHead(502);
+      res.end();
       return;
     }
     const entry = repos.get(match[1]);
@@ -204,8 +240,10 @@ function createStub() {
     TOKEN,
     root,
     repos,
+    state,
     addRepo,
     git,
+    gitEnv,
     async listen() {
       await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
       return `http://127.0.0.1:${server.address().port}/`;

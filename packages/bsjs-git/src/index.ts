@@ -3,6 +3,7 @@
  * is injected (see {@link ScriptRepoOptions.fs}) and HTTP is the platform `fetch`.
  * @lastreviewed null
  */
+import "./bufferShim";
 export {
   ScriptRepo,
   DRAFT_BRANCH,
@@ -12,6 +13,7 @@ export {
   type FileChange,
   type GitIdentity,
   type LogOptions,
+  type PublishResult,
   type PushOutcome,
   type ScriptRepoOptions,
   type TreeFile,

@@ -1,3 +1,4 @@
+import "./bufferShim";
 import git, { type HttpClient, type PromiseFsClient, type PushResult } from "isomorphic-git";
 import {
   BsjsGitError,
@@ -8,6 +9,7 @@ import {
   PublishFailedError,
   PublishRefusedError,
 } from "./errors";
+import { CsrfFetch } from "./csrf";
 import { createProxyHttp, type FetchLike } from "./http";
 import { compoundId, publishMutationFor, type ScriptRef } from "./scriptKey";
 
@@ -173,6 +175,19 @@ export interface LogOptions {
 }
 
 /**
+ * What {@link ScriptRepo.publish} did.
+ * @lastreviewed null
+ */
+export interface PublishResult {
+  /** The commit the platform promoted to the published branch. */
+  readonly publishedSha: string;
+  /** Whether the follow-up fetch that updates the local `origin/master` succeeded. The publish happened either way. */
+  readonly refreshed: boolean;
+  /** Why the follow-up fetch failed, when `refreshed` is false. */
+  readonly refreshError?: unknown;
+}
+
+/**
  * The decoded `Uint8Array` of a blob as text.
  * @lastreviewed null
  */
@@ -181,6 +196,9 @@ export function decodeText(bytes: Uint8Array): string {
 }
 
 function posixClean(path: string): string {
+  if (path.includes("\\")) {
+    throw new Error(`Not a path inside the working tree (use "/" separators): ${path}`);
+  }
   const parts = path.split("/").filter((p) => p !== "" && p !== ".");
   if (parts.some((p) => p === "..") || parts[0] === ".git") {
     throw new Error(`Not a path inside the working tree: ${path}`);
@@ -214,7 +232,7 @@ export class ScriptRepo {
   readonly #fs: PromiseFsClient;
   readonly #http: HttpClient;
   readonly #origin: string;
-  readonly #token: string;
+  readonly #csrf: CsrfFetch;
   readonly #author: GitIdentity | undefined;
   readonly #fetch: FetchLike;
 
@@ -225,9 +243,9 @@ export class ScriptRepo {
     const base = new URL(String(options.baseUrl));
     this.#origin = `${base.origin}/`;
     this.url = `${this.#origin}git/${compoundId(options.script)}`;
-    this.#token = options.token;
     this.#author = options.author;
     this.#fetch = options.fetch ?? ((input, init) => fetch(input, init));
+    this.#csrf = new CsrfFetch(this.#fetch, this.#origin, options.token);
     this.#http = createProxyHttp(options.token, this.#fetch);
   }
 
@@ -421,12 +439,13 @@ export class ScriptRepo {
    * Publishes the draft: asks the platform to promote the pushed draft to the published branch (the same publish
    * the platform runs for any script, a `takeSnapshot` update) and returns the commit it published.
    *
-   * @returns the published branch's sha (`config.publishedSha`).
+   * @returns the published sha (`config.publishedSha`). The publish has happened once this resolves; `refreshed` says
+   *          whether the follow-up fetch that brings `origin/master` up to date also succeeded (`refreshError` if not).
    * @throws {GitUnpushedChangesError} when the local draft is not what the platform holds.
    * @throws {PublishRefusedError} when the platform refuses (nothing is written); `reason` says why.
    * @lastreviewed null
    */
-  async publish(): Promise<string> {
+  async publish(): Promise<PublishResult> {
     await this.fetch();
     const local = await this.#resolve(DRAFT_BRANCH);
     const remote = await this.#resolve(`refs/remotes/${REMOTE}/${DRAFT_BRANCH}`).catch(() => undefined);
@@ -437,14 +456,13 @@ export class ScriptRepo {
     const query = `mutation Publish($inputs: [${inputType}!]!) { ${mutationName}(inputs: $inputs) { id config { publishedSha } } }`;
     let response: Response;
     try {
-      response = await this.#fetch(`${this.#origin}gql`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.#token}` },
-        body: JSON.stringify({
+      response = await this.#csrf.postJson(
+        "gql",
+        JSON.stringify({
           query,
           variables: { inputs: [{ topId: compoundId(this.script), takeSnapshot: true }] },
-        }),
-      });
+        })
+      );
     } catch (cause) {
       throw new PublishFailedError(cause instanceof Error ? cause.message : String(cause), { cause });
     }
@@ -465,25 +483,44 @@ export class ScriptRepo {
     if (!sha || !SHA.test(sha)) {
       throw new PublishFailedError("the platform's answer carried no publishedSha");
     }
-    await this.fetch();
-    return sha;
+    try {
+      await this.fetch();
+    } catch (refreshError) {
+      return { publishedSha: sha, refreshed: false, refreshError };
+    }
+    return { publishedSha: sha, refreshed: true };
   }
 
   /**
    * Commits on a branch or from a sha, newest first.
-   * @param options paging: `limit` and `before` (the last sha of the previous page).
+   * @param options paging: `limit` and `before` (the last sha of the previous page; the walk still starts at `rev`).
    * @lastreviewed null
    */
   async log(options: LogOptions = {}): Promise<CommitInfo[]> {
     const limit = options.limit ?? 50;
-    const start = await this.#resolve(options.before ?? options.rev ?? DRAFT_BRANCH);
-    const entries = await git.log({ fs: this.#fs, dir: this.dir, ref: start, depth: limit + (options.before ? 1 : 0) });
-    return (options.before ? entries.slice(1) : entries).slice(0, limit).map((entry) => ({
-      sha: entry.oid,
-      author: { name: entry.commit.author.name, email: entry.commit.author.email },
-      timestamp: new Date(entry.commit.author.timestamp * 1000).toISOString(),
-      message: entry.commit.message.replace(/\n+$/, ""),
-    }));
+    const start = await this.#resolve(options.rev ?? DRAFT_BRANCH);
+    const { before } = options;
+    // The walk always starts at `rev` and skips through the cursor, so a merge's other parent is not lost; a deeper
+    // walk extends a shallower one, so the depth just grows until the cursor and one page are in view.
+    let depth = before ? limit + 64 : limit;
+    for (;;) {
+      const entries = await git.log({ fs: this.#fs, dir: this.dir, ref: start, depth });
+      const exhausted = entries.length < depth;
+      const from = before ? entries.findIndex((entry) => entry.oid === before) + 1 : 0;
+      if (before && from === 0 && exhausted) {
+        return [];
+      }
+      if ((before && from === 0) || (entries.length < from + limit && !exhausted)) {
+        depth *= 2;
+        continue;
+      }
+      return entries.slice(from, from + limit).map((entry) => ({
+        sha: entry.oid,
+        author: { name: entry.commit.author.name, email: entry.commit.author.email },
+        timestamp: new Date(entry.commit.author.timestamp * 1000).toISOString(),
+        message: entry.commit.message.replace(/\n+$/, ""),
+      }));
+    }
   }
 
   /**

@@ -23,17 +23,19 @@ await repo.clone();                    // every branch; draft checked out
 await repo.writeFile("main.ts", "export {};\n");
 await repo.commit("Edit main");        // stages every working-tree change
 await repo.push();                     // the draft branch
-const sha = await repo.publish();      // the platform promotes draft to master; returns the published sha
+const { publishedSha, refreshed } = await repo.publish(); // the platform promotes draft to master
 
 await repo.log({ rev: "master", limit: 20 });   // CommitInfo[], newest first; page with `before`
-await repo.listTree(sha);                       // files at a revision
-await repo.readText(sha, "main.ts");
+await repo.listTree(publishedSha);                       // files at a revision
+await repo.readText(publishedSha, "main.ts");
 await repo.diff(a, b);                          // FileChange[] between two revisions
 
 const legacy = new LegacyHistoryClient({ baseUrl, token });
 const entries = await legacy.list("654015___1001", { limit: 50 });   // newest first
 const tree = await legacy.get("654015___1001", entries[0].id);       // saveState v1 or v0, one tree type
 ```
+
+Paths are `/`-separated and stay inside the working tree: a backslash, `..` or a `.git` segment is refused.
 
 ## Refusals
 
@@ -46,7 +48,18 @@ the ref; `protectedBranch` for master), `GitNotFastForwardError`, `PublishRefuse
 ## Publish
 
 `publish()` sends the platform's existing publish: a GraphQL `updateScript<Type>` mutation with `takeSnapshot: true`
-on `/gql` (bearer token), reading `config.publishedSha` from the answer. The local draft must already be pushed.
+on `/gql`, reading `config.publishedSha` from the answer. The local draft must already be pushed. `/gql` enforces
+the CSRF token on every call, bearer included, so the call mirrors `b6p-core`'s `csrfFetch`: the bearer opens a session,
+the token is read from `/csrf-token` and sent as `B6P-CSRF-TOKEN` with the session cookie (kept in a small jar in Node;
+a browser keeps its own), and a refused token is retried once. It resolves to `{ publishedSha, refreshed, refreshError? }`:
+the publish has happened once it resolves, and `refreshed: false` only means the follow-up fetch of `origin/master` failed.
+
+## Bundling for a browser
+
+isomorphic-git needs a global `Buffer`, and its `safe-buffer` dependency requires `"buffer"`. This package depends on the
+npm `buffer` package (pinned) and installs it as `globalThis.Buffer` when none exists (the first thing its entry does),
+so a bundler resolves `"buffer"` to it with no polyfill plugin and no alias. `test/BrowserBundle.test.js` bundles the
+package with esbuild (`platform: "browser"`, no plugins) to keep that true.
 
 ## Tests
 

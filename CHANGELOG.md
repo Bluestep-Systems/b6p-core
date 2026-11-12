@@ -15,7 +15,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   proxy, publishes via the existing `takeSnapshot` mutation, lists git history, reads trees and diffs, and reads the
   legacy script-history archive (`/api/v1/legacy-script-history`, saveState v0 and v1 parsed into one tree). This
   package, `@bluestep-systems/b6p-core`, keeps its name and now depends on it, re-exporting it as `bsjsGit`.
-  Nothing in push, pull or deploy changed; re-basing them on git is a later change.
+  Publishing sends the CSRF token and session cookie `/gql` requires; a browser bundle needs no polyfill (the package
+  installs a `Buffer` shim). Nothing in push, pull or deploy changed; re-basing them on git is a later change.
 
 ## [0.8.1] - 2026-10-20
 

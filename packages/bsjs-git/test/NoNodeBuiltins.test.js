@@ -48,6 +48,9 @@ test("no compiled file imports a node built-in", () => {
 
 test("no compiled file uses a node-only global", () => {
   for (const file of built) {
+    if (path.basename(file) === "bufferShim.js") {
+      continue; // the one place that names Buffer: it installs the npm `buffer` package when the global is missing
+    }
     const text = fs
       .readFileSync(file, "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -58,10 +61,12 @@ test("no compiled file uses a node-only global", () => {
   }
 });
 
-test("the only runtime dependency is isomorphic-git, and it is pinned exactly", () => {
+test("the runtime dependencies are isomorphic-git and the buffer shim package, pinned exactly", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-  assert.deepStrictEqual(Object.keys(pkg.dependencies), ["isomorphic-git"]);
-  assert.match(pkg.dependencies["isomorphic-git"], /^\d+\.\d+\.\d+$/);
+  assert.deepStrictEqual(Object.keys(pkg.dependencies).sort(), ["buffer", "isomorphic-git"]);
+  for (const version of Object.values(pkg.dependencies)) {
+    assert.match(version, /^\d+\.\d+\.\d+$/);
+  }
 });
 
 if (failures > 0) {

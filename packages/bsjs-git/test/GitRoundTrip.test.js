@@ -86,7 +86,9 @@ test("clone, edit, commit, push, publish, history and diff round trip", async ()
     "before continues after the cursor"
   );
 
-  assert.strictEqual(await repo.publish(), second, "publish returns the promoted sha");
+  const published = await repo.publish();
+  assert.deepStrictEqual(published, { publishedSha: second, refreshed: true }, "publish returns the promoted sha");
+  assert.ok(stub.state.csrfRequests >= 1, "the publish asked for a CSRF token");
   assert.deepStrictEqual(
     (await repo.log({ rev: "master" })).map((c) => c.sha),
     log.map((c) => c.sha),
@@ -223,6 +225,81 @@ test("a transport failure is typed", async () => {
     author: AUTHOR,
   });
   await rejects(repo.clone(), lib.GitTransportError);
+});
+
+test("publish carries the CSRF token and session; a refused token is retried once", async () => {
+  const repo = repoFor(key(REPO));
+  await repo.clone();
+  const before = stub.state.gqlRequests;
+  stub.state.rejectNextCsrf = true;
+  const result = await repo.publish();
+  assert.match(result.publishedSha, /^[0-9a-f]{40}$/);
+  assert.strictEqual(stub.state.gqlRequests - before, 2, "one refused attempt, one retry");
+  // A request without the header or the cookie is refused by the stub, so the success above proves both were sent.
+});
+
+test("a failed post-publish refresh still reports the publish", async () => {
+  stub.addRepo("654015___5005");
+  stub.repos.get("654015___5005").failFetchAfterPublish = true;
+  const repo = repoFor(key("654015___5005"));
+  await repo.clone();
+  const result = await repo.publish();
+  stub.state.failGitAfterPublish = false;
+  assert.strictEqual(result.refreshed, false);
+  assert.ok(result.refreshError instanceof lib.GitServerError);
+  assert.strictEqual(
+    result.publishedSha,
+    stub.git(stub.repos.get("654015___5005").bare, "rev-parse", "refs/heads/master")
+  );
+});
+
+test("paths with a backslash, a dot-dot or a .git segment are refused", async () => {
+  const repo = repoFor(key(REPO));
+  await repo.clone();
+  for (const bad of ["a\\b.txt", "..\\x", "../x", ".git/config", "a/../../x"]) {
+    await assert.rejects(repo.writeFile(bad, "x"), /Not a path/);
+    await assert.rejects(repo.removeFile(bad), /Not a path/);
+    await assert.rejects(repo.readFile("draft", bad), /Not a path/);
+  }
+});
+
+test("log pages across a merge without losing the other parent", async () => {
+  const name = "654015___6006";
+  const bare = stub.addRepo(name);
+  const work = path.join(tmp, "merge-work");
+  const at = (t) => ({
+    GIT_AUTHOR_DATE: `${t} +0000`,
+    GIT_COMMITTER_DATE: `${t} +0000`,
+    GIT_AUTHOR_NAME: "M",
+    GIT_AUTHOR_EMAIL: "m@example.test",
+    GIT_COMMITTER_NAME: "M",
+    GIT_COMMITTER_EMAIL: "m@example.test",
+  });
+  const g = (t, ...args) => stub.gitEnv(work, at(t), ...args);
+  fs.mkdirSync(work);
+  stub.gitEnv(tmp, {}, "clone", "-q", "-b", "draft", bare, work);
+  g(1_700_000_100, "commit", "-q", "--allow-empty", "-m", "root");
+  g(1_700_000_200, "checkout", "-q", "-b", "side");
+  g(1_700_000_300, "commit", "-q", "--allow-empty", "-m", "left");
+  g(1_700_000_400, "checkout", "-q", "draft");
+  g(1_700_000_500, "commit", "-q", "--allow-empty", "-m", "right");
+  g(1_700_000_600, "merge", "-q", "--no-ff", "-m", "merge", "side");
+  g(1_700_000_600, "push", "-q", "origin", "draft");
+  const repo = repoFor(key(name));
+  await repo.clone();
+  const all = (await repo.log({ limit: 10 })).map((c) => c.message);
+  assert.deepStrictEqual(all.slice(0, 4), ["merge", "right", "left", "root"]);
+  const one = await repo.log({ limit: 2 });
+  assert.deepStrictEqual(
+    one.map((c) => c.message),
+    ["merge", "right"]
+  );
+  const two = await repo.log({ limit: 2, before: one[1].sha });
+  assert.deepStrictEqual(
+    two.map((c) => c.message),
+    ["left", "root"],
+    "page 2 keeps the merge's left parent"
+  );
 });
 
 (async () => {

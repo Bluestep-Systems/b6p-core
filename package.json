@@ -24,7 +24,7 @@
   },
   "scripts": {
     "compile": "npm run compile -w @bluestep-systems/b6p-core-bsjs-git && tsc -p tsconfig.json",
-    "watch": "tsc -p tsconfig.json --watch",
+    "watch": "tsc -b tsconfig.json --watch",
     "check-types": "npm run compile -w @bluestep-systems/b6p-core-bsjs-git && tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist && npm run clean -w @bluestep-systems/b6p-core-bsjs-git",
     "format": "prettier --write \"src/**/*.ts\" && npm run format -w @bluestep-systems/b6p-core-bsjs-git",
