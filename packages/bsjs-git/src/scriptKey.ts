@@ -18,9 +18,24 @@ export interface ScriptRef {
  * @lastreviewed null
  */
 export const SCRIPT_PUBLISH_TYPES = {
-  "654015": { type: "formula", mutationName: "updateScriptFormula", inputType: "UpdateScriptFormulaInput" },
-  "530024": { type: "report", mutationName: "updateScriptMergeReport", inputType: "UpdateScriptMergeReportInput" },
-  "363769": { type: "endpoint", mutationName: "updateScriptEndpoint", inputType: "UpdateScriptEndpointInput" },
+  "654015": {
+    type: "formula",
+    typeName: "ScriptFormula",
+    mutationName: "updateScriptFormula",
+    inputType: "UpdateScriptFormulaInput",
+  },
+  "530024": {
+    type: "report",
+    typeName: "ScriptMergeReport",
+    mutationName: "updateScriptMergeReport",
+    inputType: "UpdateScriptMergeReportInput",
+  },
+  "363769": {
+    type: "endpoint",
+    typeName: "ScriptEndpoint",
+    mutationName: "updateScriptEndpoint",
+    inputType: "UpdateScriptEndpointInput",
+  },
 } as const;
 
 /**
@@ -28,6 +43,8 @@ export const SCRIPT_PUBLISH_TYPES = {
  * @lastreviewed null
  */
 export interface PublishMutation {
+  /** The script's GraphQL object type, for an inline fragment on `remoteObject`. */
+  readonly typeName: string;
   readonly mutationName: string;
   readonly inputType: string;
 }

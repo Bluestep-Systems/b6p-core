@@ -448,8 +448,8 @@ export class ScriptRepo {
   }
 
   /**
-   * Makes sure the script publishes over git. Reads the script's `gitPublishing` and `gitCloneUrl` and, only when it is
-   * not already in GIT mode, runs the platform's own switch (`enableGitPublishing: true` on the script's update
+   * Makes sure the script publishes over git. Reads the script's `gitPublishing` and `gitCloneUrl` with a real query
+   * (`remoteObject(id)`, no write) and, only when it is not already in GIT mode, runs the platform's own switch (`enableGitPublishing: true` on the script's update
    * mutation: synchronous, creates the repo and seeds `master` and `draft` from the WebDAV copy, and **one-way**).
    * Uses the same CSRF-carrying path as {@link publish}.
    *
@@ -458,21 +458,25 @@ export class ScriptRepo {
    * @lastreviewed null
    */
   async ensureGitMode(): Promise<string> {
-    const { mutationName, inputType } = publishMutationFor(this.script);
-    const query = `mutation GitMode($inputs: [${inputType}!]!) { ${mutationName}(inputs: $inputs) { id gitPublishing gitCloneUrl } }`;
-    const call = async (extra: Record<string, unknown>): Promise<GraphQlScript | undefined> => {
-      const body = await this.#gql(
-        query,
-        { inputs: [{ topId: compoundId(this.script), ...extra }] },
-        (m, c) => new GitModeError(m, c)
-      );
-      const node = body.data?.[mutationName];
-      return Array.isArray(node) ? node[0] : node;
-    };
-    let item = await call({});
-    if (!item?.gitPublishing) {
-      item = await call({ enableGitPublishing: true });
+    const { mutationName, inputType, typeName } = publishMutationFor(this.script);
+    const fail = (message: string, cause?: unknown): BsjsGitError => new GitModeError(message, cause);
+    const id = compoundId(this.script);
+    const read = await this.#gql(
+      `query GitMode($id: String!) { remoteObject(id: $id) { ... on ${typeName} { gitPublishing gitCloneUrl } } }`,
+      { id },
+      fail
+    );
+    const current = read.data?.remoteObject as GraphQlScript | undefined;
+    if (current?.gitPublishing && current.gitCloneUrl) {
+      return current.gitCloneUrl;
     }
+    const enabled = await this.#gql(
+      `mutation EnableGit($inputs: [${inputType}!]!) { ${mutationName}(inputs: $inputs) { id gitPublishing gitCloneUrl } }`,
+      { inputs: [{ topId: id, enableGitPublishing: true }] },
+      fail
+    );
+    const node = enabled.data?.[mutationName];
+    const item = Array.isArray(node) ? node[0] : node;
     if (!item?.gitPublishing || !item.gitCloneUrl) {
       throw new GitModeError("the script is not in git mode after enabling it, or the platform gave no clone URL");
     }

@@ -310,6 +310,7 @@ test("ensureGitMode switches a WEBDAV script once and leaves a GIT script alone"
   assert.strictEqual(url, "https://stub.example.test/git/654015___7007");
   assert.strictEqual(stub.state.enableCalls - enableBefore, 1, "the WEBDAV script was switched");
   assert.strictEqual(stub.repos.get("654015___7007").mode, "GIT");
+  assert.strictEqual(stub.state.modeQueries >= 1, true, "the mode was read with a query");
   assert.strictEqual(await repo.ensureGitMode(), url);
   assert.strictEqual(stub.state.enableCalls - enableBefore, 1, "a GIT script gets no enable mutation");
   const already = stub.state.enableCalls;

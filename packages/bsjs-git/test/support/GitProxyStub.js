@@ -6,6 +6,7 @@
 // protected master. POST /gql with takeSnapshot fast-forwards master to draft the way publishFromGit does.
 // Hermetic: loopback only, temp dirs, no Bluestep server.
 
+const assert = require("node:assert");
 const http = require("node:http");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -162,6 +163,28 @@ function createStub() {
         return;
       }
       const { query, variables } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const read = /remoteObject\(id: \$id\) \{ \.\.\. on (\w+)/.exec(query);
+      if (read) {
+        // The real read: no write path, so it is answered without touching the script.
+        state.modeQueries++;
+        const target = repos.get(variables.id);
+        const gitMode = target?.mode === "GIT";
+        const typeOk = ["ScriptFormula", "ScriptMergeReport", "ScriptEndpoint"].includes(read[1]);
+        res.end(
+          JSON.stringify({
+            data: {
+              remoteObject:
+                !target || !typeOk
+                  ? {}
+                  : {
+                      gitPublishing: gitMode,
+                      gitCloneUrl: gitMode ? `https://stub.example.test/git/${variables.id}` : null,
+                    },
+            },
+          })
+        );
+        return;
+      }
       const mutation = /\{\s*(\w+)\(inputs/.exec(query)[1];
       const input = variables.inputs[0];
       const entry = repos.get(input.topId);
@@ -170,12 +193,9 @@ function createStub() {
         return;
       }
       if (!input.takeSnapshot) {
-        if (input.enableGitPublishing) {
-          state.enableCalls++;
-          entry.mode = "GIT";
-        } else {
-          state.modeQueries++;
-        }
+        assert(input.enableGitPublishing === true, "only enableGitPublishing is a non-publish mutation here");
+        state.enableCalls++;
+        entry.mode = "GIT";
         const gitMode = entry.mode === "GIT";
         res.end(
           JSON.stringify({

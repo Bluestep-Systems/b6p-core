@@ -57,9 +57,8 @@ and a refused one retried once. Session mode relies on the platform's git proxy 
 
 `ensureGitMode()` reads the script's `gitPublishing` / `gitCloneUrl` and, only if it is not in GIT mode, runs
 `enableGitPublishing: true` on the script's update mutation (synchronous, creates and seeds the repo, **one-way**).
-`clone({ ensureGit: true })` does it first; a plain `clone()` never flips a script. The mode is read through a no-op
-update of the script (`{ id gitPublishing gitCloneUrl }`), since scripts have no stable read query to rely on.
-
+`clone({ ensureGit: true })` does it first; a plain `clone()` never flips a script.
+The mode is read with a real query, `remoteObject(id: "<classid>___<seqnum>") { ... on ScriptFormula|ScriptMergeReport|ScriptEndpoint { gitPublishing gitCloneUrl } }`, not a write.
 ## Publish
 
 `publish()` sends the platform's existing publish: a GraphQL `updateScript<Type>` mutation with `takeSnapshot: true`
