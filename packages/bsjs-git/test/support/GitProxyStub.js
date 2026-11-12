@@ -140,6 +140,7 @@ function createStub() {
     sessionAuthorizationSeen: false,
     rejectNextCsrf: false,
     failGitAfterPublish: false,
+    publishInputs: [],
   };
 
   /** A signed-in browser session: the cookie alone, no Authorization header. */
@@ -232,7 +233,32 @@ function createStub() {
         );
         return;
       }
+      // A test hook: someone else pushes between this client's verification and the publish.
+      entry.beforePublish?.();
       const draft = git(entry.bare, "rev-parse", "refs/heads/draft");
+      // The contract: a publish names the draft commit the caller verified; a draft that moved since is refused.
+      state.publishInputs.push(input);
+      if (input.expectedDraftSha !== undefined && input.expectedDraftSha !== draft) {
+        res.end(
+          JSON.stringify({
+            errors: [
+              {
+                message: "The draft changed after it was checked",
+                extensions: {
+                  code: "PUBLISH_REFUSED",
+                  reason: "draft moved",
+                  publish: { expected: input.expectedDraftSha, actual: draft },
+                },
+              },
+            ],
+          })
+        );
+        return;
+      }
+      if (entry.garblePublish) {
+        res.end("<html>not json</html>");
+        return;
+      }
       git(entry.bare, "update-ref", "refs/heads/master", draft);
       state.failGitAfterPublish = entry.failFetchAfterPublish === true;
       res.end(JSON.stringify({ data: { [mutation]: [{ id: input.topId, config: { publishedSha: draft } }] } }));

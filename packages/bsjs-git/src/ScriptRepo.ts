@@ -7,6 +7,8 @@ import {
   GitNotFastForwardError,
   GitPushRejectedError,
   GitUnpushedChangesError,
+  DRAFT_MOVED_REASON,
+  PublishDraftMovedError,
   PublishFailedError,
   PublishRefusedError,
 } from "./errors";
@@ -176,6 +178,31 @@ export interface LogOptions {
 }
 
 /**
+ * Options of {@link ScriptRepo.clone}.
+ * @lastreviewed null
+ */
+export interface CloneOptions {
+  /** First run {@link ScriptRepo.ensureGitMode}. Off by default: a read-only clone must not flip a script. */
+  readonly ensureGit?: boolean;
+  /** Only this many commits of history (a shallow clone); more with {@link ScriptRepo.deepen}. Default: all. */
+  readonly depth?: number;
+  /** Fetch only `ref` (and the published branch, at the same depth) instead of every branch. Default false. */
+  readonly singleBranch?: boolean;
+  /** The branch to check out; default the draft branch. */
+  readonly ref?: string;
+}
+
+/**
+ * One page of {@link ScriptRepo.logPage}.
+ * @lastreviewed null
+ */
+export interface LogPage {
+  readonly commits: CommitInfo[];
+  /** The history loaded here ends before the page did: deepen the clone and ask again. */
+  readonly shallowBoundary: boolean;
+}
+
+/**
  * What {@link ScriptRepo.publish} did.
  * @lastreviewed null
  */
@@ -263,20 +290,93 @@ export class ScriptRepo {
    * @throws {GitRepoNotFoundError} when the script has no repo or is not visible.
    * @lastreviewed null
    */
-  async clone(options: { readonly ensureGit?: boolean } = {}): Promise<void> {
+  async clone(options: CloneOptions = {}): Promise<void> {
     if (options.ensureGit) {
       await this.ensureGitMode();
     }
+    const ref = options.ref ?? DRAFT_BRANCH;
+    const singleBranch = options.singleBranch ?? false;
+    const depth = options.depth;
     await git.clone({
       fs: this.#fs,
       http: this.#http,
       dir: this.dir,
       url: this.url,
       remote: REMOTE,
-      ref: DRAFT_BRANCH,
-      singleBranch: false,
+      ref,
+      singleBranch,
       noTags: true,
+      ...(depth !== undefined ? { depth } : {}),
     });
+    if (singleBranch && ref !== PUBLISHED_BRANCH) {
+      // The published head comes along at the same depth: the publish markers (what is live) need it.
+      await this.#fetchBranch(PUBLISHED_BRANCH, depth === undefined ? {} : { depth });
+    }
+  }
+
+  /**
+   * Fetches more history into a shallow clone: `depth` further commits past what is loaded, on the draft and published
+   * branches. A no-op on a clone with full history.
+   * @lastreviewed null
+   */
+  async deepen(depth: number): Promise<void> {
+    if (!(await this.isShallow())) {
+      return;
+    }
+    await this.#fetchBranch(DRAFT_BRANCH, { depth, relative: true });
+    await this.#fetchBranch(PUBLISHED_BRANCH, { depth, relative: true });
+  }
+
+  /**
+   * Whether this clone has a history boundary (it was cloned with a depth and not fully deepened).
+   * @lastreviewed null
+   */
+  async isShallow(): Promise<boolean> {
+    return (await this.#shallowCommits()).size > 0;
+  }
+
+  async #shallowCommits(): Promise<Set<string>> {
+    try {
+      const text = await this.#fs.promises.readFile(`${this.dir}/.git/shallow`, "utf8");
+      return new Set(
+        String(text)
+          .split(/\r?\n/)
+          .filter((line) => SHA.test(line.trim()))
+          .map((line) => line.trim())
+      );
+    } catch {
+      return new Set();
+    }
+  }
+
+  async #exists(path: string): Promise<boolean> {
+    try {
+      await this.#fs.promises.stat(path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** One branch at a depth; a branch the platform does not have (a never-published script has no master) is skipped. */
+  async #fetchBranch(branch: string, extra: { depth?: number; relative?: boolean }): Promise<void> {
+    try {
+      await git.fetch({
+        fs: this.#fs,
+        http: this.#http,
+        dir: this.dir,
+        url: this.url,
+        remote: REMOTE,
+        ref: branch,
+        singleBranch: true,
+        tags: false,
+        ...extra,
+      });
+    } catch (error) {
+      if (!isGitError(error, "NotFoundError")) {
+        throw error;
+      }
+    }
   }
 
   /**
@@ -390,10 +490,17 @@ export class ScriptRepo {
   async commit(
     message: string,
     author?: GitIdentity,
-    options: { readonly parents?: readonly string[] } = {}
+    options: { readonly parents?: readonly string[]; readonly force?: readonly string[] } = {}
   ): Promise<string | undefined> {
     const who = requireIdentity(author ?? this.#author);
     const parent = options.parents ? [...options.parents] : undefined;
+    for (const forced of options.force ?? []) {
+      const filepath = posixClean(forced);
+      if (await this.#exists(`${this.dir}/${filepath}`)) {
+        // Staged even when .gitignore matches it; once in the index it is tracked like any other file.
+        await git.add({ fs: this.#fs, dir: this.dir, filepath, force: true });
+      }
+    }
     const matrix = await git.statusMatrix({ fs: this.#fs, dir: this.dir });
     let changed = 0;
     for (const [path, head, workdir, stage] of matrix) {
@@ -509,6 +616,41 @@ export class ScriptRepo {
   }
 
   /**
+   * Whether the script publishes over git, read with a query (no write, nothing is switched).
+   * @returns `gitPublishing` and, when it is, the clone URL as the platform reports it.
+   * @throws {GitModeError} when the platform does not answer.
+   * @lastreviewed null
+   */
+  async gitMode(): Promise<{ readonly gitPublishing: boolean; readonly cloneUrl: string | null }> {
+    const { typeName } = publishMutationFor(this.script);
+    const read = await this.#gql(
+      `query GitMode($id: String!) { remoteObject(id: $id) { ... on ${typeName} { gitPublishing gitCloneUrl } } }`,
+      { id: compoundId(this.script) },
+      (message, cause) => new GitModeError(message, cause)
+    );
+    const current = read.data?.remoteObject as GraphQlScript | undefined;
+    return { gitPublishing: current?.gitPublishing === true, cloneUrl: current?.gitCloneUrl ?? null };
+  }
+
+  /**
+   * The branch the working tree has checked out, or `undefined` when HEAD is detached.
+   * @lastreviewed null
+   */
+  async currentBranch(): Promise<string | undefined> {
+    return (await git.currentBranch({ fs: this.#fs, dir: this.dir, fullname: false })) ?? undefined;
+  }
+
+  /**
+   * Paths whose staged content differs from both the last commit and the working-tree file: changes that exist only in
+   * the index, which a checkout would discard.
+   * @lastreviewed null
+   */
+  async stagedOnlyChanges(): Promise<string[]> {
+    const matrix = await git.statusMatrix({ fs: this.#fs, dir: this.dir });
+    return matrix.filter(([, , , stage]) => stage === 3).map(([filepath]) => filepath);
+  }
+
+  /**
    * {@link ensureGitMode}, also saying whether this call is the one that switched the script.
    * @returns `cloneUrl` as the platform reports it; `switched` is true when the script was in WEBDAV mode and this
    *          call turned git on (one-way).
@@ -516,17 +658,12 @@ export class ScriptRepo {
    * @lastreviewed null
    */
   async ensureGitModeResult(): Promise<{ readonly cloneUrl: string; readonly switched: boolean }> {
-    const { mutationName, inputType, typeName } = publishMutationFor(this.script);
+    const { mutationName, inputType } = publishMutationFor(this.script);
     const fail = (message: string, cause?: unknown): BsjsGitError => new GitModeError(message, cause);
     const id = compoundId(this.script);
-    const read = await this.#gql(
-      `query GitMode($id: String!) { remoteObject(id: $id) { ... on ${typeName} { gitPublishing gitCloneUrl } } }`,
-      { id },
-      fail
-    );
-    const current = read.data?.remoteObject as GraphQlScript | undefined;
-    if (current?.gitPublishing && current.gitCloneUrl) {
-      return { cloneUrl: current.gitCloneUrl, switched: false };
+    const current = await this.gitMode();
+    if (current.gitPublishing && current.cloneUrl) {
+      return { cloneUrl: current.cloneUrl, switched: false };
     }
     const enabled = await this.#gql(
       `mutation EnableGit($inputs: [${inputType}!]!) { ${mutationName}(inputs: $inputs) { id gitPublishing gitCloneUrl } }`,
@@ -559,6 +696,9 @@ export class ScriptRepo {
     if (body.errors?.length) {
       const first = body.errors[0];
       if (first.extensions?.code === "PUBLISH_REFUSED") {
+        if (first.extensions.reason === DRAFT_MOVED_REASON) {
+          throw new PublishDraftMovedError(first.extensions.publish, first.message);
+        }
         throw new PublishRefusedError(first.extensions.reason, first.extensions.publish, first.message);
       }
       throw fail(body.errors.map((e) => e.message).join("; "));
@@ -587,7 +727,7 @@ export class ScriptRepo {
     const query = `mutation Publish($inputs: [${inputType}!]!) { ${mutationName}(inputs: $inputs) { id config { publishedSha } } }`;
     const body = await this.#gql(
       query,
-      { inputs: [{ topId: compoundId(this.script), takeSnapshot: true }] },
+      { inputs: [{ topId: compoundId(this.script), takeSnapshot: true, expectedDraftSha: local }] },
       (m, c) => new PublishFailedError(m, { cause: c })
     );
     const node = body.data?.[mutationName];
@@ -610,6 +750,16 @@ export class ScriptRepo {
    * @lastreviewed null
    */
   async log(options: LogOptions = {}): Promise<CommitInfo[]> {
+    return (await this.logPage(options)).commits;
+  }
+
+  /**
+   * {@link log}, also saying whether the walk stopped at the shallow boundary of a bounded clone: `shallowBoundary` is
+   * true when fewer commits than asked for came back because the history loaded here ends, not because the repo's does.
+   * The caller then calls {@link deepen} and asks again from the same cursor.
+   * @lastreviewed null
+   */
+  async logPage(options: LogOptions = {}): Promise<LogPage> {
     const limit = options.limit ?? 50;
     const start = await this.#resolve(options.rev ?? DRAFT_BRANCH);
     const { before } = options;
@@ -620,19 +770,25 @@ export class ScriptRepo {
       const entries = await git.log({ fs: this.#fs, dir: this.dir, ref: start, depth });
       const exhausted = entries.length < depth;
       const from = before ? entries.findIndex((entry) => entry.oid === before) + 1 : 0;
+      const boundary =
+        exhausted && entries.length > 0 && (await this.#shallowCommits()).has(entries[entries.length - 1].oid);
       if (before && from === 0 && exhausted) {
-        return [];
+        return { commits: [], shallowBoundary: boundary };
       }
       if ((before && from === 0) || (entries.length < from + limit && !exhausted)) {
         depth *= 2;
         continue;
       }
-      return entries.slice(from, from + limit).map((entry) => ({
-        sha: entry.oid,
-        author: { name: entry.commit.author.name, email: entry.commit.author.email },
-        timestamp: new Date(entry.commit.author.timestamp * 1000).toISOString(),
-        message: entry.commit.message.replace(/\n+$/, ""),
-      }));
+      const page = entries.slice(from, from + limit);
+      return {
+        commits: page.map((entry) => ({
+          sha: entry.oid,
+          author: { name: entry.commit.author.name, email: entry.commit.author.email },
+          timestamp: new Date(entry.commit.author.timestamp * 1000).toISOString(),
+          message: entry.commit.message.replace(/\n+$/, ""),
+        })),
+        shallowBoundary: boundary && page.length < limit,
+      };
     }
   }
 

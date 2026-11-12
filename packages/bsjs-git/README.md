@@ -21,10 +21,13 @@ const repo = new ScriptRepo({
 
 await repo.ensureGitMode();            // WEBDAV script -> git (one-way); no-op when already git. Returns the clone URL
 await repo.clone();                    // every branch; draft checked out (or clone({ ensureGit: true }) for both)
+                                       // clone({ depth: 50, singleBranch: true }): a bounded clone (plus master's head at the same depth);
+                                       // repo.deepen(50) loads older history; repo.logPage(...).shallowBoundary says when to
 await repo.writeFile("main.ts", "export {};\n");
 await repo.commit("Edit main");        // stages every working-tree change
                                        // commit(msg, author, { parents }) makes a (merge) commit over the given parents even with nothing staged
 await repo.push();                     // the draft branch
+                                       // commit(msg, author, { force: [".build/app.js"] }) stages those paths even when .gitignore matches them
 const { publishedSha, refreshed } = await repo.publish(); // the platform promotes draft to master
 
 await repo.sha("origin/draft");                 // a branch or sha as a commit sha
@@ -66,6 +69,8 @@ and a refused one retried once. Session mode relies on the platform's git proxy 
 The mode is read with a real query, `remoteObject(id: "<classid>___<seqnum>") { ... on ScriptFormula|ScriptMergeReport|ScriptEndpoint { gitPublishing gitCloneUrl } }`, not a write.
 
 ## Publish
+
+The mutation carries `expectedDraftSha`: the local draft head `publish()` verified equals the platform's. If the platform's draft moved since (someone pushed in between), it refuses with reason `draft moved`, thrown as `PublishDraftMovedError` (a `PublishRefusedError`), and publishes nothing. `gitMode()` reads the mode without switching anything.
 
 `publish()` sends the platform's existing publish: a GraphQL `updateScript<Type>` mutation with `takeSnapshot: true`
 on `/gql`, reading `config.publishedSha` from the answer. The local draft must already be pushed. `/gql` enforces

@@ -246,3 +246,21 @@ export class GitModeError extends BsjsGitError {
     super("GIT_MODE_FAILED", `Could not switch the script to git publishing: ${message}`, { cause });
   }
 }
+
+/**
+ * The reason the platform gives (`PUBLISH_REFUSED`) when the draft it holds is no longer the commit the caller verified
+ * and asked to publish (`expectedDraftSha`).
+ * @lastreviewed null
+ */
+export const DRAFT_MOVED_REASON = "draft moved";
+
+/**
+ * The publish was refused because the platform's draft moved after this client verified it (someone pushed in between):
+ * nothing was published, and the draft to publish must be fetched and checked again.
+ * @lastreviewed null
+ */
+export class PublishDraftMovedError extends PublishRefusedError {
+  constructor(details: unknown, message: string) {
+    super(DRAFT_MOVED_REASON, details, message);
+  }
+}
