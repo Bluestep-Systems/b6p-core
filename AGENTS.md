@@ -1,6 +1,7 @@
 # b6p-core — agent rules
 
-Single-package library `@bluestep-systems/b6p-core`, published to public npm: the vscode-free core
+Library `@bluestep-systems/b6p-core`, published to public npm (an npm-workspaces repo: this package is the repo root,
+and `packages/bsjs-git` is `@bluestep-systems/b6p-core-bsjs-git`, see below): the vscode-free core
 shared by the `b6p` CLI and the VS Code extension, each in its own repo depending on this package by
 version. Public API surface is [src/index.ts](src/index.ts); the headless orchestrator is
 [src/B6PCore.ts](src/B6PCore.ts).
@@ -72,6 +73,20 @@ Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionMan
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
 snapshot history), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
 parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles).
+
+## The bsjs-git package
+
+`packages/bsjs-git` (`@bluestep-systems/b6p-core-bsjs-git`) is the browser-safe git client: isomorphic-git against the
+platform's git proxy, publish, git history, and the legacy history archive client. It is a dependency of this package
+(re-exported as `bsjsGit`) and of the BSJS editor. Its rules differ from the rest of the repo:
+
+- **No Node built-ins, no Node-only globals** (`Buffer`, `process`) in `packages/bsjs-git/src`; the file system is
+  injected. `packages/bsjs-git/test/NoNodeBuiltins.test.js` fails the build otherwise.
+- **No WebDAV, no `SessionManager`** there: it talks to the proxy with the bearer token directly and must not import
+  from this package (the dependency runs one way).
+- Its own scripts mirror this package's (`compile`, `check-types`, `format-check`, `test`); the root scripts build and
+  run both, so `npm test` and `npm run check-types` here cover both packages.
+- It is published first (see `publish.yml`); bump its version when its API changes.
 
 ## Commands
 

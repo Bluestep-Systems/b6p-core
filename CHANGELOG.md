@@ -5,6 +5,18 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Two packages in one repo** (npm workspaces, ClickUp CU-86bd2nrue). `packages/bsjs-git` is the new
+  `@bluestep-systems/b6p-core-bsjs-git`: a browser- and Node-safe git client for BSJS scripts (isomorphic-git, file
+  system injected, no Node built-ins). It clones, commits and pushes a script's draft branch through the platform git
+  proxy, publishes via the existing `takeSnapshot` mutation, lists git history, reads trees and diffs, and reads the
+  legacy script-history archive (`/api/v1/legacy-script-history`, saveState v0 and v1 parsed into one tree). This
+  package, `@bluestep-systems/b6p-core`, keeps its name and now depends on it, re-exporting it as `bsjsGit`.
+  Nothing in push, pull or deploy changed; re-basing them on git is a later change.
+
 ## [0.8.1] - 2026-10-20
 
 ### Fixed

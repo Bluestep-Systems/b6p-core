@@ -131,3 +131,6 @@ export type {
   ScriptGQLBadResp,
   ConfigJsonContent,
 } from "./types";
+
+// ─── Browser-safe git client (separate package, re-exported for consumers of this one) ───
+export * as bsjsGit from "@bluestep-systems/b6p-core-bsjs-git";
