@@ -735,7 +735,7 @@ test("4. symlinks are never followed out of the draft folder (deploy reads, pull
   if (!trySymlink(outside, path.join(pulled.draftPath, "evil"))) {
     return;
   }
-  await rejects(pullDraft(pulled), (e) => assert.strictEqual(e.name, "GitSymlinkError"));
+  await rejects(pullDraft(pulled), (e) => assert.ok(e instanceof core.GitSymlinkError));
   assert.ok(!fs.existsSync(path.join(outside, "x.txt")));
 });
 
@@ -868,6 +868,49 @@ test("12. a snapshot push publishes the draft commit it pushed (the publish name
   const outcome = await pushDraft(target, { ...PUSH, snapshot: true });
   assert.strictEqual(stub.state.publishInputs.at(-1).expectedDraftSha, outcome.commitSha);
   assert.strictEqual(outcome.publish.publishedSha, outcome.commitSha);
+});
+
+test("deploy returns a result per target: a target failing on identity does not hide the one that succeeded, and no success is printed", async () => {
+  const prompt = recordingPrompt();
+  const errors = [];
+  prompt.error = (m) => errors.push(m);
+  const infos = [];
+  prompt.info = (m) => infos.push(m);
+  const config = JSON.stringify({
+    sourceRootPath: tmp,
+    targets: [{ url: "https://a.example.test/files/1/", snapshot: true }, { url: "https://b.example.test/files/2/" }],
+  });
+  const ctx = {
+    ...fakeCtx(prompt),
+    fs: { exists: async () => true, readFile: async () => Buffer.from(config) },
+  };
+  const service = new ScriptService(ctx);
+  service.push = async (opts) => {
+    if (opts.targetUrl.includes("//b.")) {
+      throw new bsjsGit.GitIdentityError("No commit author found");
+    }
+    return {
+      pushed: true,
+      commitSha: "a".repeat(40),
+      publishedSha: "a".repeat(40),
+      publishError: null,
+      switchedToGit: false,
+    };
+  };
+  const results = await service.deploy({ configPath: path.join(tmp, "deploy.json") });
+  assert.strictEqual(results.length, 2);
+  assert.deepStrictEqual(results[0], {
+    target: "https://a.example.test/files/1/",
+    pushed: true,
+    commitSha: "a".repeat(40),
+    publishedSha: "a".repeat(40),
+    publishError: null,
+    switchedToGit: false,
+  });
+  assert.strictEqual(results[1].pushed, false);
+  assert.ok(results[1].error instanceof bsjsGit.GitIdentityError);
+  assert.ok(!infos.some((m) => /Deploy complete/.test(m)), "no success while a target failed");
+  assert.ok(errors.some((m) => m.includes("1 of 2") && m.includes("https://b.example.test/files/2/")));
 });
 (async () => {
   baseUrl = await stub.listen();

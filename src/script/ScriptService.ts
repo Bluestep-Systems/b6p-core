@@ -72,6 +72,21 @@ export interface DeployConfig {
 }
 
 /**
+ * What {@link ScriptService.deploy} did for one target. `error` carries the typed error (for example a
+ * `GitIdentityError`) when the target failed before or during the push; the other fields are then empty.
+ * @lastreviewed null
+ */
+export interface DeployTargetResult {
+  target: string;
+  pushed: boolean;
+  commitSha: string | null;
+  publishedSha: string | null;
+  publishError: string | null;
+  switchedToGit: boolean;
+  error?: unknown;
+}
+
+/**
  * Every script-management operation: moving a script tree between the local
  * filesystem and the BlueStep platform over WebDAV, and reasoning about the
  * difference between the two.
@@ -512,14 +527,14 @@ export class ScriptService {
 
   // ── Deploy ────────────────────────────────────────────────────────
 
-  async deploy(opts: { configPath: string }): Promise<void> {
+  async deploy(opts: { configPath: string }): Promise<DeployTargetResult[] | null> {
     this.ctx.logger.info(`Quick deploy from config: ${opts.configPath}`);
 
     // Read config file
     const configUri = B6PUri.fromFsPath(opts.configPath);
     if (!(await this.ctx.fs.exists(configUri))) {
       this.ctx.prompt.error(`Config file not found: ${opts.configPath}`);
-      return;
+      return null;
     }
 
     const configContent = await this.ctx.fs.readFile(configUri);
@@ -530,20 +545,21 @@ export class ScriptService {
       config = JSON.parse(configText) as DeployConfig;
     } catch (error) {
       this.ctx.prompt.error(`Failed to parse config file: ${error instanceof Error ? error.message : error}`);
-      return;
+      return null;
     }
 
     if (!config.sourceRootPath || !config.targets || config.targets.length === 0) {
       this.ctx.prompt.error("Invalid config file. Required fields: sourceRootPath, targets[]");
-      return;
+      return null;
     }
 
     this.ctx.logger.info(`Deploying to ${config.targets.length} target(s)`);
 
+    const results: DeployTargetResult[] = [];
     for (const target of config.targets) {
       this.ctx.logger.info(`Deploying to: ${target.url}`);
       try {
-        await this.push({
+        const pushed = await this.push({
           targetUrl: target.url,
           rootPath: config.sourceRootPath,
           snapshot: target.snapshot ?? false,
@@ -552,12 +568,40 @@ export class ScriptService {
           adoptUnbound: false,
           enableGit: config.enableGit,
         });
+        results.push({
+          target: target.url,
+          pushed: pushed?.pushed ?? false,
+          commitSha: pushed?.commitSha ?? null,
+          publishedSha: pushed?.publishedSha ?? null,
+          publishError: pushed?.publishError ?? null,
+          switchedToGit: pushed?.switchedToGit ?? false,
+        });
       } catch (error) {
         this.ctx.logger.error(`Failed to deploy to ${target.url}: ${error instanceof Error ? error.message : error}`);
+        results.push({
+          target: target.url,
+          pushed: false,
+          commitSha: null,
+          publishedSha: null,
+          publishError: null,
+          switchedToGit: false,
+          error,
+        });
       }
     }
 
-    this.ctx.prompt.info("Deploy complete!");
+    const failed = results.filter((r) => r.error !== undefined || !r.pushed || r.publishError !== null);
+    if (failed.length === 0) {
+      this.ctx.prompt.info("Deploy complete!");
+    } else {
+      this.ctx.prompt.error(
+        `Deploy finished with ${failed.length} of ${results.length} target(s) failed:\n\n` +
+          failed
+            .map((r) => `${r.target}: ${r.error instanceof Error ? r.error.message : (r.publishError ?? "not pushed")}`)
+            .join("\n")
+      );
+    }
+    return results;
   }
 
   // ── Setup URL ─────────────────────────────────────────────────────
