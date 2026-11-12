@@ -98,10 +98,12 @@ jobs:
       - name: Install dependencies
         run: |
           for i in 1 2 3; do
-            npm ci --prefer-offline --no-audit && break
+            npm ci --prefer-offline --no-audit && exit 0
             echo "Attempt $i failed, retrying..."
             sleep 5
           done
+          echo "::error::npm ci failed after 3 attempts"
+          exit 1
         shell: bash
 
       - name: Type check
