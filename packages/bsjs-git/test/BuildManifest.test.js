@@ -165,7 +165,13 @@ test("exempt: an externally built script, and a tree with no tsconfig.json at an
   );
   assert.strictEqual(await lib.planBuildManifest([{ path: "scripts/app.js", oid: "1".repeat(40) }], none), undefined);
   assert.notStrictEqual(
-    await lib.planBuildManifest([{ path: "client/tsconfig.json", oid: "1".repeat(40) }], none),
+    await lib.planBuildManifest(
+      [
+        { path: "client/tsconfig.json", oid: "1".repeat(40) },
+        { path: "client/main.ts", oid: "2".repeat(40) },
+      ],
+      none
+    ),
     undefined,
     "a nested tsconfig counts"
   );
@@ -340,6 +346,85 @@ test("a tsconfig with no manifest is BUILD_MANIFEST_MISSING; a manifest that doe
   await rejects(repo.publish(), lib.PublishBuildManifestInvalidError);
 });
 
+test("TypeScript sources: ts tsx mts cts in any case, never a declaration, never under the output folder", () => {
+  const ts = (p, folder = ".build") => lib.isTypeScriptSource(p, folder);
+  for (const p of ["a.ts", "a.tsx", "a.mts", "a.cts", "A.TS", "x/B.Tsx", "d.ts", "ad.ts", "a.dd.ts"]) {
+    assert.strictEqual(ts(p), true, p);
+  }
+  for (const p of [
+    "globals.d.ts",
+    "env.d.mts",
+    "x/types.D.TS",
+    "a.d.cts",
+    "a.js",
+    "a.json",
+    "a.mjs",
+    ".build/a.ts",
+    "README.md",
+  ]) {
+    assert.strictEqual(ts(p), false, p);
+  }
+  assert.strictEqual(ts("dist/a.ts", "dist"), false);
+  assert.strictEqual(ts("scripts/a.ts", ""), true, "in-place output: a source beside its output");
+  assert.strictEqual(lib.isBuildSource("globals.d.ts", ".build"), true, "a declaration is still a source");
+});
+
+test("a JS-only draft is exempt: no manifest, it publishes; one .ts makes the manifest required; a .d.ts-only draft is exempt; declarations stay in sources", async () => {
+  stub.addRepo("654015___7301", { files: { "tsconfig.json": tsconfig(), "scripts/app.js": "exports.v = 1;\n" } });
+  const repo = repoFor("654015___7301");
+  await repo.clone();
+  await repo.writeFile("scripts/app.js", "exports.v = 2;\n");
+  await repo.commit("js edit", AUTHOR, { buildManifest: {} });
+  assert.ok(
+    !fs.existsSync(path.join(repo.dir, ".build", ".b6p-build.json")),
+    "no manifest for a draft with no TypeScript"
+  );
+  await repo.push();
+  await repo.publish();
+
+  await repo.writeFile("scripts/new.ts", "export const n = 1;\n");
+  await repo.commit("add one .ts, no build", AUTHOR);
+  await repo.push();
+  await rejects(repo.publish(), lib.PublishBuildManifestMissingError);
+  await repo.commit("build", AUTHOR, { buildManifest: {}, parents: [await repo.sha("draft")] });
+  assert.ok(fs.existsSync(path.join(repo.dir, ".build", ".b6p-build.json")));
+  await repo.push();
+  await repo.publish();
+
+  stub.addRepo("654015___7302", {
+    files: { "tsconfig.json": tsconfig(), "scripts/app.js": "x\n", "types/globals.d.ts": "declare const g: number;\n" },
+  });
+  const decl = repoFor("654015___7302");
+  await decl.clone();
+  await decl.writeFile("types/globals.d.ts", "declare const g: string;\n");
+  await decl.commit("declaration only", AUTHOR, { buildManifest: {} });
+  assert.ok(!fs.existsSync(path.join(decl.dir, ".build", ".b6p-build.json")), "a .d.ts alone is exempt");
+  await decl.push();
+  await decl.publish();
+
+  await decl.writeFile("scripts/app.ts", "export {};\n");
+  await decl.commit("a real ts", AUTHOR, { buildManifest: {} });
+  const sources = Object.keys(JSON.parse(read(decl, ".build/.b6p-build.json")).sources);
+  assert.deepStrictEqual(
+    sources,
+    ["scripts/app.js", "scripts/app.ts", "tsconfig.json", "types/globals.d.ts"],
+    "the declaration is still listed"
+  );
+  await decl.push();
+  await decl.publish();
+
+  // A .ts only under the output folder does not count.
+  stub.addRepo("654015___7303", {
+    files: { "tsconfig.json": tsconfig(), ".build/gen.ts": "export {};\n", "a.js": "x\n" },
+  });
+  const inside = repoFor("654015___7303");
+  await inside.clone();
+  await inside.writeFile("a.js", "y\n");
+  await inside.commit("edit", AUTHOR, { buildManifest: {} });
+  assert.ok(!fs.existsSync(path.join(inside.dir, ".build", ".b6p-build.json")));
+  await inside.push();
+  await inside.publish();
+});
 (async () => {
   baseUrl = await stub.listen();
   for (const [name, fn] of pending) {

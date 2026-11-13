@@ -52,6 +52,7 @@ export {
   gitBlobSha1,
   hasNoTsconfig,
   isBuildSource,
+  isTypeScriptSource,
   parseJsonc,
   planBuildManifest,
   type BuildManifestPlan,

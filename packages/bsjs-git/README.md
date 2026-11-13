@@ -99,7 +99,7 @@ from. Whoever builds writes it in the same commit as the output: `commit(msg, au
 tree, computes the manifest over what the commit will hold and commits it with it. Pass the option only after a build that
 succeeded and emitted everything; after a failed or partial build omit it, which leaves any existing manifest as it is
 (so a publish refuses it). `{ buildManifest: { externallyBuilt: true } }` writes none, and none is written for a tree
-with no `tsconfig.json`. The pure helpers (`buildOutputFolder`, `buildManifestPath`, `isBuildSource`, `gitBlobSha1`,
+with no `tsconfig.json`, nor for a draft with no TypeScript source outside the output folder (`isTypeScriptSource`: `ts tsx mts cts`, never a `*.d.*` declaration; declarations are still listed in `sources` when a manifest is written). The pure helpers (`buildOutputFolder`, `buildManifestPath`, `isBuildSource`, `gitBlobSha1`,
 `planBuildManifest`, `formatBuildManifest`) are exported. A refused publish is `PublishBuildStaleError`
 (`BUILD_STALE`), `PublishBuildManifestMissingError` (`BUILD_MANIFEST_MISSING`) or `PublishBuildManifestInvalidError`
 (`BUILD_MANIFEST_INVALID`), each with `withheld` (the stale paths, or the manifest's path).

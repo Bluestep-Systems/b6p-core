@@ -86,6 +86,21 @@ function buildCheck(entry) {
   }
   folder = folder.replace(/\/+$/, "");
   const manifestPath = folder === "" ? ".b6p-build.json" : `${folder}/.b6p-build.json`;
+  // No TypeScript source outside the output folder (a declaration does not count): nothing to build, so exempt.
+  const tsSource = [...tree.keys()].some((p) => {
+    const name = p.split("/").pop();
+    const dot = name.lastIndexOf(".");
+    return (
+      dot >= 0 &&
+      ["ts", "tsx", "mts", "cts"].includes(name.slice(dot + 1).toLowerCase()) &&
+      !name.slice(0, dot).toLowerCase().endsWith(".d") &&
+      p !== manifestPath &&
+      (folder === "" || !p.startsWith(`${folder}/`))
+    );
+  });
+  if (!tsSource) {
+    return null;
+  }
   if (!tree.has(manifestPath)) {
     return { reason: "BUILD_MANIFEST_MISSING", withheld: [manifestPath] };
   }

@@ -59,6 +59,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `bsjs-git` 0.2.0: `publish()` sends `expectedDraftSha` (the platform refuses with `DRAFT_MOVED`, `PublishDraftMovedError`); `commit(..., { force })`; `clone({ depth, singleBranch, ref })` with `deepen()`, `isShallow()` and `logPage()` (`shallowBoundary`); `gitMode()`, `currentBranch()`, `stagedOnlyChanges()`.
 
 - `PushResult.publishRefusal` and `DeployTargetResult.publishRefusal` (`{ reason, withheld }`, from the server's `PUBLISH_REFUSED` extensions, every reason) beside the `publishError` message.
+- A draft with no TypeScript source (a `.d.ts` declaration does not count) is exempt from the build manifest, on the client (none written) and in the stub's check.
 - **Build manifest** (contract v1): a snapshot push (and deploy) writes `<outDir>/.b6p-build.json` in the same commit as the compiled output, after a successful build only (`PushOptions.externallyBuilt`/`DeployConfig.externallyBuilt` suppress it); `bsjs-git` `commit({ buildManifest })`, the manifest helpers and `PublishBuildStaleError`, `PublishBuildManifestMissingError`, `PublishBuildManifestInvalidError` (each with `withheld`).
 
 ### Removed

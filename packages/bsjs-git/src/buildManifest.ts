@@ -22,6 +22,7 @@ export const BUILD_MANIFEST_NAME = ".b6p-build.json";
 export const BUILD_MANIFEST_BUILDER = "bsjs-git/0.2.0";
 
 const SOURCE_EXTENSIONS = new Set(["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "json", "jsonc"]);
+const TYPESCRIPT_EXTENSIONS = new Set(["ts", "tsx", "mts", "cts"]);
 const DEFAULT_OUT_DIR = ".build";
 
 /**
@@ -158,6 +159,22 @@ export function isBuildSource(path: string, folder: string): boolean {
 }
 
 /**
+ * Whether the file at `path` is a TypeScript source: a source ({@link isBuildSource}) with the extension `ts`, `tsx`,
+ * `mts` or `cts` (any case) whose name is not a declaration (the part before the extension ends in `.d`, as in
+ * `globals.d.ts`). A declaration is still a source for the manifest's `sources`, but it emits nothing.
+ * @lastreviewed null
+ */
+export function isTypeScriptSource(path: string, folder: string): boolean {
+  if (!isBuildSource(path, folder)) {
+    return false;
+  }
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  const extension = name.slice(dot + 1).toLowerCase();
+  return TYPESCRIPT_EXTENSIONS.has(extension) && !name.slice(0, dot).toLowerCase().endsWith(".d");
+}
+
+/**
  * Whether a tree needs no manifest because nothing in it is compiled: no file is named `tsconfig.json`, at any depth.
  * @lastreviewed null
  */
@@ -213,7 +230,7 @@ export interface BuildManifestPlan {
 
 /**
  * The manifest for the tree a commit will hold, or `undefined` when none is to be written: the script is externally
- * built, or no file in the tree is named `tsconfig.json`.
+ * built, or no file in the tree is named `tsconfig.json`, or the tree has no TypeScript source outside the output folder ({@link isTypeScriptSource}).
  *
  * @param tree Every file of the tree as committed: path and git blob id. The manifest itself may be among them (it is
  *        not a source)
@@ -231,6 +248,10 @@ export async function planBuildManifest(
   }
   const config = (await readConfig("tsconfig.json")) ?? (await readConfig("jsconfig.json"));
   const folder = buildOutputFolder(config === undefined ? undefined : new TextDecoder().decode(config));
+  if (!tree.some((file) => isTypeScriptSource(file.path, folder))) {
+    // Its JavaScript runs as written: there is no build to be stale.
+    return undefined;
+  }
   const sources: Record<string, string> = {};
   for (const file of tree) {
     if (isBuildSource(file.path, folder)) {
