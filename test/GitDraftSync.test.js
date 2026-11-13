@@ -570,6 +570,7 @@ test("executePush (plain): the result carries commitSha, no publishedSha, and no
     "pushed",
     "switchedToGit",
     "typeCheckDiagnostics",
+    "typeCheckErrors",
   ]);
   assert.strictEqual(result.pushed, true);
   assert.strictEqual(result.commitSha, stub.git(bare(), "rev-parse", "draft"));
@@ -908,6 +909,8 @@ test("deploy returns a result per target: a target failing on identity does not 
     publishedSha: "a".repeat(40),
     publishError: null,
     publishRefusal: null,
+    typeCheckDiagnostics: null,
+    typeCheckErrors: [],
     switchedToGit: false,
   });
   assert.strictEqual(results[1].pushed, false);
@@ -1084,6 +1087,28 @@ test("deploy and executePush results carry publishRefusal", async () => {
     throw new Error("boom");
   };
   assert.strictEqual((await service.deploy({ configPath: path.join(tmp, "deploy.json") }))[0].publishRefusal, null);
+});
+
+test("deploy results carry the type-check count and located errors for the CLI's --json", async () => {
+  const errors = [{ file: "scripts/app.ts", line: 3, column: 7, code: 2322, message: "Type 'string' is not assignable to type 'number'." }];
+  const config = JSON.stringify({ sourceRootPath: tmp, targets: [{ url: "https://a.example.test/files/1/", snapshot: true }] });
+  const service = new ScriptService({
+    ...fakeCtx(recordingPrompt()),
+    fs: { exists: async () => true, readFile: async () => Buffer.from(config) },
+  });
+  service.push = async () => ({
+    pushed: true,
+    commitSha: "a".repeat(40),
+    publishedSha: "a".repeat(40),
+    publishError: null,
+    publishRefusal: null,
+    switchedToGit: false,
+    typeCheckDiagnostics: 1,
+    typeCheckErrors: errors,
+  });
+  const [result] = await service.deploy({ configPath: path.join(tmp, "deploy.json") });
+  assert.strictEqual(result.typeCheckDiagnostics, 1);
+  assert.deepStrictEqual(result.typeCheckErrors, errors);
 });
 (async () => {
   baseUrl = await stub.listen();

@@ -5,6 +5,7 @@ import { ScriptUrlParser } from "../data/ScriptUrlParser";
 import type { GitIdentity } from "@bluestep-systems/b6p-core-bsjs-git";
 import { FolderNames } from "../constants";
 import type { PublishRefusal } from "./GitSync";
+import type { TypeCheckError } from "./ScriptTranspiler";
 import { auditDraft, draftFolderOf, GitSwitchDeclinedError, pullDraft, type DraftTarget } from "./GitSync";
 import { executePush, legacySyncRecords, type PushResult } from "./push";
 import type { ScriptContext } from "./ScriptContext";
@@ -93,6 +94,16 @@ export interface DeployTargetResult {
    * @lastreviewed null
    */
   publishRefusal: PublishRefusal | null;
+  /**
+   * The type-check count of the push (the script's own sources only, never a `.d.ts`); `null` when none ran.
+   * @lastreviewed null
+   */
+  typeCheckDiagnostics: number | null;
+  /**
+   * The diagnostics counted in `typeCheckDiagnostics`, located (`file` relative to the draft folder).
+   * @lastreviewed null
+   */
+  typeCheckErrors: TypeCheckError[];
   switchedToGit: boolean;
   error?: unknown;
 }
@@ -592,6 +603,8 @@ export class ScriptService {
           publishedSha: pushed?.publishedSha ?? null,
           publishError: pushed?.publishError ?? null,
           publishRefusal: pushed?.publishRefusal ?? null,
+          typeCheckDiagnostics: pushed?.typeCheckDiagnostics ?? null,
+          typeCheckErrors: pushed?.typeCheckErrors ?? [],
           switchedToGit: pushed?.switchedToGit ?? false,
         });
       } catch (error) {
@@ -603,6 +616,8 @@ export class ScriptService {
           publishedSha: null,
           publishError: null,
           publishRefusal: null,
+          typeCheckDiagnostics: null,
+          typeCheckErrors: [],
           switchedToGit: (error as { switchedToGit?: boolean } | null)?.switchedToGit === true,
           error,
         });

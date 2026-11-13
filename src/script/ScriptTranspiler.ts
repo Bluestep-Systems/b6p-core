@@ -28,6 +28,18 @@ import { TsLibResolver } from "./TsLibResolver";
  * to abort; a true emit failure throws instead of returning.
  * @lastreviewed null
  */
+/**
+ * One TypeScript diagnostic, located.
+ * @lastreviewed null
+ */
+export interface TypeCheckError {
+  file: string;
+  line: number;
+  column: number;
+  code: number;
+  message: string;
+}
+
 export interface TranspileOutcome {
   emittedFiles: string[];
   diagnosticCount: number | null;
@@ -39,6 +51,13 @@ export interface TranspileOutcome {
    */
   fullyClean: boolean;
   uncleanReasons: string[];
+  /**
+   * The diagnostics counted in `diagnosticCount`, one entry each: those of the draft-root project located in the
+   * script's own sources (a diagnostic in any `.d.ts` is ignored entirely). `file` is relative to the draft folder,
+   * `/`-separated, empty for a diagnostic with no file; `line` and `column` count from 1 (0 with no file).
+   * @lastreviewed null
+   */
+  typeCheckErrors: TypeCheckError[];
 }
 
 /**
@@ -81,7 +100,7 @@ export function buildUncleanReasons(reports: readonly ProjectBuildReport[], draf
   const reasons: string[] = [];
   for (const r of reports) {
     if (r.errorCount > 0) {
-      reasons.push(`${r.tsConfigPath}: ${r.errorCount} error diagnostic(s)`);
+      reasons.push(`${r.tsConfigPath}: ${r.errorCount} syntax or emit error(s)`);
     }
     if (r.configErrorCount > 0) {
       reasons.push(`${r.tsConfigPath}: the tsconfig has ${r.configErrorCount} configuration diagnostic(s)`);
@@ -333,15 +352,20 @@ export class ScriptTranspiler {
         }
       }
 
-      const {
-        emittedFiles: projectEmitted,
-        diagnostics: allDiagnostics,
-        emitSkipped,
-      } = this.compileProject(tsConfigPath, sfPaths, declarationRootFiles, compilerOptions);
+      const compiled = this.compileProject(tsConfigPath, sfPaths, declarationRootFiles, compilerOptions);
+      const { emittedFiles: projectEmitted, emitSkipped } = compiled;
+      // A diagnostic located in a declaration file is not the script's: the server's generated typings are outside its
+      // control, so they are ignored entirely.
+      const ownSources = (list: readonly ts.Diagnostic[]) =>
+        list.filter((d) => !(d.file && ScriptTranspiler.isDeclarationFile(d.file.fileName)));
+      const allDiagnostics = ownSources(compiled.diagnostics);
+      const blockingErrors = ownSources(compiled.blockingDiagnostics).filter(
+        (d) => d.category === ts.DiagnosticCategory.Error
+      );
       emittedFiles.push(...projectEmitted);
       reports.push({
         tsConfigPath,
-        errorCount: allDiagnostics.filter((d) => d.category === ts.DiagnosticCategory.Error).length,
+        errorCount: blockingErrors.length,
         configErrorCount,
         emittedFiles: projectEmitted,
         noEmit: compilerOptions.noEmit === true,
@@ -387,6 +411,7 @@ export class ScriptTranspiler {
       diagnosticText: this.formatDiagnostics(gatedDiagnostics),
       fullyClean: uncleanReasons.length === 0,
       uncleanReasons,
+      typeCheckErrors: gatedDiagnostics.map((d) => this.locate(d, sharedRoot?.getDraftFolder().path())),
     };
   }
 
@@ -409,12 +434,30 @@ export class ScriptTranspiler {
     sfPaths: string[],
     declarationRootFiles: string[],
     options: ts.CompilerOptions
-  ): { emittedFiles: string[]; diagnostics: ts.Diagnostic[]; emitSkipped: boolean } {
+  ): {
+    emittedFiles: string[];
+    diagnostics: ts.Diagnostic[];
+    blockingDiagnostics: ts.Diagnostic[];
+    emitSkipped: boolean;
+  } {
     const rootFiles = Array.from(new Set([...declarationRootFiles, ...sfPaths]));
     const program = this.createProgram(rootFiles, options, tsConfigPath);
     const emitResult = program.emit();
     const diagnostics = ts.getPreEmitDiagnostics(program).concat(emitResult.diagnostics);
-    return { emittedFiles: emitResult.emittedFiles ?? [], diagnostics, emitSkipped: emitResult.emitSkipped };
+    // What makes a build unclean is told apart from the type warnings: syntax errors, emit errors, and global or option
+    // errors. Semantic (type) errors are warnings.
+    const blockingDiagnostics = [
+      ...program.getSyntacticDiagnostics(),
+      ...program.getOptionsDiagnostics(),
+      ...program.getGlobalDiagnostics(),
+      ...emitResult.diagnostics,
+    ];
+    return {
+      emittedFiles: emitResult.emittedFiles ?? [],
+      diagnostics,
+      blockingDiagnostics,
+      emitSkipped: emitResult.emitSkipped,
+    };
   }
 
   /**
@@ -446,6 +489,22 @@ export class ScriptTranspiler {
       );
     }
     return ts.createProgram(fileNames, options, host);
+  }
+
+  private locate(diagnostic: ts.Diagnostic, draftRoot: string | undefined): TypeCheckError {
+    const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+    if (!diagnostic.file || diagnostic.start === undefined) {
+      return { file: "", line: 0, column: 0, code: diagnostic.code, message };
+    }
+    const { line, character } = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
+    const relative = draftRoot ? path.relative(draftRoot, diagnostic.file.fileName) : diagnostic.file.fileName;
+    return {
+      file: relative.split(path.sep).join("/"),
+      line: line + 1,
+      column: character + 1,
+      code: diagnostic.code,
+      message,
+    };
   }
 
   private formatDiagnostics(diagnostics: readonly ts.Diagnostic[]): string {

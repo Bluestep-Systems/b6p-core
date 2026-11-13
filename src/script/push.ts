@@ -6,6 +6,7 @@ import { B6PUri } from "../B6PUri";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
 import { ScriptFactory } from "./ScriptFactory";
 import type { ScriptContext } from "./ScriptContext";
+import type { TypeCheckError } from "./ScriptTranspiler";
 import type { FileSystem } from "../providers";
 import { resolveGitIdentity } from "./GitIdentity";
 import { pushDraft, type LastSyncedLookup, type PublishRefusal } from "./GitSync";
@@ -110,6 +111,13 @@ export interface PushResult {
    */
   typeCheckDiagnostics: number | null;
   /**
+   * The diagnostics `typeCheckDiagnostics` counts, located: `{ file, line, column, code, message }` for each, with `file`
+   * relative to the draft folder. Only the script's own sources are counted, never a `.d.ts`. Empty when none, and when
+   * no type-check ran.
+   * @lastreviewed null
+   */
+  typeCheckErrors: TypeCheckError[];
+  /**
    * Whether the platform's published branch reads back at the commit it reported publishing (`publishedSha`):
    *  - `null` — no read-back ran: a plain push, an aborted one, a failed publish, or the published branch could not be
    *    fetched to compare.
@@ -163,7 +171,7 @@ async function restoreManifest(
   }
 }
 
-function notPushed(typeCheckDiagnostics: number | null): PushResult {
+function notPushed(typeCheckDiagnostics: number | null, typeCheckErrors: TypeCheckError[] = []): PushResult {
   return {
     pushed: false,
     commitSha: null,
@@ -172,6 +180,7 @@ function notPushed(typeCheckDiagnostics: number | null): PushResult {
     publishRefusal: null,
     switchedToGit: false,
     typeCheckDiagnostics,
+    typeCheckErrors,
     liveVerified: null,
     liveMismatches: [],
     keptPlatformOnly: [],
@@ -335,6 +344,7 @@ export async function executePush(opts: {
   // null rather than a count.
   let buildSucceeded = false;
   let typeCheckDiagnostics: number | null = null;
+  let typeCheckErrors: TypeCheckError[] = [];
   let typeCheckDetail = "";
   if (snapshot) {
     const keptManifest = await existingManifest(ctx, draftPath);
@@ -349,6 +359,7 @@ export async function executePush(opts: {
       await restoreManifest(ctx, keptManifest);
     }
     typeCheckDiagnostics = compileOutcome.diagnosticCount;
+    typeCheckErrors = compileOutcome.typeCheckErrors;
     typeCheckDetail = compileOutcome.diagnosticText;
 
     const buildFolderPath = (await scriptRoot.getDraftBuildFolder()).uri().fsPath;
@@ -361,7 +372,7 @@ export async function executePush(opts: {
           `The platform runs that file, so publishing it would break the live version. Nothing was ` +
           `pushed. Check scripts/app.ts, the compile output and the draft ${TsConfig.NAME}.`
       );
-      return notPushed(typeCheckDiagnostics);
+      return notPushed(typeCheckDiagnostics, typeCheckErrors);
     }
     // A manifest vouches that every project's output was written from the sources as they are: a build that reported
     // any error, or did not write every project's output, writes none (any existing one then goes stale).
@@ -393,7 +404,7 @@ export async function executePush(opts: {
 
   if (allFiles.length === 0) {
     prompt.info("No files to push — draft folder is empty.");
-    return notPushed(typeCheckDiagnostics);
+    return notPushed(typeCheckDiagnostics, typeCheckErrors);
   }
 
   const outcome = await pushDraft(
@@ -471,6 +482,7 @@ export async function executePush(opts: {
     publishedSha: publish?.publishedSha ?? null,
     publishError: publish?.error ?? null,
     publishRefusal: publish?.refusal ?? null,
+    typeCheckErrors,
     switchedToGit: outcome.switchedToGit,
     typeCheckDiagnostics,
     liveVerified: publish?.liveVerified ?? null,

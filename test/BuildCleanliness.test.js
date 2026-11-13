@@ -40,7 +40,7 @@ test("a clean project is clean", () => {
 
 test("each way a project can fail to write its output, or report an error, makes the build unclean", () => {
   const cases = {
-    "an error diagnostic (noEmitOnError off: it still emitted)": clean({ errorCount: 1 }),
+    "a syntax or emit error": clean({ errorCount: 1 }),
     "a tsconfig with configuration diagnostics": clean({ configErrorCount: 1 }),
     noEmit: clean({ noEmit: true, emittedFiles: [] }),
     "an emit skipped or withheld (noEmitOnError)": clean({ emitSkipped: true, emittedFiles: [] }),
@@ -197,22 +197,52 @@ test("a clean build writes the manifest in the same push, and the publish passes
   assert.ok(result.publishedSha);
 });
 
-test("a type error with noEmitOnError off (the JS is emitted anyway): no manifest, and the publish is refused", async () => {
+test("a semantic type error is a warning: the JS is emitted, the manifest is written, the publish passes, the error is reported located", async () => {
   const { result, manifest } = await snapshotPush(SEED(), {
     "scripts/app.ts": "export const v: number = 'not a number';\n",
   });
   assert.strictEqual(result.pushed, true);
   assert.ok(result.typeCheckDiagnostics > 0);
-  assert.strictEqual(manifest, undefined);
-  assert.strictEqual(result.publishRefusal.reason, "BUILD_MANIFEST_MISSING");
-  assert.ok(prompt.warnings.some((w) => /not fully clean/.test(w) && /error diagnostic/.test(w)));
+  assert.ok(manifest, "a type error does not block the manifest");
+  assert.strictEqual(result.publishRefusal, null);
+  assert.ok(result.publishedSha);
+  assert.strictEqual(result.typeCheckErrors.length, result.typeCheckDiagnostics);
+  assert.deepStrictEqual(
+    {
+      file: result.typeCheckErrors[0].file,
+      line: result.typeCheckErrors[0].line,
+      column: result.typeCheckErrors[0].column,
+      code: result.typeCheckErrors[0].code,
+    },
+    { file: "scripts/app.ts", line: 1, column: 14, code: 2322 }
+  );
+  assert.ok(/not assignable/.test(result.typeCheckErrors[0].message));
 });
 
-test("an error does not overwrite an existing manifest: it stays, goes stale, and the publish is refused", async () => {
+test("a syntax error in the script's own source makes the build unclean: no manifest, and the publish is refused", async () => {
+  const { result, manifest } = await snapshotPush(SEED(), { "scripts/app.ts": "export const = ;\n" });
+  assert.strictEqual(result.pushed, true);
+  assert.strictEqual(manifest, undefined);
+  assert.strictEqual(result.publishRefusal.reason, "BUILD_MANIFEST_MISSING");
+  assert.ok(prompt.warnings.some((w) => /not fully clean/.test(w) && /syntax or emit/.test(w)));
+});
+
+test("a diagnostic in a .d.ts is ignored entirely: not counted, and the build stays clean", async () => {
+  const { result, manifest } = await snapshotPush(SEED(), {
+    "scripts/app.ts": "export const v = 5;\n",
+    "types/generated.d.ts": "declare const g: ;;\ndeclare const h: number\n",
+  });
+  assert.strictEqual(result.typeCheckDiagnostics, 0, JSON.stringify(result.typeCheckErrors));
+  assert.deepStrictEqual(result.typeCheckErrors, []);
+  assert.ok(manifest, "the build is clean");
+  assert.strictEqual(result.publishRefusal, null);
+});
+
+test("a syntax error does not overwrite an existing manifest: it stays, goes stale, and the publish is refused", async () => {
   const first = await snapshotPush(SEED(), { "scripts/app.ts": "export const v = 2;\n" });
   assert.ok(first.manifest);
   const ctx = context(first.id);
-  fs.writeFileSync(path.join(first.rootPath, "draft", "scripts", "app.ts"), "export const v: number = 'broken';\n");
+  fs.writeFileSync(path.join(first.rootPath, "draft", "scripts", "app.ts"), "export const = 'broken';\n");
   const second = await executePush({
     ctx,
     targetUrl: `${baseUrl}files/100001/`,

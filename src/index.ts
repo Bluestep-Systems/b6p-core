@@ -65,7 +65,7 @@ export { ResponseCodes } from "./network/StatusCodes";
 export { ScriptFactory } from "./script/ScriptFactory";
 export { ScriptNode } from "./script/ScriptNode";
 export { ScriptRoot } from "./script/ScriptRoot";
-export type { TranspileOutcome, ProjectBuildReport } from "./script/ScriptTranspiler";
+export type { TranspileOutcome, ProjectBuildReport, TypeCheckError } from "./script/ScriptTranspiler";
 export { buildUncleanReasons } from "./script/ScriptTranspiler";
 export { ScriptFile } from "./script/ScriptFile";
 export type { ScriptFolder } from "./script/ScriptFolder";
