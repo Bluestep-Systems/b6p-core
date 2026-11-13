@@ -8,7 +8,7 @@ import { ScriptFactory } from "./ScriptFactory";
 import type { ScriptContext } from "./ScriptContext";
 import type { FileSystem } from "../providers";
 import { resolveGitIdentity } from "./GitIdentity";
-import { pushDraft, type LastSyncedLookup } from "./GitSync";
+import { pushDraft, type LastSyncedLookup, type PublishRefusal } from "./GitSync";
 import type { ScriptRoot } from "./ScriptRoot";
 import { TsConfig } from "./TsConfig";
 
@@ -82,6 +82,12 @@ export interface PushResult {
    */
   publishError: string | null;
   /**
+   * The platform's structured refusal of the publish: `reason` and `withheld` from the server's `PUBLISH_REFUSED`
+   * extensions (every reason, `DRAFT_MOVED` and `BUILD_*` included). `null` when the publish was not refused.
+   * @lastreviewed null
+   */
+  publishRefusal: PublishRefusal | null;
+  /**
    * True when this push switched the script from WebDAV to git publishing. The switch is one-way: the script's draft
    * and snapshot no longer accept WebDAV writes.
    * @lastreviewed null
@@ -134,6 +140,7 @@ function notPushed(typeCheckDiagnostics: number | null): PushResult {
     commitSha: null,
     publishedSha: null,
     publishError: null,
+    publishRefusal: null,
     switchedToGit: false,
     typeCheckDiagnostics,
     liveVerified: null,
@@ -415,6 +422,7 @@ export async function executePush(opts: {
     commitSha: outcome.commitSha,
     publishedSha: publish?.publishedSha ?? null,
     publishError: publish?.error ?? null,
+    publishRefusal: publish?.refusal ?? null,
     switchedToGit: outcome.switchedToGit,
     typeCheckDiagnostics,
     liveVerified: publish?.liveVerified ?? null,

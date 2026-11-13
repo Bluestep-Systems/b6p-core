@@ -25,6 +25,7 @@ export type {
   DraftPushOptions,
   DraftPushOutcome,
   LastSyncedLookup,
+  PublishRefusal,
 } from "./script/GitSync";
 export type { PlatformContext } from "./PlatformContext";
 

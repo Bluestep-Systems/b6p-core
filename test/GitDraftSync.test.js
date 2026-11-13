@@ -257,6 +257,7 @@ test("a snapshot push publishes and reads back that master is at the published s
   assert.deepStrictEqual(outcome.publish, {
     publishedSha: master,
     error: null,
+    refusal: null,
     liveVerified: true,
     liveMismatches: [],
   });
@@ -564,6 +565,7 @@ test("executePush (plain): the result carries commitSha, no publishedSha, and no
     "liveMismatches",
     "liveVerified",
     "publishError",
+    "publishRefusal",
     "publishedSha",
     "pushed",
     "switchedToGit",
@@ -905,6 +907,7 @@ test("deploy returns a result per target: a target failing on identity does not 
     commitSha: "a".repeat(40),
     publishedSha: "a".repeat(40),
     publishError: null,
+    publishRefusal: null,
     switchedToGit: false,
   });
   assert.strictEqual(results[1].pushed, false);
@@ -989,6 +992,98 @@ test("a snapshot push writes the build manifest in the same commit as the output
   ]) {
     assert.strictEqual(typeof bsjsGit[name], "function", name);
   }
+});
+
+test("a refused publish carries the structured refusal (reason and withheld) for every reason; other failures carry none", async () => {
+  // BUILD_STALE with the stale paths, BUILD_MANIFEST_MISSING with the manifest's path.
+  stub.addRepo("654015___9301", { files: { "tsconfig.json": "{}\n", "scripts/app.ts": "export {};\n" } });
+  const missing = targetFor(recordingPrompt(), { classid: "654015", seqnum: "9301" });
+  await pullDraft(missing);
+  put(missing, "scripts/app.ts", "export const v = 1;\n");
+  const noManifest = await pushDraft(missing, { ...PUSH, snapshot: true });
+  assert.deepStrictEqual(noManifest.publish.refusal, {
+    reason: "BUILD_MANIFEST_MISSING",
+    withheld: [".build/.b6p-build.json"],
+  });
+  assert.ok(noManifest.publish.error.length > 0, "the message is kept");
+
+  await pushDraft(missing, { ...PUSH, snapshot: true, buildManifest: {} });
+  put(missing, "scripts/app.ts", "export const v = 2;\n");
+  put(missing, "scripts/other.ts", "export {};\n");
+  const stale = await pushDraft(missing, { ...PUSH, snapshot: true });
+  assert.deepStrictEqual(stale.publish.refusal, {
+    reason: "BUILD_STALE",
+    withheld: ["scripts/app.ts", "scripts/other.ts"],
+  });
+
+  // DRAFT_MOVED: the draft moves between the verification and the publish.
+  stub.addRepo("654015___9302");
+  const entry = stub.repos.get("654015___9302");
+  const moving = targetFor(recordingPrompt(), { classid: "654015", seqnum: "9302" });
+  await pullDraft(moving);
+  put(moving, "main.ts", "export const v = 'x';\n");
+  entry.beforePublish = () => {
+    const env = {
+      GIT_AUTHOR_NAME: "X",
+      GIT_AUTHOR_EMAIL: "x@example.test",
+      GIT_COMMITTER_NAME: "X",
+      GIT_COMMITTER_EMAIL: "x@example.test",
+    };
+    const tree = stub.git(entry.bare, "rev-parse", "draft^{tree}");
+    stub.git(
+      entry.bare,
+      "update-ref",
+      "refs/heads/draft",
+      stub.gitEnv(entry.bare, env, "commit-tree", tree, "-p", "draft", "-m", "moved")
+    );
+    entry.beforePublish = undefined;
+  };
+  const moved = await pushDraft(moving, { ...PUSH, snapshot: true });
+  assert.strictEqual(moved.publish.refusal.reason, "DRAFT_MOVED");
+  assert.ok(Array.isArray(moved.publish.refusal.withheld));
+
+  // A failure that is not a refusal has no refusal; a plain push has none either.
+  stub.addRepo("654015___9303");
+  stub.repos.get("654015___9303").garblePublish = true;
+  const garbled = targetFor(recordingPrompt(), { classid: "654015", seqnum: "9303" });
+  await pullDraft(garbled);
+  put(garbled, "main.ts", "export {};\n");
+  assert.strictEqual((await pushDraft(garbled, { ...PUSH, snapshot: true })).publish.refusal, null);
+  put(garbled, "main.ts", "export const z = 1;\n");
+  assert.strictEqual((await pushDraft(garbled, PUSH)).publish, undefined);
+
+  // A successful publish: null.
+  stub.addRepo("654015___9304");
+  const ok = targetFor(recordingPrompt(), { classid: "654015", seqnum: "9304" });
+  await pullDraft(ok);
+  put(ok, "main.ts", "export {};\n");
+  assert.strictEqual((await pushDraft(ok, { ...PUSH, snapshot: true })).publish.refusal, null);
+});
+
+test("deploy and executePush results carry publishRefusal", async () => {
+  const refusal = { reason: "BUILD_STALE", withheld: ["scripts/app.ts"] };
+  const config = JSON.stringify({
+    sourceRootPath: tmp,
+    targets: [{ url: "https://a.example.test/files/1/", snapshot: true }],
+  });
+  const service = new ScriptService({
+    ...fakeCtx(recordingPrompt()),
+    fs: { exists: async () => true, readFile: async () => Buffer.from(config) },
+  });
+  service.push = async () => ({
+    pushed: true,
+    commitSha: "a".repeat(40),
+    publishedSha: null,
+    publishError: "stale",
+    publishRefusal: refusal,
+    switchedToGit: false,
+  });
+  const results = await service.deploy({ configPath: path.join(tmp, "deploy.json") });
+  assert.deepStrictEqual(results[0].publishRefusal, refusal);
+  service.push = async () => {
+    throw new Error("boom");
+  };
+  assert.strictEqual((await service.deploy({ configPath: path.join(tmp, "deploy.json") }))[0].publishRefusal, null);
 });
 (async () => {
   baseUrl = await stub.listen();

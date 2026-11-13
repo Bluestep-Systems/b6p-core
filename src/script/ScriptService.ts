@@ -4,6 +4,7 @@ import { DownstairsPathParser } from "../data/DownstairsPathParser";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
 import type { GitIdentity } from "@bluestep-systems/b6p-core-bsjs-git";
 import { FolderNames } from "../constants";
+import type { PublishRefusal } from "./GitSync";
 import { auditDraft, draftFolderOf, GitSwitchDeclinedError, pullDraft, type DraftTarget } from "./GitSync";
 import { executePush, legacySyncRecords, type PushResult } from "./push";
 import type { ScriptContext } from "./ScriptContext";
@@ -87,6 +88,11 @@ export interface DeployTargetResult {
   commitSha: string | null;
   publishedSha: string | null;
   publishError: string | null;
+  /**
+   * The platform's structured refusal of the publish, when it refused.
+   * @lastreviewed null
+   */
+  publishRefusal: PublishRefusal | null;
   switchedToGit: boolean;
   error?: unknown;
 }
@@ -585,6 +591,7 @@ export class ScriptService {
           commitSha: pushed?.commitSha ?? null,
           publishedSha: pushed?.publishedSha ?? null,
           publishError: pushed?.publishError ?? null,
+          publishRefusal: pushed?.publishRefusal ?? null,
           switchedToGit: pushed?.switchedToGit ?? false,
         });
       } catch (error) {
@@ -595,6 +602,7 @@ export class ScriptService {
           commitSha: null,
           publishedSha: null,
           publishError: null,
+          publishRefusal: null,
           switchedToGit: (error as { switchedToGit?: boolean } | null)?.switchedToGit === true,
           error,
         });

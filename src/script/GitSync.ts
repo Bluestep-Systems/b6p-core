@@ -5,6 +5,7 @@ import {
   BsjsGitError,
   DRAFT_BRANCH,
   GitNotFastForwardError,
+  PublishRefusedError,
   ScriptRepo,
   type GitIdentity,
 } from "@bluestep-systems/b6p-core-bsjs-git";
@@ -819,6 +820,17 @@ export interface DraftPushOptions {
 }
 
 /**
+ * A refusal of the publish by the platform, structured: `reason` is the server's `extensions.reason` (for example
+ * `DRAFT_MOVED`, `BUILD_STALE`, `BUILD_MANIFEST_MISSING`, `BUILD_MANIFEST_INVALID`, `ENTRYPOINT_MISSING`) and `withheld`
+ * its `extensions.publish.withheld` (the stale paths, or the manifest's path; empty when the server gave none).
+ * @lastreviewed null
+ */
+export interface PublishRefusal {
+  readonly reason: string;
+  readonly withheld: string[];
+}
+
+/**
  * The publish half of a {@link DraftPushOutcome}.
  * @lastreviewed null
  */
@@ -833,6 +845,12 @@ export interface DraftPublishOutcome {
    * @lastreviewed null
    */
   readonly error: string | null;
+  /**
+   * The platform's structured refusal, when it refused the publish (`PUBLISH_REFUSED`): its `reason` and the paths in
+   * `publish.withheld`. `null` for any other outcome.
+   * @lastreviewed null
+   */
+  readonly refusal: PublishRefusal | null;
   /**
    * Whether the platform's published branch is at `publishedSha` after the publish: `null` when it could not be read.
    * @lastreviewed null
@@ -1201,6 +1219,21 @@ async function pushDraftInner(
  * caller must still learn its commit.
  * @lastreviewed null
  */
+/**
+ * The structured refusal in an error, when it is a `PUBLISH_REFUSED`.
+ * @lastreviewed null
+ */
+function refusalOf(error: unknown): PublishRefusal | null {
+  if (!(error instanceof PublishRefusedError)) {
+    return null;
+  }
+  const withheld = (error.details as { withheld?: unknown } | null | undefined)?.withheld;
+  return {
+    reason: error.reason ?? "",
+    withheld: Array.isArray(withheld) ? withheld.filter((p): p is string => typeof p === "string") : [],
+  };
+}
+
 async function publishAndVerify(repo: ScriptRepo): Promise<DraftPublishOutcome> {
   let publishedSha: string;
   let refreshed: boolean;
@@ -1212,6 +1245,7 @@ async function publishAndVerify(repo: ScriptRepo): Promise<DraftPublishOutcome> 
     return {
       publishedSha: null,
       error: error instanceof Error ? error.message : String(error),
+      refusal: refusalOf(error),
       liveVerified: null,
       liveMismatches: [],
     };
@@ -1222,7 +1256,7 @@ async function publishAndVerify(repo: ScriptRepo): Promise<DraftPublishOutcome> 
     }
     const master = await repo.sha(REMOTE_MASTER);
     if (master === publishedSha) {
-      return { publishedSha, error: null, liveVerified: true, liveMismatches: [] };
+      return { publishedSha, error: null, refusal: null, liveVerified: true, liveMismatches: [] };
     }
     let liveMismatches: string[] = [];
     try {
@@ -1230,9 +1264,9 @@ async function publishAndVerify(repo: ScriptRepo): Promise<DraftPublishOutcome> 
     } catch {
       // The published branch's objects may not be local; the sha mismatch is the finding.
     }
-    return { publishedSha, error: null, liveVerified: false, liveMismatches };
+    return { publishedSha, error: null, refusal: null, liveVerified: false, liveMismatches };
   } catch {
-    return { publishedSha, error: null, liveVerified: null, liveMismatches: [] };
+    return { publishedSha, error: null, refusal: null, liveVerified: null, liveMismatches: [] };
   }
 }
 
