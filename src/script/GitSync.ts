@@ -794,6 +794,14 @@ export interface DraftPushOptions {
    */
   readonly adoptUnbound: boolean;
   /**
+   * Write the build manifest into the commit: set it only after a snapshot build that succeeded and emitted
+   * everything, so the output and its manifest are committed together; leave it unset after a failed or partial build
+   * (an existing manifest then stays and goes stale, which a publish refuses), and for a push that did not build.
+   * `externallyBuilt` is the script's own flag: such a script gets no manifest.
+   * @lastreviewed null
+   */
+  readonly buildManifest?: { readonly externallyBuilt?: boolean };
+  /**
    * The caller already confirmed switching a WebDAV script to git, so do not ask.
    * @lastreviewed null
    */
@@ -1157,8 +1165,13 @@ async function pushDraftInner(
     }
 
     const commitSha = platformMoved
-      ? await repo.commit(options.message, options.author, { parents: [local, remote as string] })
-      : await repo.commit(options.message, options.author);
+      ? await repo.commit(options.message, options.author, {
+          parents: [local, remote as string],
+          ...(options.buildManifest ? { buildManifest: options.buildManifest } : {}),
+        })
+      : await repo.commit(options.message, options.author, {
+          ...(options.buildManifest ? { buildManifest: options.buildManifest } : {}),
+        });
     const head = commitSha ?? local;
     if (head !== remote) {
       const pushed = await repo.push();

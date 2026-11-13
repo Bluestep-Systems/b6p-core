@@ -34,6 +34,104 @@ function httpBackendPath() {
   return path.join(execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim(), "git-http-backend");
 }
 
+// The server's build manifest check (contract v1 §5), written out independently of the client's implementation.
+// Returns null when the publish may go on, else { reason, withheld }.
+function buildCheck(entry) {
+  if (entry.externallyBuilt) {
+    return null;
+  }
+  const tree = new Map(
+    git(entry.bare, "ls-tree", "-r", "draft")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [meta, file] = line.split("\t");
+        return [file, meta.split(" ")[2]];
+      })
+  );
+  if (![...tree.keys()].some((p) => p.split("/").pop() === "tsconfig.json")) {
+    return null;
+  }
+  const show = (p) => git(entry.bare, "show", `draft:${p}`);
+  const configPath = tree.has("tsconfig.json")
+    ? "tsconfig.json"
+    : tree.has("jsconfig.json")
+      ? "jsconfig.json"
+      : undefined;
+  let declared;
+  if (configPath) {
+    try {
+      const text = show(configPath)
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^\s*\/\/.*$/gm, "")
+        .replace(/,(\s*[}\]])/g, "$1");
+      const outDir = JSON.parse(text)?.compilerOptions?.outDir;
+      declared = typeof outDir === "string" ? outDir : undefined;
+    } catch {
+      declared = undefined;
+    }
+  }
+  let folder = declared === undefined ? ".build" : declared;
+  if (folder.startsWith("./")) {
+    folder = folder.slice(2);
+  }
+  if (
+    folder === "" ||
+    /^[/.]*$/.test(folder) ||
+    folder.startsWith("/") ||
+    folder.includes("\\") ||
+    folder.split("/").includes("..")
+  ) {
+    folder = "";
+  }
+  folder = folder.replace(/\/+$/, "");
+  const manifestPath = folder === "" ? ".b6p-build.json" : `${folder}/.b6p-build.json`;
+  if (!tree.has(manifestPath)) {
+    return { reason: "BUILD_MANIFEST_MISSING", withheld: [manifestPath] };
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(show(manifestPath));
+  } catch {
+    return { reason: "BUILD_MANIFEST_INVALID", withheld: [manifestPath] };
+  }
+  const sourcesOk =
+    manifest &&
+    typeof manifest === "object" &&
+    manifest.version === 1 &&
+    manifest.sources &&
+    typeof manifest.sources === "object" &&
+    !Array.isArray(manifest.sources);
+  if (!sourcesOk || !Object.values(manifest.sources).every((v) => typeof v === "string" && /^[0-9a-f]{40}$/.test(v))) {
+    return { reason: "BUILD_MANIFEST_INVALID", withheld: [manifestPath] };
+  }
+  const exts = new Set(["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "json", "jsonc"]);
+  const sources = new Map();
+  for (const [p, oid] of tree) {
+    const name = p.split("/").pop();
+    const dot = name.lastIndexOf(".");
+    if (
+      dot >= 0 &&
+      exts.has(name.slice(dot + 1).toLowerCase()) &&
+      p !== manifestPath &&
+      (folder === "" || !p.startsWith(`${folder}/`))
+    ) {
+      sources.set(p, oid);
+    }
+  }
+  const stale = new Set();
+  for (const [p, oid] of Object.entries(manifest.sources)) {
+    if (sources.get(p) !== oid) {
+      stale.add(p);
+    }
+  }
+  for (const p of sources.keys()) {
+    if (!(p in manifest.sources)) {
+      stale.add(p);
+    }
+  }
+  return stale.size > 0 ? { reason: "BUILD_STALE", withheld: [...stale].sort() } : null;
+}
 /** Creates the temp area, a bare repo `<classid>___<seqnum>` seeded with one commit on master and draft. */
 function createStub() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bsjs-git-stub-"));
@@ -58,6 +156,7 @@ function createStub() {
     git(seed, "config", "user.name", "Seeder");
     git(seed, "config", "user.email", "seed@example.test");
     for (const [file, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(seed, file)), { recursive: true });
       fs.writeFileSync(path.join(seed, file), text);
     }
     git(seed, "add", "-A");
@@ -240,7 +339,13 @@ function createStub() {
       state.publishInputs.push(input);
       if (input.expectedDraftSha !== undefined && !/^[0-9a-f]{40}$/.test(input.expectedDraftSha)) {
         // The server treats anything but a full commit id as bad input.
-        res.end(JSON.stringify({ errors: [{ message: "expectedDraftSha must be a full 40-hex commit id", extensions: { code: "BAD_USER_INPUT" } }] }));
+        res.end(
+          JSON.stringify({
+            errors: [
+              { message: "expectedDraftSha must be a full 40-hex commit id", extensions: { code: "BAD_USER_INPUT" } },
+            ],
+          })
+        );
         return;
       }
       if (input.expectedDraftSha !== undefined && input.expectedDraftSha !== draft) {
@@ -254,6 +359,20 @@ function createStub() {
                   reason: "DRAFT_MOVED",
                   publish: { expected: input.expectedDraftSha, actual: draft },
                 },
+              },
+            ],
+          })
+        );
+        return;
+      }
+      const build = buildCheck(entry);
+      if (build) {
+        res.end(
+          JSON.stringify({
+            errors: [
+              {
+                message: `The script was not published: `,
+                extensions: { code: "PUBLISH_REFUSED", reason: build.reason, publish: { withheld: build.withheld } },
               },
             ],
           })

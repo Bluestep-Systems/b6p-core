@@ -10,6 +10,7 @@ export {
   PUBLISHED_BRANCH,
   decodeText,
   type CloneOptions,
+  type CommitOptions,
   type CommitInfo,
   type LogPage,
   type FileChange,
@@ -42,3 +43,16 @@ export {
 export { CsrfFetch, type ScriptAuth } from "./csrf";
 export { basicTokenFetch, createProxyHttp, gitAuthHeader, refusalFor, type FetchLike } from "./http";
 export * from "./errors";
+export {
+  BUILD_MANIFEST_BUILDER,
+  BUILD_MANIFEST_NAME,
+  buildManifestPath,
+  buildOutputFolder,
+  formatBuildManifest,
+  gitBlobSha1,
+  hasNoTsconfig,
+  isBuildSource,
+  parseJsonc,
+  planBuildManifest,
+  type BuildManifestPlan,
+} from "./buildManifest";

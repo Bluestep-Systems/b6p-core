@@ -69,6 +69,11 @@ export interface DeployConfig {
    * @lastreviewed null
    */
   enableGit?: boolean;
+  /**
+   * The targets are built by a bundler outside this tool: no build manifest is written for them.
+   * @lastreviewed null
+   */
+  externallyBuilt?: boolean;
 }
 
 /**
@@ -174,6 +179,7 @@ export class ScriptService {
     author?: GitIdentity;
     adoptUnbound?: boolean;
     enableGit?: boolean;
+    externallyBuilt?: boolean;
   }): Promise<PushResult | null> {
     const targetUrl = opts.targetUrl ?? (await this.ctx.prompt.inputBox({ prompt: "Paste in the target formula URI" }));
     if (targetUrl === undefined) {
@@ -191,6 +197,7 @@ export class ScriptService {
       author: opts.author,
       adoptUnbound: opts.adoptUnbound,
       enableGit: opts.enableGit,
+      externallyBuilt: opts.externallyBuilt,
     });
   }
 
@@ -201,6 +208,7 @@ export class ScriptService {
     overwrite?: string[];
     author?: GitIdentity;
     enableGit?: boolean;
+    externallyBuilt?: boolean;
   }): Promise<PushResult | null> {
     this.ctx.logger.info(`Push current for file: ${opts.filePath}`);
     const baseUrl = await this.deriveBaseUrl(opts.filePath);
@@ -221,6 +229,7 @@ export class ScriptService {
         overwrite: opts.overwrite,
         author: opts.author,
         enableGit: opts.enableGit,
+        externallyBuilt: opts.externallyBuilt,
       });
     }
     const parser = new DownstairsPathParser(opts.filePath);
@@ -232,6 +241,7 @@ export class ScriptService {
       overwrite: opts.overwrite,
       author: opts.author,
       enableGit: opts.enableGit,
+      externallyBuilt: opts.externallyBuilt,
     });
   }
 
@@ -567,6 +577,7 @@ export class ScriptService {
           author: config.author,
           adoptUnbound: false,
           enableGit: config.enableGit,
+          externallyBuilt: config.externallyBuilt,
         });
         results.push({
           target: target.url,

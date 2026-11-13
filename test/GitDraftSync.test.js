@@ -946,6 +946,50 @@ test("a declined overwrite after the switch says the switch stands (OverwriteDec
   assert.strictEqual(results[0].switchedToGit, true);
   assert.ok(results[0].error instanceof Err.OverwriteDeclinedError);
 });
+
+test("a snapshot push writes the build manifest in the same commit as the output; without it the publish is refused (stale/missing), and deploy carries it too", async () => {
+  for (const [id, adopt] of [
+    ["9201", true],
+    ["9202", false],
+  ]) {
+    const name = `654015___${id}`;
+    stub.addRepo(name, { files: { "tsconfig.json": "{}\n", "scripts/app.ts": "export const v = 1;\n" } });
+    const target = targetFor(recordingPrompt(pick("Overwrite all")), { classid: "654015", seqnum: id });
+    if (adopt) {
+      await pullDraft(target);
+    } else {
+      put(target, "tsconfig.json", "{}\n");
+    }
+    put(target, "scripts/app.ts", "export const v = 2;\n");
+    put(target, ".build/scripts/app.js", "exports.v = 2;\n");
+    const refused = await pushDraft(target, { ...PUSH, snapshot: true, adoptUnbound: adopt });
+    assert.ok(/BUILD_/.test(refused.publish.error) || /build/i.test(refused.publish.error), "no manifest: refused");
+    assert.strictEqual(refused.publish.publishedSha, null);
+
+    const built = await pushDraft(target, {
+      ...PUSH,
+      snapshot: true,
+      adoptUnbound: adopt,
+      buildManifest: {},
+      message: "Build",
+    });
+    assert.strictEqual(built.publish.error, null, String(built.publish.error));
+    const manifest = JSON.parse(remoteFile(".build/.b6p-build.json", name, "master"));
+    assert.deepStrictEqual(Object.keys(manifest.sources), ["scripts/app.ts", "tsconfig.json"]);
+    assert.strictEqual(
+      remoteFile(".build/scripts/app.js", name, "master"),
+      "exports.v = 2;",
+      "the output is in the same commit"
+    );
+  }
+  for (const name of [
+    "PublishBuildStaleError",
+    "PublishBuildManifestMissingError",
+    "PublishBuildManifestInvalidError",
+  ]) {
+    assert.strictEqual(typeof bsjsGit[name], "function", name);
+  }
+});
 (async () => {
   baseUrl = await stub.listen();
   stub.addRepo(REPO);

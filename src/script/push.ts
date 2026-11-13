@@ -261,6 +261,12 @@ export async function executePush(opts: {
   overwrite?: string[];
   author?: GitIdentity;
   adoptUnbound?: boolean;
+  /**
+   * The script is built by a bundler outside this tool (its `externallyBuilt` config flag): no build manifest is
+   * written for it.
+   * @lastreviewed null
+   */
+  externallyBuilt?: boolean;
   enableGit?: boolean;
 }): Promise<PushResult> {
   const { ctx, targetUrl, rootPath, snapshot, message, overwrite } = opts;
@@ -291,6 +297,7 @@ export async function executePush(opts: {
   // and emitted JS are part of the commit that gets published. A plain
   // (non-snapshot) push does not compile, so its type-check status is
   // null rather than a count.
+  let buildSucceeded = false;
   let typeCheckDiagnostics: number | null = null;
   let typeCheckDetail = "";
   if (snapshot) {
@@ -309,6 +316,7 @@ export async function executePush(opts: {
       );
       return notPushed(typeCheckDiagnostics);
     }
+    buildSucceeded = true;
   }
 
   // Push does NOT transpile client bundles (e.g. a MergeReport `static/script.ts`
@@ -345,6 +353,8 @@ export async function executePush(opts: {
       author,
       snapshot,
       adoptUnbound: opts.adoptUnbound ?? true,
+      // The build manifest goes in the same commit as the output it describes, and only after a good build.
+      ...(buildSucceeded ? { buildManifest: { externallyBuilt: opts.externallyBuilt } } : {}),
       enableGit: opts.enableGit,
       preConfirmed: overwrite,
       lastSynced: await legacySyncRecords(scriptRoot, draftPath),

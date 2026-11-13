@@ -28,7 +28,7 @@
     "clean": "rm -rf dist",
     "format": "prettier --write \"src/**/*.ts\"",
     "format-check": "prettier --check \"src/**/*.ts\"",
-    "test": "npm run compile && node test/NoNodeBuiltins.test.js && node test/BrowserBundle.test.js && node test/LegacyHistory.test.js && node test/GitRoundTrip.test.js",
+    "test": "npm run compile && node test/NoNodeBuiltins.test.js && node test/BrowserBundle.test.js && node test/LegacyHistory.test.js && node test/BuildManifest.test.js && node test/GitRoundTrip.test.js",
     "prepublishOnly": "npm run clean && npm run format-check && npm run check-types && npm run compile"
   },
   "dependencies": {

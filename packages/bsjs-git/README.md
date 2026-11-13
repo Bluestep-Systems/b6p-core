@@ -90,3 +90,16 @@ package with esbuild (`platform: "browser"`, no plugins) to keep that true.
 
 `npm test -w @bluestep-systems/b6p-core-bsjs-git`. The round-trip spec serves a real bare repo over HTTP by running
 `git http-backend` behind `node:http` (see `test/support/GitProxyStub.js`), so `git` must be on the PATH.
+
+## Build manifest
+
+A git script publishes `draft` exactly as committed, so the server refuses a draft whose sources no longer match the
+build manifest (`<outDir>/.b6p-build.json`, contract v1): the git blob SHA-1 of every source file the build was made
+from. Whoever builds writes it in the same commit as the output: `commit(msg, author, { buildManifest: {} })` stages the
+tree, computes the manifest over what the commit will hold and commits it with it. Pass the option only after a build that
+succeeded and emitted everything; after a failed or partial build omit it, which leaves any existing manifest as it is
+(so a publish refuses it). `{ buildManifest: { externallyBuilt: true } }` writes none, and none is written for a tree
+with no `tsconfig.json`. The pure helpers (`buildOutputFolder`, `buildManifestPath`, `isBuildSource`, `gitBlobSha1`,
+`planBuildManifest`, `formatBuildManifest`) are exported. A refused publish is `PublishBuildStaleError`
+(`BUILD_STALE`), `PublishBuildManifestMissingError` (`BUILD_MANIFEST_MISSING`) or `PublishBuildManifestInvalidError`
+(`BUILD_MANIFEST_INVALID`), each with `withheld` (the stale paths, or the manifest's path).
