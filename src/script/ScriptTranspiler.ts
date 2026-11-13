@@ -32,6 +32,81 @@ export interface TranspileOutcome {
   emittedFiles: string[];
   diagnosticCount: number | null;
   diagnosticText: string;
+  /**
+   * Whether the build is fully clean (build manifest spec §6): every project wrote its output and none reported an
+   * error diagnostic. Only then may a build manifest be written. `uncleanReasons` says why when it is false.
+   * @lastreviewed null
+   */
+  fullyClean: boolean;
+  uncleanReasons: string[];
+}
+
+/**
+ * What one compiled project reported, as far as build cleanliness goes.
+ * @lastreviewed null
+ */
+export interface ProjectBuildReport {
+  tsConfigPath: string;
+  /**
+   * Diagnostics of the error category, of any kind (a type error counts although `noEmitOnError` is off).
+   * @lastreviewed null
+   */
+  errorCount: number;
+  /**
+   * Problems with the tsconfig itself (unknown options, file-list errors); the always-empty "no inputs" one is not counted.
+   * @lastreviewed null
+   */
+  configErrorCount: number;
+  emittedFiles: string[];
+  /**
+   * The project sets `noEmit`.
+   * @lastreviewed null
+   */
+  noEmit: boolean;
+  /**
+   * The emit was skipped or withheld.
+   * @lastreviewed null
+   */
+  emitSkipped: boolean;
+}
+
+/**
+ * Why a build is not fully clean (build manifest spec §6), empty when it is: a project reported an error diagnostic,
+ * has a tsconfig with configuration diagnostics, sets `noEmit`, had its emit skipped or withheld, emitted nothing, or
+ * wrote output outside the tree.
+ * @param draftRoot The draft folder every output must be under; when absent that check is skipped
+ * @lastreviewed null
+ */
+export function buildUncleanReasons(reports: readonly ProjectBuildReport[], draftRoot?: string): string[] {
+  const reasons: string[] = [];
+  for (const r of reports) {
+    if (r.errorCount > 0) {
+      reasons.push(`${r.tsConfigPath}: ${r.errorCount} error diagnostic(s)`);
+    }
+    if (r.configErrorCount > 0) {
+      reasons.push(`${r.tsConfigPath}: the tsconfig has ${r.configErrorCount} configuration diagnostic(s)`);
+    }
+    if (r.noEmit) {
+      reasons.push(`${r.tsConfigPath}: sets noEmit`);
+    }
+    if (r.emitSkipped) {
+      reasons.push(`${r.tsConfigPath}: its emit was skipped or withheld`);
+    }
+    if (!r.emitSkipped && !r.noEmit && r.emittedFiles.length === 0) {
+      reasons.push(`${r.tsConfigPath}: emitted nothing`);
+    }
+    if (draftRoot !== undefined) {
+      const root = path.resolve(draftRoot);
+      const outside = r.emittedFiles.filter((f) => {
+        const relative = path.relative(root, path.resolve(f));
+        return relative.startsWith("..") || path.isAbsolute(relative);
+      });
+      if (outside.length > 0) {
+        reasons.push(`${r.tsConfigPath}: wrote ${outside.length} output file(s) outside the draft folder`);
+      }
+    }
+  }
+  return reasons;
 }
 
 /**
@@ -70,11 +145,11 @@ export class ScriptTranspiler {
 
   private async getProjectConfig(
     sn: ScriptNode
-  ): Promise<{ options: ts.CompilerOptions; declarationRootFiles: string[] }> {
+  ): Promise<{ options: ts.CompilerOptions; declarationRootFiles: string[]; configErrorCount: number }> {
     const tsConfigFile = await sn.getClosestTsConfigFile();
     if (!tsConfigFile) {
       this.ctx.logger.info("No tsconfig.json found, using default compiler options.");
-      return { options: this.getDefaultOptions(sn), declarationRootFiles: [] };
+      return { options: this.getDefaultOptions(sn), declarationRootFiles: [], configErrorCount: 0 };
     }
 
     const tsconfigTextArray = await this.ctx.fs.readFile(B6PUri.fromFsPath(tsConfigFile.uri().fsPath));
@@ -120,7 +195,13 @@ export class ScriptTranspiler {
       tsConfigFile.path()
     );
     this.ctx.logger.info("Using tsconfig.json compiler options from:", tsConfigFile.path());
-    return { options: ScriptTranspiler.applyTranspileInvariants(parsedConfig.options), declarationRootFiles };
+    // TS18003 (no inputs) always appears here: the file list is supplied separately, the directory read is stubbed.
+    const configErrorCount = parsedConfig.errors.filter((e) => e.code !== 18003).length;
+    return {
+      options: ScriptTranspiler.applyTranspileInvariants(parsedConfig.options),
+      declarationRootFiles,
+      configErrorCount,
+    };
   }
 
   /**
@@ -222,6 +303,7 @@ export class ScriptTranspiler {
     // root is supplied we can't tell them apart, so we gate on everything.
     const draftRootTsConfigPath = sharedRoot ? sharedRoot.getDraftTsConfigPath() : null;
 
+    const reports: ProjectBuildReport[] = [];
     const emittedFiles: string[] = [];
     const gatedDiagnostics: ts.Diagnostic[] = [];
     // Whether the gated (draft-root) project was actually among the compiled
@@ -235,7 +317,7 @@ export class ScriptTranspiler {
         throw new Err.NoFilesToCompileError(tsConfigPath);
       }
       const sf = f.createFile(B6PUri.fromFsPath(tsConfigPath), sharedRoot);
-      const { options: compilerOptions, declarationRootFiles } = await this.getProjectConfig(sf);
+      const { options: compilerOptions, declarationRootFiles, configErrorCount } = await this.getProjectConfig(sf);
       const sfPaths = sfList.map((sf) => sf.uri().fsPath);
       const isGated = draftRootTsConfigPath === null || path.normalize(tsConfigPath) === draftRootTsConfigPath;
       if (isGated) {
@@ -257,6 +339,14 @@ export class ScriptTranspiler {
         emitSkipped,
       } = this.compileProject(tsConfigPath, sfPaths, declarationRootFiles, compilerOptions);
       emittedFiles.push(...projectEmitted);
+      reports.push({
+        tsConfigPath,
+        errorCount: allDiagnostics.filter((d) => d.category === ts.DiagnosticCategory.Error).length,
+        configErrorCount,
+        emittedFiles: projectEmitted,
+        noEmit: compilerOptions.noEmit === true,
+        emitSkipped,
+      });
 
       // Contract: this step is an emit gate, not a hard type-audit gate. A
       // genuine emit failure is FATAL — we throw so callers
@@ -290,10 +380,13 @@ export class ScriptTranspiler {
         this.ctx.logger.info(`TypeScript type-checked ${tsConfigPath} cleanly.`);
       }
     }
+    const uncleanReasons = buildUncleanReasons(reports, sharedRoot?.getDraftFolder().path());
     return {
       emittedFiles,
       diagnosticCount: gatedProjectCompiled ? gatedDiagnostics.length : null,
       diagnosticText: this.formatDiagnostics(gatedDiagnostics),
+      fullyClean: uncleanReasons.length === 0,
+      uncleanReasons,
     };
   }
 

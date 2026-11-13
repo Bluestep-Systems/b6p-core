@@ -1,6 +1,6 @@
 import * as path from "path";
 import ts from "typescript";
-import type { GitIdentity } from "@bluestep-systems/b6p-core-bsjs-git";
+import { buildManifestPath, buildOutputFolder, type GitIdentity } from "@bluestep-systems/b6p-core-bsjs-git";
 import { FileExtensions, FolderNames } from "../constants";
 import { B6PUri } from "../B6PUri";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
@@ -132,6 +132,35 @@ export interface PushResult {
    * @lastreviewed null
    */
   keptPlatformOnly: string[];
+}
+
+/**
+ * The build manifest as it is now in the draft folder, with where it goes back: a compile wipes the build folder, and a
+ * build that is not fully clean must leave an existing manifest as it was (spec §6), so it is put back afterwards.
+ * @lastreviewed null
+ */
+async function existingManifest(
+  ctx: ScriptContext,
+  draftPath: string
+): Promise<{ uri: B6PUri; bytes: Uint8Array } | undefined> {
+  const rootFile = async (name: string): Promise<string | undefined> => {
+    const uri = B6PUri.fromFsPath(path.join(draftPath, name));
+    return (await ctx.fs.exists(uri)) ? Buffer.from(await ctx.fs.readFile(uri)).toString("utf8") : undefined;
+  };
+  const config = (await rootFile("tsconfig.json")) ?? (await rootFile("jsconfig.json"));
+  const relative = buildManifestPath(buildOutputFolder(config));
+  const uri = B6PUri.fromFsPath(path.join(draftPath, ...relative.split("/")));
+  return (await ctx.fs.exists(uri)) ? { uri, bytes: await ctx.fs.readFile(uri) } : undefined;
+}
+
+async function restoreManifest(
+  ctx: ScriptContext,
+  kept: { uri: B6PUri; bytes: Uint8Array } | undefined
+): Promise<void> {
+  if (kept) {
+    await ctx.fs.createDirectory(kept.uri.dirname);
+    await ctx.fs.writeFile(kept.uri, kept.bytes);
+  }
 }
 
 function notPushed(typeCheckDiagnostics: number | null): PushResult {
@@ -308,13 +337,24 @@ export async function executePush(opts: {
   let typeCheckDiagnostics: number | null = null;
   let typeCheckDetail = "";
   if (snapshot) {
-    const compileOutcome = await scriptRoot.compileDraftFolder();
+    const keptManifest = await existingManifest(ctx, draftPath);
+    let compileOutcome: Awaited<ReturnType<typeof scriptRoot.compileDraftFolder>>;
+    try {
+      compileOutcome = await scriptRoot.compileDraftFolder();
+    } catch (error) {
+      await restoreManifest(ctx, keptManifest);
+      throw error;
+    }
+    if (!compileOutcome.fullyClean) {
+      await restoreManifest(ctx, keptManifest);
+    }
     typeCheckDiagnostics = compileOutcome.diagnosticCount;
     typeCheckDetail = compileOutcome.diagnosticText;
 
     const buildFolderPath = (await scriptRoot.getDraftBuildFolder()).uri().fsPath;
     const entrypoint = await checkEmittedEntrypoint({ draftPath, buildFolderPath, fs });
     if (entrypoint.status === "missing" || entrypoint.status === "empty") {
+      await restoreManifest(ctx, keptManifest);
       prompt.error(
         `Snapshot not published: the compiled entrypoint ${entrypoint.emittedPath} ` +
           `${entrypoint.status === "missing" ? "is missing" : "has no code"} after compiling scripts/app.ts. ` +
@@ -323,7 +363,15 @@ export async function executePush(opts: {
       );
       return notPushed(typeCheckDiagnostics);
     }
-    buildSucceeded = true;
+    // A manifest vouches that every project's output was written from the sources as they are: a build that reported
+    // any error, or did not write every project's output, writes none (any existing one then goes stale).
+    buildSucceeded = compileOutcome.fullyClean;
+    if (!compileOutcome.fullyClean) {
+      prompt.warn(
+        `No build manifest was written, because the build was not fully clean:\n\n${compileOutcome.uncleanReasons.join("\n")}\n\n` +
+          `A publish of this draft is refused until it is rebuilt cleanly and pushed.`
+      );
+    }
   }
 
   // Push does NOT transpile client bundles (e.g. a MergeReport `static/script.ts`
