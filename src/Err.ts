@@ -784,6 +784,12 @@ export namespace Err {
      * @lastreviewed null
      */
     readonly paths: string[];
+    /**
+     * True when this push had already switched the script from WebDAV to git (one-way) before it was declined: the
+     * switch stands although nothing was pushed. Set by the push; false otherwise.
+     * @lastreviewed null
+     */
+    switchedToGit = false;
     constructor(message: string, paths: string[]) {
       super(message);
       this.name = "OverwriteDeclinedError";

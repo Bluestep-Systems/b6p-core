@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-12
+
 ### Added
 
 - **Two packages in one repo** (npm workspaces, ClickUp CU-86bd2nrue). `packages/bsjs-git` is the new
@@ -16,7 +18,64 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   legacy script-history archive (`/api/v1/legacy-script-history`, saveState v0 and v1 parsed into one tree). This
   package, `@bluestep-systems/b6p-core`, keeps its name and now depends on it, re-exporting it as `bsjsGit`.
   Publishing sends the CSRF token and session cookie `/gql` requires; a browser bundle needs no polyfill (the package
-  installs a `Buffer` shim). Nothing in push, pull or deploy changed; re-basing them on git is a later change.
+  installs a `Buffer` shim).
+- `GitSync` (`pullDraft`, `pushDraft`, `auditDraft`) and `resolveGitIdentity`, exported for consumers that drive git
+  themselves.
+
+### Changed
+
+- **BREAKING: scripts are git-only** (ClickUp CU-86bd2nruw, stacked on CU-86bd2nrue). A script's draft folder is now
+  the working tree of its git repo (`draft/` with its `.git`), and push, pull, audit and deploy run on
+  `@bluestep-systems/b6p-core-bsjs-git` against the platform's git proxy. No `draft/` or `snapshot/` file is read or
+  written over WebDAV any more (PROPFIND, PUT, ETag read-back and the platform-only cleanup are gone); only
+  `declarations/` and the root `.gitignore` still come over WebDAV. Needs a server with the git proxy and publish
+  (works on a server that has `enableGitPublishing`; the release that carries the legacy-history work also rejects
+  WebDAV writes outright, so clients older than this one stop working against it).
+  - `pull` clones the draft branch, or fetches and fast-forwards it. A local edit to a file the platform also changed is
+    kept and reported in `keptLocalPaths`. A folder pulled before git (files, no repository) is bound to the repo as it
+    stands.
+  - `push` commits the working tree and pushes the draft branch; a snapshot push then publishes it and reads back that
+    `master` is at the published commit. The platform's changes since the last sync are never overwritten without the
+    one confirmation (as before), and a confirmed overwrite is a merge commit, so the platform's history stays.
+  - `deploy` pushes the source draft to each target through a scratch clone; the source folder is never bound to a
+    target.
+  - **A script still publishing over WebDAV is switched to git on its first write, one way.** `PushResult.switchedToGit`
+    and a warning say so. A pull asks first (safe answer first, so auto-confirm declines and the pull returns `null`)
+    unless `enableGit: true` is passed; `PullResult.switchedToGit` reports it.
+- **`PushResult` changed**: `historyRecorded` is removed; `commitSha` (the draft head on the platform), `publishedSha`
+  (the published commit, snapshot only), `publishError` and `switchedToGit` are added. `liveVerified` now means the
+  platform's `master` is at `publishedSha`, and `liveMismatches` lists the paths that differ when it is not. A caller that
+  asks for a snapshot must treat `publishedSha === null` as a failure. `typeCheckDiagnostics`, `keptPlatformOnly`, `pushed`
+  and the overwrite-declined error (`Err.OverwriteDeclinedError`, with `paths`) keep their meaning.
+- **The commit author is never invented**: the `author` option of `push`, `pushCurrent` and `deploy`, else `git config
+  user.name`/`user.email` for the draft folder, else `GIT_AUTHOR_*`/`GIT_COMMITTER_*` from the environment, else a
+  `GitIdentityError`, thrown before the compile and before the platform is touched.
+- `PullResult` gains `switchedToGit`; `DeployConfig` gains optional `author` and `message`; `ScriptService.pull` gains
+  `enableGit`; `B6PProviders` gains optional `gitFs` (default `node:fs`) and `gitEnv`.
+- The classid-to-mutation registry in `ScriptKey` is the one in `bsjs-git` (only the JSP setup pages are kept here).
+
+- Consents come before changes: a WebDAV script is switched (confirmed, or `enableGit`) before anything else, for a push as for a pull, and a folder is bound to the repo only after the overwrite confirmation, so a cancel leaves the folder and the script as they were. The mode is read first and decides the path (a read-only mirror of a WebDAV script is not a git script). `enableGit` is accepted by `push`, `pushCurrent`, `pull`, `pullCurrent` and `deploy` (config).
+- A push refuses when the draft folder has another branch checked out, and only ever reports a commit that was pushed. The old script-root `.gitignore` rules that reached into `draft/` are carried into the repo's `info/exclude`, so files the old tool never uploaded are not committed. Symbolic links are never followed out of the draft folder (skipped with a warning; a pull whose incoming file would go through one is refused). A pull refuses to discard index-only changes and keeps ignored local files at paths the platform started tracking. A file the platform deleted is not brought back by a push without the overwrite confirmation. A confirmed audit-pull overwrite reads the fetched platform draft. Anything after a successful push (a malformed publish answer) comes back as `publishError` with the commit, never a throw. Deploy follows git's ignore rules (negations included).
+- `bsjs-git` 0.2.0: `publish()` sends `expectedDraftSha` (the platform refuses with `DRAFT_MOVED`, `PublishDraftMovedError`); `commit(..., { force })`; `clone({ depth, singleBranch, ref })` with `deepen()`, `isShallow()` and `logPage()` (`shallowBoundary`); `gitMode()`, `currentBranch()`, `stagedOnlyChanges()`.
+
+- `PushResult.publishRefusal` and `DeployTargetResult.publishRefusal` (`{ reason, withheld }`, from the server's `PUBLISH_REFUSED` extensions, every reason) beside the `publishError` message.
+- A draft with no TypeScript source (a `.d.ts` declaration does not count) is exempt from the build manifest, on the client (none written) and in the stub's check.
+- Fully clean (revised): only syntax errors, emit errors and global or option errors in the script's own sources make a build unclean; a semantic type error is a warning and does not block the manifest. Diagnostics in any `.d.ts` are ignored entirely, and `typeCheckDiagnostics` counts the script's own sources only. `PushResult` and `DeployTargetResult` gain `typeCheckErrors: { file, line, column, code, message }[]` (and the deploy result `typeCheckDiagnostics`).
+- A snapshot push writes the build manifest only when the build is fully clean (spec §6): no error diagnostic in any project (a type error counts although `noEmitOnError` is off), no tsconfig configuration diagnostic, no `noEmit`, nothing skipped or withheld, nothing emitted outside the tree, and every project emitted something (`TranspileOutcome.fullyClean`, `uncleanReasons`, `buildUncleanReasons`). Otherwise an existing manifest is left exactly as it was (it is put back after the compile wipes the build folder), so a publish of the stale draft is refused.
+- **Build manifest** (contract v1): a snapshot push (and deploy) writes `<outDir>/.b6p-build.json` in the same commit as the compiled output, after a successful build only (`PushOptions.externallyBuilt`/`DeployConfig.externallyBuilt` suppress it); `bsjs-git` `commit({ buildManifest })`, the manifest helpers and `PublishBuildStaleError`, `PublishBuildManifestMissingError`, `PublishBuildManifestInvalidError` (each with `withheld`).
+
+### Removed
+
+- `SnapshotHistoryRecorder` and the `addMapObjectEntries` history writes, which recorded every snapshot under the author
+  `"unknown"`. The platform's legacy history archive is read through `bsjsGit.LegacyHistoryClient`; the git history is
+  the history from here on.
+- `verifyLiveSnapshot`, `cleanupUnusedUpstairsPaths`, `collectOverwriteCandidates`, `confirmOverwrites` and the types
+  `LiveSnapshotCheck` and `OverwriteCandidate` from the exports, and the WebDAV upload and read-back methods of
+  `ScriptFile` (`upload`, `putTo`, `readBackStatus`, `platformChangeAtRisk`, `getReasonToNotPush`, `snapshotUrl`).
+
+### Fixed
+
+- `tsconfig.tsbuildinfo` files are no longer tracked (a stale one stopped `tsc` from emitting `dist/` in a fresh checkout).
 
 ## [0.8.1] - 2026-10-20
 

@@ -246,3 +246,68 @@ export class GitModeError extends BsjsGitError {
     super("GIT_MODE_FAILED", `Could not switch the script to git publishing: ${message}`, { cause });
   }
 }
+
+/**
+ * The reason the platform gives (`PUBLISH_REFUSED`) when the draft it holds is no longer the commit the caller verified
+ * and asked to publish (`expectedDraftSha`).
+ * @lastreviewed null
+ */
+export const DRAFT_MOVED_REASON = "DRAFT_MOVED";
+
+/**
+ * The publish was refused because the platform's draft moved after this client verified it (someone pushed in between):
+ * nothing was published, and the draft to publish must be fetched and checked again.
+ * @lastreviewed null
+ */
+export class PublishDraftMovedError extends PublishRefusedError {
+  constructor(details: unknown, message: string) {
+    super(DRAFT_MOVED_REASON, details, message);
+  }
+}
+
+/**
+ * A publish refused by the build manifest check. `withheld` is the server's `extensions.publish.withheld`: the stale
+ * paths for {@link PublishBuildStaleError}, the manifest's path for the other two.
+ * @lastreviewed null
+ */
+export abstract class PublishBuildError extends PublishRefusedError {
+  readonly withheld: string[];
+  constructor(reason: string, details: unknown, message: string) {
+    super(reason, details, message);
+    const withheld = (details as { withheld?: unknown } | null | undefined)?.withheld;
+    this.withheld = Array.isArray(withheld) ? withheld.filter((p): p is string => typeof p === "string") : [];
+  }
+}
+
+/**
+ * The draft's sources no longer match the build manifest (`BUILD_STALE`): rebuild and push. `withheld` lists the stale
+ * paths.
+ * @lastreviewed null
+ */
+export class PublishBuildStaleError extends PublishBuildError {
+  constructor(details: unknown, message: string) {
+    super("BUILD_STALE", details, message);
+  }
+}
+
+/**
+ * The draft has a `tsconfig.json` but no build manifest (`BUILD_MANIFEST_MISSING`): build and push. `withheld` holds the
+ * manifest's path.
+ * @lastreviewed null
+ */
+export class PublishBuildManifestMissingError extends PublishBuildError {
+  constructor(details: unknown, message: string) {
+    super("BUILD_MANIFEST_MISSING", details, message);
+  }
+}
+
+/**
+ * The build manifest cannot be read (`BUILD_MANIFEST_INVALID`): not a JSON object, a version other than 1, or a hash
+ * that is not 40 hex digits. `withheld` holds the manifest's path.
+ * @lastreviewed null
+ */
+export class PublishBuildManifestInvalidError extends PublishBuildError {
+  constructor(details: unknown, message: string) {
+    super("BUILD_MANIFEST_INVALID", details, message);
+  }
+}

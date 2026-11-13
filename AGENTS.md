@@ -71,8 +71,22 @@ are load-bearing rather than stylistic — each records something this repo undi
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
-snapshot history), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
-parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles).
+`GitSync` push/pull/audit of the draft as a git working tree, `GitIdentity` commit authors),
+`persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles).
+
+## Scripts are git (since 0.9.0)
+
+A script's `draft/` folder is the working tree of its git repo; push, pull, audit and deploy are in
+`src/script/GitSync.ts` over `bsjsGit.ScriptRepo`. No draft or snapshot file goes over WebDAV (only `declarations/` and
+the root `.gitignore` do). Rules that bind changes here:
+
+- **No default commit author**, ever: `resolveGitIdentity` (explicit, `git config`, environment, else an error before the
+  platform is touched). A literal `"unknown"` author is the bug this replaced.
+- **A pull never switches a WebDAV script to git without the confirmation** (safe answer first); a push does, on its
+  first write, and says so (`switchedToGit`).
+- **A push never overwrites a platform edit without the one confirmation**; a confirmed overwrite is a merge commit so
+  the platform's history stays. Never force-push.
+- The git working tree uses `ScriptContext.gitFs` (Node `fs`), not the `FileSystem` provider; both address the same disk.
 
 ## The bsjs-git package
 

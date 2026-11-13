@@ -21,10 +21,18 @@ const repo = new ScriptRepo({
 
 await repo.ensureGitMode();            // WEBDAV script -> git (one-way); no-op when already git. Returns the clone URL
 await repo.clone();                    // every branch; draft checked out (or clone({ ensureGit: true }) for both)
+                                       // clone({ depth: 50, singleBranch: true }): a bounded clone (plus master's head at the same depth);
+                                       // repo.deepen(50) loads older history; repo.logPage(...).shallowBoundary says when to
 await repo.writeFile("main.ts", "export {};\n");
 await repo.commit("Edit main");        // stages every working-tree change
+                                       // commit(msg, author, { parents }) makes a (merge) commit over the given parents even with nothing staged
 await repo.push();                     // the draft branch
+                                       // commit(msg, author, { force: [".build/app.js"] }) stages those paths even when .gitignore matches them
 const { publishedSha, refreshed } = await repo.publish(); // the platform promotes draft to master
+
+await repo.sha("origin/draft");                 // a branch or sha as a commit sha
+await repo.isAncestor(a, b);                    // whether a is b or one of its ancestors
+await repo.resetDraft(sha);                     // move the local draft and its working tree to a commit
 
 await repo.log({ rev: "master", limit: 20 });   // CommitInfo[], newest first; page with `before`
 await repo.listTree(publishedSha);                       // files at a revision
@@ -57,9 +65,12 @@ and a refused one retried once. Session mode relies on the platform's git proxy 
 
 `ensureGitMode()` reads the script's `gitPublishing` / `gitCloneUrl` and, only if it is not in GIT mode, runs
 `enableGitPublishing: true` on the script's update mutation (synchronous, creates and seeds the repo, **one-way**).
-`clone({ ensureGit: true })` does it first; a plain `clone()` never flips a script.
+`ensureGitModeResult()` is the same, also saying whether this call did the switch. `clone({ ensureGit: true })` does it first; a plain `clone()` never flips a script.
 The mode is read with a real query, `remoteObject(id: "<classid>___<seqnum>") { ... on ScriptFormula|ScriptMergeReport|ScriptEndpoint { gitPublishing gitCloneUrl } }`, not a write.
+
 ## Publish
+
+The mutation carries `expectedDraftSha`: the local draft head `publish()` verified equals the platform's. If the platform's draft moved since (someone pushed in between), it refuses with reason `DRAFT_MOVED`, thrown as `PublishDraftMovedError` (a `PublishRefusedError`), and publishes nothing. `gitMode()` reads the mode without switching anything.
 
 `publish()` sends the platform's existing publish: a GraphQL `updateScript<Type>` mutation with `takeSnapshot: true`
 on `/gql`, reading `config.publishedSha` from the answer. The local draft must already be pushed. `/gql` enforces
@@ -79,3 +90,16 @@ package with esbuild (`platform: "browser"`, no plugins) to keep that true.
 
 `npm test -w @bluestep-systems/b6p-core-bsjs-git`. The round-trip spec serves a real bare repo over HTTP by running
 `git http-backend` behind `node:http` (see `test/support/GitProxyStub.js`), so `git` must be on the PATH.
+
+## Build manifest
+
+A git script publishes `draft` exactly as committed, so the server refuses a draft whose sources no longer match the
+build manifest (`<outDir>/.b6p-build.json`, contract v1): the git blob SHA-1 of every source file the build was made
+from. Whoever builds writes it in the same commit as the output: `commit(msg, author, { buildManifest: {} })` stages the
+tree, computes the manifest over what the commit will hold and commits it with it. Pass the option only after a build that
+succeeded and emitted everything; after a failed or partial build omit it, which leaves any existing manifest as it is
+(so a publish refuses it). `{ buildManifest: { externallyBuilt: true } }` writes none, and none is written for a tree
+with no `tsconfig.json`, nor for a draft with no TypeScript source outside the output folder (`isTypeScriptSource`: `ts tsx mts cts`, never a `*.d.*` declaration; declarations are still listed in `sources` when a manifest is written). The pure helpers (`buildOutputFolder`, `buildManifestPath`, `isBuildSource`, `gitBlobSha1`,
+`planBuildManifest`, `formatBuildManifest`) are exported. A refused publish is `PublishBuildStaleError`
+(`BUILD_STALE`), `PublishBuildManifestMissingError` (`BUILD_MANIFEST_MISSING`) or `PublishBuildManifestInvalidError`
+(`BUILD_MANIFEST_INVALID`), each with `withheld` (the stale paths, or the manifest's path).

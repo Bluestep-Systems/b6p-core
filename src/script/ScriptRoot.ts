@@ -10,7 +10,6 @@ import { ScriptFactory } from "./ScriptFactory";
 import { B6PUri } from "../B6PUri";
 import { ScriptFile } from "./ScriptFile";
 import type { ScriptFolder } from "./ScriptFolder";
-import { ScriptNode } from "./ScriptNode";
 import { ScriptTranspiler, type TranspileOutcome } from "./ScriptTranspiler";
 import { TsConfig } from "./TsConfig";
 import type { ScriptContext } from "./ScriptContext";
@@ -481,29 +480,6 @@ export class ScriptRoot {
       }
     }
     return badFiles;
-  }
-
-  public async getPushableNodes(snapshot: boolean = false): Promise<ScriptNode[]> {
-    const flattenedDraft = await this.getDraftFolder().flatten();
-    const pushableNodes: ScriptNode[] = [];
-    for (const f of flattenedDraft) {
-      // A snapshot push skips a file only when its snapshot/ copy matches too (ClickUp 86bbqnrtp).
-      const reason = await f.getReasonToNotPush({ isSnapshot: snapshot });
-      if (reason) {
-        this.ctx.logger.info(`Excluding draft file from push: ${f.path()} (${reason})`);
-        continue;
-      }
-      const isSnapshotOrNotInBuild = snapshot || !(await f.isInItsRespectiveBuildFolder());
-
-      const fileName = f.path();
-      if (isSnapshotOrNotInBuild) {
-        pushableNodes.push(f);
-      } else {
-        this.ctx.logger.info(`Excluding file in build folder from push: ${fileName}`);
-      }
-    }
-
-    return pushableNodes;
   }
 
   public async preflightCheck(): Promise<string> {

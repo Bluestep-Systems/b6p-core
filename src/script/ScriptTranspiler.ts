@@ -28,10 +28,104 @@ import { TsLibResolver } from "./TsLibResolver";
  * to abort; a true emit failure throws instead of returning.
  * @lastreviewed null
  */
+/**
+ * One TypeScript diagnostic, located.
+ * @lastreviewed null
+ */
+export interface TypeCheckError {
+  file: string;
+  line: number;
+  column: number;
+  code: number;
+  message: string;
+}
+
 export interface TranspileOutcome {
   emittedFiles: string[];
   diagnosticCount: number | null;
   diagnosticText: string;
+  /**
+   * Whether the build is fully clean (build manifest spec §6): every project wrote its output and none reported an
+   * error diagnostic. Only then may a build manifest be written. `uncleanReasons` says why when it is false.
+   * @lastreviewed null
+   */
+  fullyClean: boolean;
+  uncleanReasons: string[];
+  /**
+   * The diagnostics counted in `diagnosticCount`, one entry each: those of the draft-root project located in the
+   * script's own sources (a diagnostic in any `.d.ts` is ignored entirely). `file` is relative to the draft folder,
+   * `/`-separated, empty for a diagnostic with no file; `line` and `column` count from 1 (0 with no file).
+   * @lastreviewed null
+   */
+  typeCheckErrors: TypeCheckError[];
+}
+
+/**
+ * What one compiled project reported, as far as build cleanliness goes.
+ * @lastreviewed null
+ */
+export interface ProjectBuildReport {
+  tsConfigPath: string;
+  /**
+   * Diagnostics of the error category, of any kind (a type error counts although `noEmitOnError` is off).
+   * @lastreviewed null
+   */
+  errorCount: number;
+  /**
+   * Problems with the tsconfig itself (unknown options, file-list errors); the always-empty "no inputs" one is not counted.
+   * @lastreviewed null
+   */
+  configErrorCount: number;
+  emittedFiles: string[];
+  /**
+   * The project sets `noEmit`.
+   * @lastreviewed null
+   */
+  noEmit: boolean;
+  /**
+   * The emit was skipped or withheld.
+   * @lastreviewed null
+   */
+  emitSkipped: boolean;
+}
+
+/**
+ * Why a build is not fully clean (build manifest spec §6), empty when it is: a project reported an error diagnostic,
+ * has a tsconfig with configuration diagnostics, sets `noEmit`, had its emit skipped or withheld, emitted nothing, or
+ * wrote output outside the tree.
+ * @param draftRoot The draft folder every output must be under; when absent that check is skipped
+ * @lastreviewed null
+ */
+export function buildUncleanReasons(reports: readonly ProjectBuildReport[], draftRoot?: string): string[] {
+  const reasons: string[] = [];
+  for (const r of reports) {
+    if (r.errorCount > 0) {
+      reasons.push(`${r.tsConfigPath}: ${r.errorCount} syntax or emit error(s)`);
+    }
+    if (r.configErrorCount > 0) {
+      reasons.push(`${r.tsConfigPath}: the tsconfig has ${r.configErrorCount} configuration diagnostic(s)`);
+    }
+    if (r.noEmit) {
+      reasons.push(`${r.tsConfigPath}: sets noEmit`);
+    }
+    if (r.emitSkipped) {
+      reasons.push(`${r.tsConfigPath}: its emit was skipped or withheld`);
+    }
+    if (!r.emitSkipped && !r.noEmit && r.emittedFiles.length === 0) {
+      reasons.push(`${r.tsConfigPath}: emitted nothing`);
+    }
+    if (draftRoot !== undefined) {
+      const root = path.resolve(draftRoot);
+      const outside = r.emittedFiles.filter((f) => {
+        const relative = path.relative(root, path.resolve(f));
+        return relative.startsWith("..") || path.isAbsolute(relative);
+      });
+      if (outside.length > 0) {
+        reasons.push(`${r.tsConfigPath}: wrote ${outside.length} output file(s) outside the draft folder`);
+      }
+    }
+  }
+  return reasons;
 }
 
 /**
@@ -70,11 +164,11 @@ export class ScriptTranspiler {
 
   private async getProjectConfig(
     sn: ScriptNode
-  ): Promise<{ options: ts.CompilerOptions; declarationRootFiles: string[] }> {
+  ): Promise<{ options: ts.CompilerOptions; declarationRootFiles: string[]; configErrorCount: number }> {
     const tsConfigFile = await sn.getClosestTsConfigFile();
     if (!tsConfigFile) {
       this.ctx.logger.info("No tsconfig.json found, using default compiler options.");
-      return { options: this.getDefaultOptions(sn), declarationRootFiles: [] };
+      return { options: this.getDefaultOptions(sn), declarationRootFiles: [], configErrorCount: 0 };
     }
 
     const tsconfigTextArray = await this.ctx.fs.readFile(B6PUri.fromFsPath(tsConfigFile.uri().fsPath));
@@ -120,7 +214,13 @@ export class ScriptTranspiler {
       tsConfigFile.path()
     );
     this.ctx.logger.info("Using tsconfig.json compiler options from:", tsConfigFile.path());
-    return { options: ScriptTranspiler.applyTranspileInvariants(parsedConfig.options), declarationRootFiles };
+    // TS18003 (no inputs) always appears here: the file list is supplied separately, the directory read is stubbed.
+    const configErrorCount = parsedConfig.errors.filter((e) => e.code !== 18003).length;
+    return {
+      options: ScriptTranspiler.applyTranspileInvariants(parsedConfig.options),
+      declarationRootFiles,
+      configErrorCount,
+    };
   }
 
   /**
@@ -222,6 +322,7 @@ export class ScriptTranspiler {
     // root is supplied we can't tell them apart, so we gate on everything.
     const draftRootTsConfigPath = sharedRoot ? sharedRoot.getDraftTsConfigPath() : null;
 
+    const reports: ProjectBuildReport[] = [];
     const emittedFiles: string[] = [];
     const gatedDiagnostics: ts.Diagnostic[] = [];
     // Whether the gated (draft-root) project was actually among the compiled
@@ -235,7 +336,7 @@ export class ScriptTranspiler {
         throw new Err.NoFilesToCompileError(tsConfigPath);
       }
       const sf = f.createFile(B6PUri.fromFsPath(tsConfigPath), sharedRoot);
-      const { options: compilerOptions, declarationRootFiles } = await this.getProjectConfig(sf);
+      const { options: compilerOptions, declarationRootFiles, configErrorCount } = await this.getProjectConfig(sf);
       const sfPaths = sfList.map((sf) => sf.uri().fsPath);
       const isGated = draftRootTsConfigPath === null || path.normalize(tsConfigPath) === draftRootTsConfigPath;
       if (isGated) {
@@ -251,12 +352,25 @@ export class ScriptTranspiler {
         }
       }
 
-      const {
-        emittedFiles: projectEmitted,
-        diagnostics: allDiagnostics,
-        emitSkipped,
-      } = this.compileProject(tsConfigPath, sfPaths, declarationRootFiles, compilerOptions);
+      const compiled = this.compileProject(tsConfigPath, sfPaths, declarationRootFiles, compilerOptions);
+      const { emittedFiles: projectEmitted, emitSkipped } = compiled;
+      // A diagnostic located in a declaration file is not the script's: the server's generated typings are outside its
+      // control, so they are ignored entirely.
+      const ownSources = (list: readonly ts.Diagnostic[]) =>
+        list.filter((d) => !(d.file && ScriptTranspiler.isDeclarationFile(d.file.fileName)));
+      const allDiagnostics = ownSources(compiled.diagnostics);
+      const blockingErrors = ownSources(compiled.blockingDiagnostics).filter(
+        (d) => d.category === ts.DiagnosticCategory.Error
+      );
       emittedFiles.push(...projectEmitted);
+      reports.push({
+        tsConfigPath,
+        errorCount: blockingErrors.length,
+        configErrorCount,
+        emittedFiles: projectEmitted,
+        noEmit: compilerOptions.noEmit === true,
+        emitSkipped,
+      });
 
       // Contract: this step is an emit gate, not a hard type-audit gate. A
       // genuine emit failure is FATAL — we throw so callers
@@ -290,10 +404,14 @@ export class ScriptTranspiler {
         this.ctx.logger.info(`TypeScript type-checked ${tsConfigPath} cleanly.`);
       }
     }
+    const uncleanReasons = buildUncleanReasons(reports, sharedRoot?.getDraftFolder().path());
     return {
       emittedFiles,
       diagnosticCount: gatedProjectCompiled ? gatedDiagnostics.length : null,
       diagnosticText: this.formatDiagnostics(gatedDiagnostics),
+      fullyClean: uncleanReasons.length === 0,
+      uncleanReasons,
+      typeCheckErrors: gatedDiagnostics.map((d) => this.locate(d, sharedRoot?.getDraftFolder().path())),
     };
   }
 
@@ -316,12 +434,30 @@ export class ScriptTranspiler {
     sfPaths: string[],
     declarationRootFiles: string[],
     options: ts.CompilerOptions
-  ): { emittedFiles: string[]; diagnostics: ts.Diagnostic[]; emitSkipped: boolean } {
+  ): {
+    emittedFiles: string[];
+    diagnostics: ts.Diagnostic[];
+    blockingDiagnostics: ts.Diagnostic[];
+    emitSkipped: boolean;
+  } {
     const rootFiles = Array.from(new Set([...declarationRootFiles, ...sfPaths]));
     const program = this.createProgram(rootFiles, options, tsConfigPath);
     const emitResult = program.emit();
     const diagnostics = ts.getPreEmitDiagnostics(program).concat(emitResult.diagnostics);
-    return { emittedFiles: emitResult.emittedFiles ?? [], diagnostics, emitSkipped: emitResult.emitSkipped };
+    // What makes a build unclean is told apart from the type warnings: syntax errors, emit errors, and global or option
+    // errors. Semantic (type) errors are warnings.
+    const blockingDiagnostics = [
+      ...program.getSyntacticDiagnostics(),
+      ...program.getOptionsDiagnostics(),
+      ...program.getGlobalDiagnostics(),
+      ...emitResult.diagnostics,
+    ];
+    return {
+      emittedFiles: emitResult.emittedFiles ?? [],
+      diagnostics,
+      blockingDiagnostics,
+      emitSkipped: emitResult.emitSkipped,
+    };
   }
 
   /**
@@ -353,6 +489,22 @@ export class ScriptTranspiler {
       );
     }
     return ts.createProgram(fileNames, options, host);
+  }
+
+  private locate(diagnostic: ts.Diagnostic, draftRoot: string | undefined): TypeCheckError {
+    const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+    if (!diagnostic.file || diagnostic.start === undefined) {
+      return { file: "", line: 0, column: 0, code: diagnostic.code, message };
+    }
+    const { line, character } = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
+    const relative = draftRoot ? path.relative(draftRoot, diagnostic.file.fileName) : diagnostic.file.fileName;
+    return {
+      file: relative.split(path.sep).join("/"),
+      line: line + 1,
+      column: character + 1,
+      code: diagnostic.code,
+      message,
+    };
   }
 
   private formatDiagnostics(diagnostics: readonly ts.Diagnostic[]): string {

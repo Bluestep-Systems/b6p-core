@@ -34,13 +34,129 @@ function httpBackendPath() {
   return path.join(execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim(), "git-http-backend");
 }
 
+// The server's build manifest check (contract v1 §5), written out independently of the client's implementation.
+// Returns null when the publish may go on, else { reason, withheld }.
+function buildCheck(entry) {
+  if (entry.externallyBuilt) {
+    return null;
+  }
+  const tree = new Map(
+    git(entry.bare, "ls-tree", "-r", "draft")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [meta, file] = line.split("\t");
+        return [file, meta.split(" ")[2]];
+      })
+  );
+  if (![...tree.keys()].some((p) => p.split("/").pop() === "tsconfig.json")) {
+    return null;
+  }
+  const show = (p) => git(entry.bare, "show", `draft:${p}`);
+  const configPath = tree.has("tsconfig.json")
+    ? "tsconfig.json"
+    : tree.has("jsconfig.json")
+      ? "jsconfig.json"
+      : undefined;
+  let declared;
+  if (configPath) {
+    try {
+      const text = show(configPath)
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^\s*\/\/.*$/gm, "")
+        .replace(/,(\s*[}\]])/g, "$1");
+      const outDir = JSON.parse(text)?.compilerOptions?.outDir;
+      declared = typeof outDir === "string" ? outDir : undefined;
+    } catch {
+      declared = undefined;
+    }
+  }
+  let folder = declared === undefined ? ".build" : declared;
+  if (folder.startsWith("./")) {
+    folder = folder.slice(2);
+  }
+  if (
+    folder === "" ||
+    /^[/.]*$/.test(folder) ||
+    folder.startsWith("/") ||
+    folder.includes("\\") ||
+    folder.split("/").includes("..")
+  ) {
+    folder = "";
+  }
+  folder = folder.replace(/\/+$/, "");
+  const manifestPath = folder === "" ? ".b6p-build.json" : `${folder}/.b6p-build.json`;
+  // No TypeScript source outside the output folder (a declaration does not count): nothing to build, so exempt.
+  const tsSource = [...tree.keys()].some((p) => {
+    const name = p.split("/").pop();
+    const dot = name.lastIndexOf(".");
+    return (
+      dot >= 0 &&
+      ["ts", "tsx", "mts", "cts"].includes(name.slice(dot + 1).toLowerCase()) &&
+      !name.slice(0, dot).toLowerCase().endsWith(".d") &&
+      p !== manifestPath &&
+      (folder === "" || !p.startsWith(`${folder}/`))
+    );
+  });
+  if (!tsSource) {
+    return null;
+  }
+  if (!tree.has(manifestPath)) {
+    return { reason: "BUILD_MANIFEST_MISSING", withheld: [manifestPath] };
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(show(manifestPath));
+  } catch {
+    return { reason: "BUILD_MANIFEST_INVALID", withheld: [manifestPath] };
+  }
+  const sourcesOk =
+    manifest &&
+    typeof manifest === "object" &&
+    manifest.version === 1 &&
+    manifest.sources &&
+    typeof manifest.sources === "object" &&
+    !Array.isArray(manifest.sources);
+  if (!sourcesOk || !Object.values(manifest.sources).every((v) => typeof v === "string" && /^[0-9a-f]{40}$/.test(v))) {
+    return { reason: "BUILD_MANIFEST_INVALID", withheld: [manifestPath] };
+  }
+  const exts = new Set(["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "json", "jsonc"]);
+  const sources = new Map();
+  for (const [p, oid] of tree) {
+    const name = p.split("/").pop();
+    const dot = name.lastIndexOf(".");
+    if (
+      dot >= 0 &&
+      exts.has(name.slice(dot + 1).toLowerCase()) &&
+      p !== manifestPath &&
+      (folder === "" || !p.startsWith(`${folder}/`))
+    ) {
+      sources.set(p, oid);
+    }
+  }
+  const stale = new Set();
+  for (const [p, oid] of Object.entries(manifest.sources)) {
+    if (sources.get(p) !== oid) {
+      stale.add(p);
+    }
+  }
+  for (const p of sources.keys()) {
+    if (!(p in manifest.sources)) {
+      stale.add(p);
+    }
+  }
+  return stale.size > 0 ? { reason: "BUILD_STALE", withheld: [...stale].sort() } : null;
+}
 /** Creates the temp area, a bare repo `<classid>___<seqnum>` seeded with one commit on master and draft. */
 function createStub() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bsjs-git-stub-"));
   const repos = new Map(); // name -> { mode, locked, refusePublish }
   const backend = httpBackendPath();
 
-  function addRepo(name, { mode = "GIT", locked = false, files = { "main.ts": "export const v = 1;\n" } } = {}) {
+  function addRepo(
+    name,
+    { mode = "GIT", locked = false, hidden = false, files = { "main.ts": "export const v = 1;\n" } } = {}
+  ) {
     const bare = path.join(root, name);
     git(root, "init", "--bare", "-b", "master", bare);
     git(bare, "config", "http.receivepack", "true");
@@ -55,6 +171,7 @@ function createStub() {
     git(seed, "config", "user.name", "Seeder");
     git(seed, "config", "user.email", "seed@example.test");
     for (const [file, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(seed, file)), { recursive: true });
       fs.writeFileSync(path.join(seed, file), text);
     }
     git(seed, "add", "-A");
@@ -66,7 +183,7 @@ function createStub() {
     fs.rmSync(hook);
     git(seed, "push", bare, "master", "draft");
     fs.writeFileSync(hook, saved, { mode: 0o755 });
-    repos.set(name, { mode, locked, refusePublish: undefined, bare });
+    repos.set(name, { mode, locked, hidden, refusePublish: undefined, bare });
     return bare;
   }
 
@@ -137,6 +254,7 @@ function createStub() {
     sessionAuthorizationSeen: false,
     rejectNextCsrf: false,
     failGitAfterPublish: false,
+    publishInputs: [],
   };
 
   /** A signed-in browser session: the cookie alone, no Authorization header. */
@@ -229,7 +347,57 @@ function createStub() {
         );
         return;
       }
+      // A test hook: someone else pushes between this client's verification and the publish.
+      entry.beforePublish?.();
       const draft = git(entry.bare, "rev-parse", "refs/heads/draft");
+      // The contract: a publish names the draft commit the caller verified; a draft that moved since is refused.
+      state.publishInputs.push(input);
+      if (input.expectedDraftSha !== undefined && !/^[0-9a-f]{40}$/.test(input.expectedDraftSha)) {
+        // The server treats anything but a full commit id as bad input.
+        res.end(
+          JSON.stringify({
+            errors: [
+              { message: "expectedDraftSha must be a full 40-hex commit id", extensions: { code: "BAD_USER_INPUT" } },
+            ],
+          })
+        );
+        return;
+      }
+      if (input.expectedDraftSha !== undefined && input.expectedDraftSha !== draft) {
+        res.end(
+          JSON.stringify({
+            errors: [
+              {
+                message: "The draft changed after it was checked",
+                extensions: {
+                  code: "PUBLISH_REFUSED",
+                  reason: "DRAFT_MOVED",
+                  publish: { expected: input.expectedDraftSha, actual: draft },
+                },
+              },
+            ],
+          })
+        );
+        return;
+      }
+      const build = buildCheck(entry);
+      if (build) {
+        res.end(
+          JSON.stringify({
+            errors: [
+              {
+                message: `The script was not published: `,
+                extensions: { code: "PUBLISH_REFUSED", reason: build.reason, publish: { withheld: build.withheld } },
+              },
+            ],
+          })
+        );
+        return;
+      }
+      if (entry.garblePublish) {
+        res.end("<html>not json</html>");
+        return;
+      }
       git(entry.bare, "update-ref", "refs/heads/master", draft);
       state.failGitAfterPublish = entry.failFetchAfterPublish === true;
       res.end(JSON.stringify({ data: { [mutation]: [{ id: input.topId, config: { publishedSha: draft } }] } }));
@@ -278,7 +446,8 @@ function createStub() {
       return;
     }
     const entry = repos.get(match[1]);
-    if (!entry) {
+    // `hidden`: a script that publishes over WebDAV has no repo until git is switched on.
+    if (!entry || (entry.hidden && entry.mode !== "GIT")) {
       res.writeHead(404);
       res.end();
       return;

@@ -1,3 +1,4 @@
+import { SCRIPT_PUBLISH_TYPES } from "@bluestep-systems/b6p-core-bsjs-git";
 import { Err } from "../Err";
 import { registerSerializable, type SerializableClass } from "../persistence";
 import type { JsonValue } from "../types";
@@ -6,37 +7,23 @@ const COMPOUND_ID_SEPARATOR = "___";
 const SERIALIZABLE_TAG = "ScriptKey";
 
 /**
- * Registry of known script class IDs and their associated metadata.
- * Add new script types here as they become supported.
+ * The JSP setup page of each known script type, by class id. Which classids are known, and the GraphQL mutation and
+ * input type each publishes through, come from the one registry in `bsjs-git` ({@link SCRIPT_PUBLISH_TYPES}); only the
+ * page is this package's own.
+ * @lastreviewed null
  */
-const SCRIPT_TYPE_REGISTRY = {
-  "654015": {
-    type: "formula",
-    setupPage: "editformuladetails.jsp",
-    mutationName: "updateScriptFormula",
-    inputType: "UpdateScriptFormulaInput",
-  },
-  "530024": {
-    type: "report",
-    setupPage: "editdetailreport1.jsp",
-    mutationName: "updateScriptMergeReport",
-    inputType: "UpdateScriptMergeReportInput",
-  },
-  "363769": {
-    type: "endpoint",
-    setupPage: "editendpoint.jsp",
-    mutationName: "updateScriptEndpoint",
-    inputType: "UpdateScriptEndpointInput",
-  },
-} as const;
+const SETUP_PAGES: Record<keyof typeof SCRIPT_PUBLISH_TYPES, string> = {
+  "654015": "editformuladetails.jsp",
+  "530024": "editdetailreport1.jsp",
+  "363769": "editendpoint.jsp",
+};
 
-type ScriptTypeEntry = typeof SCRIPT_TYPE_REGISTRY;
-type KnownClassId = keyof ScriptTypeEntry;
+type KnownClassId = keyof typeof SCRIPT_PUBLISH_TYPES;
 
 /**
  * The known script types, derived from the registry.
  */
-export type ScriptType = ScriptTypeEntry[KnownClassId]["type"];
+export type ScriptType = (typeof SCRIPT_PUBLISH_TYPES)[KnownClassId]["type"];
 
 /**
  * Represents a unique script identifier consisting of a classid and seqnum pair.
@@ -89,7 +76,7 @@ export class ScriptKey implements SerializableClass {
    * The JSP setup page for this script type, or `undefined` if not in the registry.
    */
   get setupPage(): string | undefined {
-    return this.registryEntry?.setupPage;
+    return this.classid in SETUP_PAGES ? SETUP_PAGES[this.classid as KnownClassId] : undefined;
   }
 
   /**
@@ -133,9 +120,9 @@ export class ScriptKey implements SerializableClass {
     return { __serializable: SERIALIZABLE_TAG, classid: this.classid, seqnum: this.seqnum };
   }
 
-  private get registryEntry(): ScriptTypeEntry[KnownClassId] | undefined {
-    if (this.classid in SCRIPT_TYPE_REGISTRY) {
-      return SCRIPT_TYPE_REGISTRY[this.classid as KnownClassId];
+  private get registryEntry(): (typeof SCRIPT_PUBLISH_TYPES)[KnownClassId] | undefined {
+    if (this.classid in SCRIPT_PUBLISH_TYPES) {
+      return SCRIPT_PUBLISH_TYPES[this.classid as KnownClassId];
     }
     return undefined;
   }

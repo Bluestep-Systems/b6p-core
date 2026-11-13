@@ -255,7 +255,9 @@ export class ScriptUrlParser {
             if (entry.trailing === undefined) {
               return false;
             }
-            if (entry.trailingFolder === FolderNames.SNAPSHOT) {
+            // A script's draft and snapshot travel through git, not WebDAV; only the generated `declarations/` and the
+            // root `.gitignore` are still read this way.
+            if (entry.trailingFolder === FolderNames.DRAFT || entry.trailingFolder === FolderNames.SNAPSHOT) {
               return false;
             }
             return true;
