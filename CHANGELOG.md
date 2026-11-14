@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`core.gateway.kb.resolve` (and so `pull` / `push`) match names and tenants ASCII case-insensitively**: the gateway lists a
+  forge repo in any case under its canonical name, so `u5/KB-Notes` finds `U5/kb-notes`. A tenant typed `u<digits>` is
+  queried as `U<digits>`; the result and the default local folder keep the canonical spelling. Rows differing only by
+  case stay `ambiguous`.
+
 ### Added
 
 - **`GatewayKnowledgeBase.id` and `.status`**: the listing's rows now carry the tenant record's `id` (`string | null`)

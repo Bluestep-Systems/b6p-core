@@ -234,6 +234,15 @@ function knowledgeBaseFrom(entry: unknown, index: number): GatewayKnowledgeBase 
 }
 
 /**
+ * Lower-case A–Z only, so name matching never depends on the locale.
+ *
+ * @lastreviewed null
+ */
+function asciiLower(value: string): string {
+  return value.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+}
+
+/**
  * Parse `<name>` (global) or `<tenant>/<name>` (tenant). A listing's own `ref` form
  * (`global/<name>`, `tenant/<tenant>/<name>`) is accepted too.
  * @lastreviewed null
@@ -346,6 +355,10 @@ export class GatewayKb {
 
   /**
    * Find one knowledge base by address: `<name>` for a global one, `<U…>/<name>` for a tenant one.
+   * Name and tenant match ASCII case-insensitively (A–Z mapped to a–z, no locale folding), because the
+   * forge's repository names are case-insensitive; a tenant typed as `u<digits>` is sent to the
+   * gateway as `U<digits>`. The result keeps the gateway's canonical spelling. Two rows that differ
+   * only by case are `ambiguous`.
    *
    * @throws {Err.GatewayKnowledgeBaseError} `bad-ref`, `not-found` or `ambiguous`
    * @throws {Err.GatewayError} a subclass for any gateway failure
@@ -356,9 +369,16 @@ export class GatewayKb {
     const listed =
       parsed.tenant === null
         ? await this.list({ scope: "global" })
-        : await this.list({ scope: "tenant", tenant: parsed.tenant });
+        : await this.list({
+            scope: "tenant",
+            tenant: /^u\d+$/i.test(parsed.tenant) ? parsed.tenant.toUpperCase() : parsed.tenant,
+          });
+    const wantName = asciiLower(parsed.name);
+    const wantTenant = parsed.tenant === null ? null : asciiLower(parsed.tenant);
     const matches = listed.filter(
-      (kb) => kb.name === parsed.name && (parsed.tenant === null ? kb.scope === "global" : kb.tenant === parsed.tenant)
+      (kb) =>
+        asciiLower(kb.name) === wantName &&
+        (wantTenant === null ? kb.scope === "global" : kb.tenant !== null && asciiLower(kb.tenant) === wantTenant)
     );
     if (matches.length === 0) {
       throw new Err.GatewayKnowledgeBaseError(`No knowledge base "${ref}" is visible to this user.`, "not-found", ref);

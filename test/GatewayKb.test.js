@@ -260,6 +260,37 @@ test("resolve: a missing KB, a wrong tenant and a bad address are typed", async 
   });
 });
 
+test("resolve: name and tenant match ASCII case-insensitively and keep the canonical spelling", async () => {
+  await withKb(async ({ kb }) => {
+    assert.strictEqual((await kb.resolve("DEMO")).ref, "global/demo");
+    const found = await kb.resolve("u1/HandBook");
+    assert.strictEqual(found.ref, "tenant/U1/handbook");
+    assert.strictEqual(found.tenant, "U1");
+    assert.strictEqual(found.name, "handbook");
+    assert.strictEqual((await kb.resolve("tenant/u1/HANDBOOK")).ref, "tenant/U1/handbook");
+    // still not found when only the case-insensitive match is on the wrong tenant
+    await rejectsWith(kb.resolve("u9/handbook"), Err.GatewayKnowledgeBaseError);
+  });
+});
+
+test("resolve: a mixed-case ref pulls into a folder named for the canonical name", async () => {
+  await withKb(async ({ kb }) => {
+    const cwd = tmp();
+    const result = await kb.pull("u1/HANDBOOK", { cwd });
+    assert.ok(fs.existsSync(path.join(cwd, "U1-handbook")));
+    assert.ok(!fs.existsSync(path.join(cwd, "u1-HANDBOOK")));
+    assert.strictEqual(result.kb.ref, "tenant/U1/handbook");
+  });
+});
+
+test("resolve: two rows that differ only by case are ambiguous", async () => {
+  await withKb(async ({ fake, kb }) => {
+    fake.knowledgeBases.push(entry(fake, { name: "Demo", title: "Other case" }));
+    const error = await rejectsWith(kb.resolve("demo"), Err.GatewayKnowledgeBaseError);
+    assert.strictEqual(error.reason, "ambiguous");
+  });
+});
+
 test("resolve: two listed matches are ambiguous and name their refs", async () => {
   await withKb(async ({ fake, kb }) => {
     fake.knowledgeBases.push(entry(fake, { name: "demo", title: "Duplicate" }));
