@@ -1065,7 +1065,8 @@ export namespace Err {
    * target that has files), `not-a-clone` (no git repository there), `detached` (no current
    * branch), `no-upstream` (the branch tracks nothing), `diverged` (the branch and its upstream
    * each have commits the other lacks, so a fast-forward is impossible), `ref-not-found` (the
-   * remote has no such branch or tag) or `unsafe-target` (a clone target with a `.git` or `git~N`
+   * remote has no such branch or tag), `wrong-repository` (the folder is a clone of a different
+   * repository than the one asked for) or `unsafe-target` (a clone target with a `.git` or `git~N`
    * path component, which would put the clone's config inside a git directory).
    * @lastreviewed null
    */
@@ -1081,14 +1082,112 @@ export namespace Err {
       | "no-upstream"
       | "diverged"
       | "ref-not-found"
+      | "wrong-repository"
       | "unsafe-target";
     constructor(
       message: string,
-      reason: "not-empty" | "not-a-clone" | "detached" | "no-upstream" | "diverged" | "ref-not-found" | "unsafe-target"
+      reason:
+        | "not-empty"
+        | "not-a-clone"
+        | "detached"
+        | "no-upstream"
+        | "diverged"
+        | "ref-not-found"
+        | "wrong-repository"
+        | "unsafe-target"
     ) {
       super(message, null, reason);
       this.name = "GatewayWorkingCopyError";
       this.reason = reason;
+    }
+  }
+
+  /**
+   * A knowledge base could not be settled on. `reason` is `bad-ref` (the address is not `<name>` or
+   * `<U…>/<name>`), `not-found` (no knowledge base the caller may read has that address; the
+   * gateway does not say whether it exists), `ambiguous` (the listing holds more than one match;
+   * `candidates` are their refs), `unsafe-name` (the listed name cannot be a folder name),
+   * `not-a-kb` (a clone's remote is not a knowledge base the caller can see) or `wrong-branch` (a pull or push
+   * from a clone that is not on the knowledge base's live branch, does not track it, or is on a detached head).
+   * @lastreviewed null
+   */
+  export class GatewayKnowledgeBaseError extends GatewayError {
+    /**
+     * Which of the situations it was.
+     * @lastreviewed null
+     */
+    readonly reason: "bad-ref" | "not-found" | "ambiguous" | "unsafe-name" | "not-a-kb" | "wrong-branch";
+    /**
+     * The address that was asked for, or `null` when none applies (`not-a-kb`).
+     * @lastreviewed null
+     */
+    readonly ref: string | null;
+    /**
+     * The `ref`s of the listed matches when `reason` is `ambiguous`, otherwise empty.
+     * @lastreviewed null
+     */
+    readonly candidates: string[];
+    /**
+     * For `wrong-branch`: the clone's current branch, `null` on a detached head. Otherwise `null`.
+     * @lastreviewed null
+     */
+    readonly branch: string | null;
+    /**
+     * For `wrong-branch`: the knowledge base's live branch. Otherwise `null`.
+     * @lastreviewed null
+     */
+    readonly liveBranch: string | null;
+    /**
+     * For `wrong-branch`: what the clone's branch tracks, as `origin/<branch>`, or `null` when it
+     * tracks nothing. Otherwise `null`.
+     * @lastreviewed null
+     */
+    readonly upstream: string | null;
+    constructor(
+      message: string,
+      reason: "bad-ref" | "not-found" | "ambiguous" | "unsafe-name" | "not-a-kb" | "wrong-branch",
+      ref: string | null,
+      candidates: string[] = [],
+      branches: { branch: string | null; liveBranch: string; upstream: string | null } | null = null
+    ) {
+      super(message, null, reason);
+      this.name = "GatewayKnowledgeBaseError";
+      this.reason = reason;
+      this.ref = ref;
+      this.candidates = candidates;
+      this.branch = branches?.branch ?? null;
+      this.liveBranch = branches?.liveBranch ?? null;
+      this.upstream = branches?.upstream ?? null;
+    }
+  }
+
+  /**
+   * The caller may read a knowledge base but not push to it (`canPush` was `false` in a fresh
+   * listing). Thrown before anything is sent.
+   * @lastreviewed null
+   */
+  export class GatewayKnowledgeBasePushNotPermittedError extends GatewayNotPermittedError {
+    /**
+     * The knowledge base's `ref` (e.g. `global/onboarding`).
+     * @lastreviewed null
+     */
+    readonly ref: string;
+    constructor(message: string, ref: string) {
+      super(message, "not-permitted");
+      this.name = "GatewayKnowledgeBasePushNotPermittedError";
+      this.ref = ref;
+    }
+  }
+
+  /**
+   * A caller passed an argument core cannot act on, such as a relative path with no absolute
+   * `cwd` to resolve it against. Core never reads `process.cwd()`.
+   * @lastreviewed null
+   */
+  export class GatewayInvalidArgumentError extends GatewayError {
+    constructor(message: string) {
+      super(message, null, "invalid-argument");
+      this.name = "GatewayInvalidArgumentError";
     }
   }
 }

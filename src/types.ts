@@ -757,10 +757,49 @@ export interface GatewayErrorBody {
 }
 
 /**
+ * How one listed knowledge base was matched against web's record.
+ * - `ok`: the forge repository and web's record agree (every global row is `ok`).
+ * - `branch-mismatch`: `liveBranch` is the forge's default branch, which differs from the tenant's setting.
+ * - `repo-only`: a forge repository with no web record; the title is the name.
+ * - `row-only`: a web record whose forge repository does not exist yet. `gitUrl` is given but a clone answers
+ *   404, and `canPush` is false.
+ * - `unconfirmed`: the tenant was asked and did not answer; details may be stale.
+ * - `undescribed`: no tenant was selected, so web was not asked; the title is the name.
+ * - `unknown`: a status newer than this version of core; the server's value is in `rawStatus`.
+ * @lastreviewed null
+ */
+export type GatewayKnowledgeBaseStatus =
+  | "ok"
+  | "branch-mismatch"
+  | "repo-only"
+  | "row-only"
+  | "unconfirmed"
+  | "undescribed"
+  | "unknown";
+
+/**
  * One knowledge base the caller may read, as `GET /api/v1/knowledge-bases` lists it.
  * @lastreviewed null
  */
 export interface GatewayKnowledgeBase {
+  /**
+   * The tenant's record id (a uuid) when web knows the knowledge base; `null` when there is no record
+   * (`repo-only`, `unconfirmed`, `undescribed`). A global row carries web-global's id.
+   * @lastreviewed null
+   */
+  id: string | null;
+  /**
+   * How the gateway matched the forge repository with web's record. Every other field of the row keeps
+   * its guarantee under every status. See {@link GatewayKnowledgeBaseStatus}.
+   * @lastreviewed null
+   */
+  status: GatewayKnowledgeBaseStatus;
+  /**
+   * The status exactly as the server sent it, present only when `status` is `"unknown"` (a value this
+   * version of core does not know).
+   * @lastreviewed null
+   */
+  rawStatus?: string;
   /**
    * The CLI address: `global/<name>` or `tenant/<U…>/<name>`.
    * @lastreviewed null
