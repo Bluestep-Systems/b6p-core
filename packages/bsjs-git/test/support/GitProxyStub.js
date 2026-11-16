@@ -224,6 +224,9 @@ function createStub() {
           GIT_CONFIG_SYSTEM: os.devNull,
         },
       });
+      // git-http-backend may exit before it reads the body (an early refusal); its response still
+      // arrives on stdout, so a broken stdin pipe is not the request's failure.
+      child.stdin.on("error", () => {});
       child.stdin.end(input);
       const out = [];
       child.stdout.on("data", (c) => out.push(c));
