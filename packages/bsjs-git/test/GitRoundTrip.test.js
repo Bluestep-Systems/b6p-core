@@ -318,6 +318,177 @@ test("ensureGitMode switches a WEBDAV script once and leaves a GIT script alone"
   assert.strictEqual(stub.state.enableCalls, already);
 });
 
+test("ensureGitModeResult says whether this call did the switch", async () => {
+  stub.addRepo("654015___7108", { mode: "WEBDAV" });
+  const repo = repoFor(key("654015___7108"));
+  assert.deepStrictEqual(await repo.ensureGitModeResult(), {
+    cloneUrl: "https://stub.example.test/git/654015___7108",
+    switched: true,
+  });
+  assert.strictEqual((await repo.ensureGitModeResult()).switched, false);
+});
+
+test("sha, isAncestor, a commit with explicit parents, and resetDraft", async () => {
+  stub.addRepo("654015___7109");
+  const a = repoFor(key("654015___7109"));
+  await a.clone();
+  const base = await a.sha("draft");
+  assert.strictEqual(await a.isAncestor(base, "draft"), true);
+  await a.writeFile("a.txt", "a");
+  const mine = await a.commit("mine");
+  assert.strictEqual(await a.isAncestor(base, mine), true);
+  assert.strictEqual(await a.isAncestor(mine, base), false);
+
+  const b = repoFor(key("654015___7109"));
+  await b.clone();
+  await b.writeFile("b.txt", "b");
+  await b.commit("theirs");
+  await b.push();
+  await a.fetch();
+  const theirs = await a.sha("origin/draft");
+  assert.strictEqual(await a.isAncestor(mine, theirs), false);
+  assert.strictEqual(await a.isAncestor(theirs, mine), false, "diverged");
+
+  // A merge commit over both parents, made with nothing to stage, is a descendant of both and pushes as a fast-forward.
+  const merge = await a.commit("merge", AUTHOR, { parents: [mine, theirs] });
+  assert.ok(merge);
+  assert.strictEqual(await a.isAncestor(theirs, merge), true);
+  assert.strictEqual(await a.isAncestor(mine, merge), true);
+  await a.push();
+
+  // resetDraft moves the local draft and its working tree to a commit.
+  await a.resetDraft(base);
+  assert.strictEqual(await a.sha("draft"), base);
+  assert.strictEqual(fs.existsSync(path.join(a.dir, "a.txt")), false);
+});
+
+test("gitMode reads the mode without switching; currentBranch and stagedOnlyChanges read the working tree", async () => {
+  stub.addRepo("654015___7110", { mode: "WEBDAV" });
+  const before = stub.state.enableCalls;
+  assert.deepStrictEqual(await repoFor(key("654015___7110")).gitMode(), { gitPublishing: false, cloneUrl: null });
+  assert.strictEqual(stub.state.enableCalls, before, "a read never switches");
+  assert.strictEqual((await repoFor(key(REPO)).gitMode()).gitPublishing, true);
+
+  const repo = repoFor(key(REPO));
+  await repo.clone();
+  assert.strictEqual(await repo.currentBranch(), "draft");
+  await repo.writeFile("staged.txt", "one");
+  stub.git(repo.dir, "add", "staged.txt");
+  assert.deepStrictEqual(await repo.stagedOnlyChanges(), [], "staged and equal to the file is not index-only");
+  await repo.writeFile("staged.txt", "two");
+  assert.deepStrictEqual(await repo.stagedOnlyChanges(), ["staged.txt"]);
+});
+
+test("publish names the draft it verified (expectedDraftSha); a draft that moved since is a typed refusal", async () => {
+  stub.addRepo("654015___7111");
+  const repo = repoFor(key("654015___7111"));
+  await repo.clone();
+  await repo.writeFile("p.txt", "p");
+  const sha = await repo.commit("p");
+  await repo.push();
+  const { publishedSha } = await repo.publish();
+  assert.strictEqual(publishedSha, sha);
+  assert.strictEqual(stub.state.publishInputs.at(-1).expectedDraftSha, sha);
+  assert.match(stub.state.publishInputs.at(-1).expectedDraftSha, /^[0-9a-f]{40}$/, "always the full sha");
+
+  await repo.writeFile("q.txt", "q");
+  await repo.commit("q");
+  await repo.push();
+  const entry = stub.repos.get("654015___7111");
+  entry.beforePublish = () => {
+    // Someone else pushes to draft between the verification and the publish.
+    const env = {
+      GIT_AUTHOR_NAME: "X",
+      GIT_AUTHOR_EMAIL: "x@example.test",
+      GIT_COMMITTER_NAME: "X",
+      GIT_COMMITTER_EMAIL: "x@example.test",
+    };
+    const tree = stub.git(entry.bare, "rev-parse", "draft^{tree}");
+    const moved = stub.gitEnv(entry.bare, env, "commit-tree", tree, "-p", "draft", "-m", "moved");
+    stub.git(entry.bare, "update-ref", "refs/heads/draft", moved);
+    entry.beforePublish = undefined;
+  };
+  const masterBefore = stub.git(entry.bare, "rev-parse", "master");
+  await rejects(repo.publish(), lib.PublishDraftMovedError, (e) => {
+    assert.ok(e instanceof lib.PublishRefusedError);
+    assert.strictEqual(e.reason, "DRAFT_MOVED");
+  });
+  assert.strictEqual(stub.git(entry.bare, "rev-parse", "master"), masterBefore, "nothing was published");
+});
+
+test("commit({ force }) stages an ignored file the caller names (build output), and only that one", async () => {
+  stub.addRepo("654015___7112", { files: { "main.ts": "a\n", ".gitignore": ".build/\nother.log\n" } });
+  const repo = repoFor(key("654015___7112"));
+  await repo.clone();
+  await repo.writeFile(".build/app.js", "built\n");
+  await repo.writeFile("other.log", "log\n");
+  assert.strictEqual(await repo.commit("nothing visible"), undefined, "ignored files are not staged by default");
+  const sha = await repo.commit("build output", AUTHOR, { force: [".build/app.js", "missing.js"] });
+  assert.ok(sha);
+  await repo.push();
+  assert.deepStrictEqual((await repo.listTree("draft")).map((f) => f.path).sort(), [
+    ".build/app.js",
+    ".gitignore",
+    "main.ts",
+  ]);
+  // Once tracked, an edit to it is an ordinary change.
+  await repo.writeFile(".build/app.js", "rebuilt\n");
+  assert.ok(await repo.commit("rebuild"));
+});
+
+test("a bounded clone: depth, single branch plus master's head, then commit, push, publish; log past the boundary, deepen", async () => {
+  stub.addRepo("654015___7113");
+  const seed = repoFor(key("654015___7113"));
+  await seed.clone();
+  for (let i = 1; i <= 6; i++) {
+    await seed.writeFile("n.txt", `${i}\n`);
+    await seed.commit(`c${i}`);
+  }
+  await seed.push();
+
+  const repo = repoFor(key("654015___7113"));
+  await repo.clone({ depth: 2, singleBranch: true });
+  assert.strictEqual(await repo.isShallow(), true);
+  assert.ok(await repo.sha("refs/remotes/origin/master"), "master's head came along for the publish markers");
+  const first = await repo.logPage({ limit: 10 });
+  assert.deepStrictEqual(
+    first.commits.map((c) => c.message),
+    ["c6", "c5"]
+  );
+  assert.strictEqual(first.shallowBoundary, true, "fewer than asked for, and the history loaded here ended");
+
+  // Everything else works on the shallow clone.
+  await repo.writeFile("m.txt", "m");
+  const mine = await repo.commit("shallow commit");
+  await repo.push();
+  const { publishedSha } = await repo.publish();
+  assert.strictEqual(publishedSha, mine);
+  assert.strictEqual(await repo.sha("origin/master"), mine);
+  assert.strictEqual((await repo.gitMode()).gitPublishing, true);
+
+  // Someone else pushes; the shallow clone sees it, and divergence checks and a fast-forward pull work.
+  const other = repoFor(key("654015___7113"));
+  await other.clone();
+  await other.writeFile("o.txt", "o");
+  await other.commit("other");
+  await other.push();
+  await repo.fetch();
+  assert.strictEqual(await repo.isAncestor(mine, "origin/draft"), true);
+  await repo.pull();
+  assert.strictEqual(fs.existsSync(path.join(repo.dir, "o.txt")), true);
+
+  const beforeDeepen = await repo.logPage({ limit: 50 });
+  assert.strictEqual(beforeDeepen.shallowBoundary, true);
+  const loaded = beforeDeepen.commits.length;
+  await repo.deepen(3);
+  const deeper = await repo.logPage({ limit: 50 });
+  assert.ok(deeper.commits.length > loaded, "deepen brought older commits");
+  await repo.deepen(50);
+  const all = await repo.logPage({ limit: 50 });
+  assert.strictEqual(all.shallowBoundary, false);
+  assert.strictEqual(all.commits.at(-1).message, "Seed master");
+  assert.strictEqual(await repo.isShallow(), false);
+});
 test("clone({ensureGit}) switches a WEBDAV script so its push works; a plain clone does not", async () => {
   stub.addRepo("654015___8008", { mode: "WEBDAV" });
   await repoFor(key("654015___8008")).clone();

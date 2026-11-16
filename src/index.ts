@@ -3,15 +3,30 @@ export { B6PCore } from "./B6PCore";
 export type { ReportResult } from "./B6PCore";
 export { B6PUri } from "./B6PUri";
 export { Err } from "./Err";
+export { checkEmittedEntrypoint, executePush, legacySyncRecords } from "./script/push";
+export type { EmittedEntrypointCheck, PushResult } from "./script/push";
+export { resolveGitIdentity } from "./script/GitIdentity";
+export type { GitConfigReader, GitIdentitySources } from "./script/GitIdentity";
 export {
-  checkEmittedEntrypoint,
-  cleanupUnusedUpstairsPaths,
-  collectOverwriteCandidates,
-  confirmOverwrites,
-  executePush,
-  verifyLiveSnapshot,
-} from "./script/push";
-export type { EmittedEntrypointCheck, LiveSnapshotCheck, OverwriteCandidate, PushResult } from "./script/push";
+  GitSwitchDeclinedError,
+  GitWrongBranchError,
+  GitStagedChangesError,
+  GitSymlinkError,
+  legacyIgnoreRulesForDraft,
+  auditDraft,
+  confirmOverwrittenFiles,
+  pullDraft,
+  pushDraft,
+} from "./script/GitSync";
+export type {
+  DraftAudit,
+  DraftPullOutcome,
+  DraftPullOptions,
+  DraftPushOptions,
+  DraftPushOutcome,
+  LastSyncedLookup,
+  PublishRefusal,
+} from "./script/GitSync";
 export type { PlatformContext } from "./PlatformContext";
 
 // ─── Provider interfaces ─────────────────────────────────────────────
@@ -50,12 +65,13 @@ export { ResponseCodes } from "./network/StatusCodes";
 export { ScriptFactory } from "./script/ScriptFactory";
 export { ScriptNode } from "./script/ScriptNode";
 export { ScriptRoot } from "./script/ScriptRoot";
-export type { TranspileOutcome } from "./script/ScriptTranspiler";
+export type { TranspileOutcome, ProjectBuildReport, TypeCheckError } from "./script/ScriptTranspiler";
+export { buildUncleanReasons } from "./script/ScriptTranspiler";
 export { ScriptFile } from "./script/ScriptFile";
 export type { ScriptFolder } from "./script/ScriptFolder";
 export type { ScriptContext } from "./script/ScriptContext";
 export { ScriptService } from "./script/ScriptService";
-export type { AuditResult, DeployConfig, PullResult } from "./script/ScriptService";
+export type { AuditResult, DeployConfig, DeployTargetResult, PullResult } from "./script/ScriptService";
 export { TsLibResolver } from "./script/TsLibResolver";
 
 // ─── Constants ───────────────────────────────────────────────────────
