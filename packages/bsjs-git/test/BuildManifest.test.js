@@ -200,22 +200,24 @@ test("a source pushed without a build: the publish is refused BUILD_STALE with t
   await repo.publish();
 });
 
-test("an unclean build leaves the existing manifest exactly as it was (so it goes stale)", async () => {
+test("an unclean build deletes the existing manifest, in the folder too, so the publish is refused MISSING", async () => {
   stub.addRepo("654015___7203", { files: SEED });
   const repo = repoFor("654015___7203");
   const entry = stub.repos.get("654015___7203");
   await repo.clone();
   await repo.commit("seed", AUTHOR, { parents: [await repo.sha("draft")] });
   await pushAndBuild(repo);
-  const before = read(repo, ".build/.b6p-build.json");
+  assert.ok(fs.existsSync(path.join(repo.dir, ".build", ".b6p-build.json")));
   await repo.writeFile("scripts/app.ts", "export const broken = ;\n");
   await repo.commit("broken", AUTHOR);
   entry.buildUnclean = true;
   const build = await pushAndBuild(repo);
   assert.strictEqual(build.vouched, false);
-  assert.strictEqual(read(repo, ".build/.b6p-build.json"), before);
-  assert.strictEqual(new TextDecoder().decode(await repo.readFile("draft", ".build/.b6p-build.json")), before);
-  await rejects(repo.publish(), lib.PublishBuildStaleError);
+  assert.strictEqual(build.fastForward.state, "fast-forwarded");
+  assert.ok(!fs.existsSync(path.join(repo.dir, ".build", ".b6p-build.json")), "the deletion reached the folder");
+  assert.ok(!(await repo.listTree("draft")).some((f) => f.path === ".build/.b6p-build.json"));
+  assert.deepStrictEqual(await repo.status(), []);
+  await rejects(repo.publish(), lib.PublishBuildManifestMissingError);
 });
 
 test("no tsconfig.json: nothing to build, no manifest, the publish is not checked; externally built: none either", async () => {

@@ -1445,7 +1445,7 @@ test("a build whose answer was lost: the next push takes the build in as a fast-
   );
 });
 
-test("a real platform edit after a push is still an edit: it asks, even with a build's subject", async () => {
+test("a platform commit titled like a build but without the Bluestep-Build-Of trailer is an edit: it asks", async () => {
   const s = await builtScenario("9422", "dev");
   await executePush({
     ctx: s.ctx,
@@ -1454,12 +1454,13 @@ test("a real platform edit after a push is still an edit: it asks, even with a b
     snapshot: false,
     author: AUTHOR,
   });
+  // Output only, one parent, the build's subject: everything but the trailer.
   const work = fs.mkdtempSync(path.join(tmp, "edit-"));
   stub.git(tmp, "clone", "-q", "-b", "draft", s.entry.bare, work);
-  fs.writeFileSync(path.join(work, "scripts", "app.ts"), "export const v = 'platform';\n");
+  fs.writeFileSync(path.join(work, ".build", "scripts", "app.js"), "// edited on the platform\n");
   stub.git(work, "-c", "user.name=P", "-c", "user.email=p@x", "commit", "-q", "-am", "Build draft");
   stub.git(work, "push", "-q", s.entry.bare, "draft");
-  fs.writeFileSync(path.join(s.draftPath, "scripts", "app.ts"), "export const v = 'mine';\n");
+  fs.writeFileSync(path.join(s.draftPath, ".build", "scripts", "app.js"), "// mine\n");
   await rejects(
     executePush({
       ctx: s.ctx,
@@ -1470,7 +1471,38 @@ test("a real platform edit after a push is still an edit: it asks, even with a b
     }),
     (e) => assert.ok(e instanceof Err.OverwriteDeclinedError)
   );
-  assert.ok(s.prompt.calls.some((c) => c.message.includes("scripts/app.ts")));
+  assert.ok(
+    s.prompt.calls.some((c) => c.message.includes(".build/scripts/app.js")),
+    "the overwrite was asked about"
+  );
+});
+
+test("pull fast-forwards to the platform's build commit, output and manifest included", async () => {
+  const s = await builtScenario("9424", "dev", { buildQueue: ["BUILD_THEN_NETWORK", "NETWORK"] });
+  const pushed = await executePush({
+    ctx: s.ctx,
+    targetUrl: `${baseUrl}files/100001/`,
+    rootPath: s.rootPath,
+    snapshot: false,
+    author: AUTHOR,
+    sleep: async () => {},
+  });
+  assert.strictEqual(pushed.buildErrorKind, "request-failed");
+  const build = stub.git(s.entry.bare, "rev-parse", "draft");
+  assert.notStrictEqual(build, pushed.commitSha);
+  const asked = s.prompt.calls.length;
+  const outcome = await pullDraft({
+    ctx: s.ctx,
+    script: { classid: "654015", seqnum: "9424" },
+    baseUrl,
+    draftPath: s.draftPath,
+  });
+  assert.deepStrictEqual(outcome.keptLocalPaths, []);
+  assert.strictEqual(s.prompt.calls.length, asked, "nothing asked");
+  assert.strictEqual(stub.git(s.draftPath, "rev-parse", "draft"), build);
+  assert.ok(fs.existsSync(path.join(s.draftPath, ".build", "scripts", "app.js")));
+  assert.ok(fs.existsSync(path.join(s.draftPath, ".build", ".b6p-build.json")));
+  assert.strictEqual(stub.git(s.draftPath, "status", "--porcelain"), "");
 });
 
 test("a stale ignored output in the way: the build is reported blocked with the path, the folder is untouched, and the next push stops with the same paths", async () => {

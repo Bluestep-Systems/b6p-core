@@ -142,7 +142,8 @@ Nothing compiles in core or in `bsjsGit`; neither package has a runtime `typescr
    fast-forwarded to it: the working tree and index first, for exactly the paths the build changed, then the branch. A
    local file in the way (an edit, or an untracked or ignored copy matching neither side) leaves the folder as it was
    and is reported (`buildFastForward`); a later push stops on it (`GitBuildFastForwardBlockedError`, with the paths)
-   until it is out of the way. A build whose answer was lost is taken in by the next push, not asked about. `BUSY` is retried 3 times 5 s apart, `INPUT_INCOMPLETE` 3 times 2 s apart,
+   until it is out of the way. A build whose answer was lost is taken in by the next push, not asked about: only a commit with the platform's
+   `Bluestep-Build-Of: <pushed sha>` trailer, one parent and an output-only diff (or a chain of such rebuilds) counts. `BUSY` is retried 3 times 5 s apart, `INPUT_INCOMPLETE` 3 times 2 s apart,
    `COMPILER_UNAVAILABLE` and a failed request once. Every push builds, plain ones too.
 3. A snapshot push whose build status publishes (`COMPILED`, `NOTHING_TO_COMPILE`, `SKIPPED_EXTERNALLY_BUILT`) then
    publishes the build commit and reads `master` back. An unclean build is refused by the platform's manifest check

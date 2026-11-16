@@ -20,7 +20,7 @@ import {
 import { CsrfFetch, type ScriptAuth } from "./csrf";
 import { isBuildOutputPath, type BuildProjectConfig } from "./buildManifest";
 import {
-  BUILD_COMMIT_SUBJECT,
+  buildSourceOf,
   COMPILE_RETRY,
   parseDraftBuildCommit,
   parseDraftCompileOutcome,
@@ -287,6 +287,9 @@ export interface BuildFastForward {
   /** When `failed`: why. `null` otherwise. @lastreviewed null */
   readonly error: string | null;
 }
+
+/** How many rebuilds deep {@link ScriptRepo.isBuildCommitOf} follows a chain. */
+const MAX_BUILD_CHAIN = 32;
 
 const UNCHANGED: BuildFastForward = { state: "unchanged", blockedPaths: [], error: null };
 
@@ -959,48 +962,62 @@ export class ScriptRepo {
   }
 
   /**
-   * Whether `candidate` is the platform's build commit of exactly `base`: its only parent is `base`, its subject is
-   * the build's ({@link BUILD_COMMIT_SUBJECT}), and every path it changes is build output or a manifest
-   * ({@link isBuildOutputPath}, by the build projects at `base`). An edit made on the platform fails at least one of
-   * these, so it is never taken for a build. Both commits must be fetched.
+   * Whether `candidate` is the platform's build of exactly the source commit `base`, or a rebuild chain of it. Each
+   * commit of the chain carries the trailer `Bluestep-Build-Of: <base>` ({@link buildSourceOf}), has exactly one
+   * parent, and changes only build output and manifests relative to it ({@link isBuildOutputPath}, by the build
+   * projects at that parent); the chain ends at `base`. The subject counts for nothing. An edit made on the platform
+   * fails at least one of these, so it is never taken for a build. The commits must be fetched.
    * @lastreviewed null
    */
   async isBuildCommitOf(candidate: string, base: string): Promise<boolean> {
     try {
-      const [oid, parent] = await Promise.all([this.#resolve(candidate), this.#resolve(base)]);
-      const { commit } = await git.readCommit({ fs: this.#fs, dir: this.dir, oid });
-      if (commit.parent.length !== 1 || commit.parent[0] !== parent) {
-        return false;
-      }
-      if (commit.message.split("\n")[0].trim() !== BUILD_COMMIT_SUBJECT) {
-        return false;
-      }
-      const projects: BuildProjectConfig[] = [];
-      for (const file of await this.listTree(parent)) {
-        const name = file.path.slice(file.path.lastIndexOf("/") + 1);
-        if (name === "tsconfig.json" || name === "jsconfig.json") {
-          const dir = file.path.slice(0, Math.max(0, file.path.lastIndexOf("/")));
-          if (name === "jsconfig.json" && projects.some((p) => p.dir === dir)) {
-            continue;
-          }
-          const text = await this.readText(parent, file.path);
-          const at = projects.findIndex((p) => p.dir === dir);
-          if (at >= 0) {
-            projects[at] = { dir, text };
-          } else {
-            projects.push({ dir, text });
-          }
+      const source = await this.#resolve(base);
+      let oid = await this.#resolve(candidate);
+      for (let depth = 0; depth < MAX_BUILD_CHAIN; depth++) {
+        const { commit } = await git.readCommit({ fs: this.#fs, dir: this.dir, oid });
+        if (commit.parent.length !== 1 || buildSourceOf(commit.message) !== source) {
+          return false;
         }
+        const parent = commit.parent[0];
+        if (!(await this.#changesOnlyOutput(parent, oid))) {
+          return false;
+        }
+        if (parent === source) {
+          return true;
+        }
+        oid = parent;
       }
-      if (projects.length === 0) {
-        // Nothing there is built, so no commit on it is a build.
-        return false;
-      }
-      const changes = await this.diff(parent, oid);
-      return changes.length > 0 && changes.every((c) => isBuildOutputPath(c.path, projects));
+      return false;
     } catch {
       return false;
     }
+  }
+
+  /** Whether `oid` changes something relative to `parent`, and only build output and manifests. */
+  async #changesOnlyOutput(parent: string, oid: string): Promise<boolean> {
+    const projects: BuildProjectConfig[] = [];
+    for (const file of await this.listTree(parent)) {
+      const name = file.path.slice(file.path.lastIndexOf("/") + 1);
+      if (name === "tsconfig.json" || name === "jsconfig.json") {
+        const dir = file.path.slice(0, Math.max(0, file.path.lastIndexOf("/")));
+        if (name === "jsconfig.json" && projects.some((p) => p.dir === dir)) {
+          continue;
+        }
+        const text = await this.readText(parent, file.path);
+        const at = projects.findIndex((p) => p.dir === dir);
+        if (at >= 0) {
+          projects[at] = { dir, text };
+        } else {
+          projects.push({ dir, text });
+        }
+      }
+    }
+    if (projects.length === 0) {
+      // Nothing there is built, so no commit on it is a build.
+      return false;
+    }
+    const changes = await this.diff(parent, oid);
+    return changes.length > 0 && changes.every((c) => isBuildOutputPath(c.path, projects));
   }
 
   /** The git blob id of a working-tree file, `undefined` when there is none. */

@@ -44,7 +44,8 @@ stand-in output per TypeScript source, the manifest only when the build is clean
 entry: `buildUnclean`, `buildDiagnostics`, `buildCounts` (`errors`, `warnings`, `omitted` over the listed ones),
 `buildAuthor`, `buildQueue` and `beforeBuild`. A `buildQueue` entry answers one request: a status such as `BUSY`, or
 `NETWORK` / `GRAPHQL_ERROR`, answers before a real build; `BUILD_THEN_NETWORK` / `BUILD_THEN_BUSY` build and commit,
-then answer 503 / `BUSY` (a lost answer). Like the platform, it refuses a moved draft with code `PRECONDITION`, reason
+then answer 503 / `BUSY` (a lost answer). Every build commit carries `Bluestep-Build-Of: <source sha>` (the same
+across a rebuild chain), and an unclean build deletes the manifest. Like the platform, it refuses a moved draft with code `PRECONDITION`, reason
 `DRAFT_MOVED`, except when the head is its build of the commit asked for (the repeat call), and it commits output
 whatever `.gitignore` says. `executePush` picks its route from
 `/appinfo/version`; the `pushContext` fake in `GitDraftSync.test.js` answers it (`dev` by default) and specs pass

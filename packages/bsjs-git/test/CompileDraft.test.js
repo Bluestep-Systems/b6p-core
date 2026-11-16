@@ -286,30 +286,79 @@ test("an ignored local file that already matches the build does not block it", a
   assert.deepStrictEqual(await repo.status(), []);
 });
 
-test("isBuildCommitOf: the build of exactly that commit; never a platform edit, even one titled like a build", async () => {
+test("isBuildCommitOf: the trailer names the source, one parent, output only; the subject alone never counts", async () => {
   const { repo, entry } = await pushed();
   const pushedSha = await repo.sha("draft");
   const result = await repo.compileDraft();
   assert.strictEqual(await repo.isBuildCommitOf(result.buildCommitSha, pushedSha), true);
-  assert.strictEqual(await repo.isBuildCommitOf(result.buildCommitSha, `${pushedSha}`.replace(/./, "0")), false);
+  const other = pushedSha.startsWith("0") ? `1${pushedSha.slice(1)}` : `0${pushedSha.slice(1)}`;
+  assert.strictEqual(await repo.isBuildCommitOf(result.buildCommitSha, other), false, "another source");
+  assert.strictEqual(
+    stub.git(entry.bare, "log", "-1", "--format=%(trailers:key=Bluestep-Build-Of,valueonly)", result.buildCommitSha),
+    pushedSha
+  );
 
-  const forge = (subject, file, text) => {
+  const forge = (message, file, text) => {
     const work = fs.mkdtempSync(path.join(tmp, "forge-"));
     stub.git(tmp, "clone", "-q", "-b", "draft", entry.bare, work);
     fs.mkdirSync(path.dirname(path.join(work, file)), { recursive: true });
     fs.writeFileSync(path.join(work, file), text);
-    stub.git(work, "add", "-A");
-    stub.git(work, "-c", "user.name=P", "-c", "user.email=p@x", "commit", "-q", "-m", subject);
+    stub.git(work, "add", "-A", "-f");
+    stub.git(work, "-c", "user.name=P", "-c", "user.email=p@x", "commit", "-q", ...message.flatMap((m) => ["-m", m]));
     stub.git(work, "push", "-q", entry.bare, "draft");
     return stub.git(work, "rev-parse", "HEAD");
   };
   const base = result.buildCommitSha;
-  const sourceEdit = forge("Build draft", "scripts/app.ts", "export const v = 99;\n");
+  const subjectOnly = forge(["Build draft"], ".build/scripts/app.js", "// by hand\n");
   await repo.fetch();
-  assert.strictEqual(await repo.isBuildCommitOf(sourceEdit, base), false, "a source edit is not a build");
-  const outputEdit = forge("Edit output", ".build/scripts/app.js", "// by hand\n");
+  assert.strictEqual(await repo.isBuildCommitOf(subjectOnly, base), false, "a build's subject without the trailer");
+  const sourceEdit = forge(
+    ["Build draft", `Bluestep-Build-Of: ${subjectOnly}`],
+    "scripts/app.ts",
+    "export const v = 99;\n"
+  );
   await repo.fetch();
-  assert.strictEqual(await repo.isBuildCommitOf(outputEdit, sourceEdit), false, "another subject is not a build");
+  assert.strictEqual(await repo.isBuildCommitOf(sourceEdit, subjectOnly), false, "the trailer on a source edit");
+  assert.strictEqual(lib.buildSourceOf(`Build draft\n\nBluestep-Build-Of: ${pushedSha}\n`), pushedSha);
+  assert.strictEqual(lib.buildSourceOf(`Bluestep-Build-Of: ${pushedSha}`), null, "a subject is not a trailer");
+  assert.strictEqual(lib.buildSourceOf(`x\n\nBluestep-Build-Of: ${pushedSha}\nBluestep-Build-Of: ${other}`), null);
+});
+
+test("a chain of two builds of the pushed commit (a lost answer, then a rebuild) is recognised and fast-forwards", async () => {
+  const { repo, entry } = await pushed();
+  const pushedSha = await repo.sha("draft");
+  entry.buildQueue = ["BUILD_THEN_NETWORK"];
+  let calls = 0;
+  entry.beforeBuild = () => {
+    // The retry rebuilds differently (unclean), on top of the first build: a second build commit.
+    if (++calls === 2) {
+      entry.buildUnclean = true;
+    }
+  };
+  const result = await repo.compileDraft(noSleep());
+  const first = stub.git(entry.bare, "rev-parse", "draft^");
+  assert.notStrictEqual(first, pushedSha, "two build commits");
+  assert.strictEqual(stub.git(entry.bare, "rev-parse", "draft^^"), pushedSha);
+  assert.strictEqual(await repo.isBuildCommitOf(result.buildCommitSha, pushedSha), true);
+  assert.strictEqual(await repo.isBuildCommitOf(result.buildCommitSha, first), false, "the source is the pushed sha");
+  assert.strictEqual(result.fastForward.state, "fast-forwarded");
+  assert.strictEqual(result.vouched, false);
+  assert.ok(!fs.existsSync(path.join(repo.dir, ".build", ".b6p-build.json")), "the rebuild's manifest deletion");
+  assert.deepStrictEqual(await repo.status(), []);
+});
+
+test("an unvouched rebuild deletes the manifest: the fast-forward removes it from the folder and the index", async () => {
+  const { repo, entry } = await pushed();
+  await repo.compileDraft();
+  assert.ok(fs.existsSync(path.join(repo.dir, ".build", ".b6p-build.json")));
+  await repo.writeFile("scripts/app.ts", "export const v = 7;\n");
+  await repo.commit("edit", AUTHOR);
+  await repo.push();
+  entry.buildUnclean = true;
+  const result = await repo.compileDraft();
+  assert.strictEqual(result.fastForward.state, "fast-forwarded");
+  assert.ok(!fs.existsSync(path.join(repo.dir, ".build", ".b6p-build.json")));
+  assert.deepStrictEqual(await repo.status(), []);
 });
 
 test("parsers: an unknown status is UNKNOWN with the raw text; a build commit that is not a sha reads as null", () => {

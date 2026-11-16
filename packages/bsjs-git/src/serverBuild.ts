@@ -8,10 +8,39 @@
  */
 
 /**
- * The subject of the platform's build commit (web `UserCodeScriptHelper.BUILD_MESSAGE`).
+ * The subject of the platform's build commit (web `UserCodeScriptHelper.BUILD_MESSAGE`). Informational only: what
+ * makes a commit a build is its {@link BUILD_OF_TRAILER} trailer, never its subject.
  * @lastreviewed null
  */
 export const BUILD_COMMIT_SUBJECT = "Build draft";
+
+/**
+ * The trailer the platform puts on every build commit: `Bluestep-Build-Of: <source sha>`, the source being the nearest
+ * ancestor that is not a build (the commit that was pushed), the same across a chain of rebuilds.
+ * @lastreviewed null
+ */
+export const BUILD_OF_TRAILER = "Bluestep-Build-Of";
+
+/**
+ * The source sha a commit message's {@link BUILD_OF_TRAILER} trailer names, or `null` when it has none (or more than
+ * one, or one that is not a full lowercase sha). Only the last paragraph of the message is read, as git reads trailers.
+ * @param message A commit's full message
+ * @lastreviewed null
+ */
+export function buildSourceOf(message: string): string | null {
+  const paragraphs = message.replace(/\s+$/, "").split(/\n[ \t]*\n/);
+  if (paragraphs.length < 2) {
+    return null;
+  }
+  const found: string[] = [];
+  for (const line of paragraphs[paragraphs.length - 1].split("\n")) {
+    const match = /^([A-Za-z0-9-]+)[ \t]*:[ \t]*(.*?)[ \t]*$/.exec(line);
+    if (match && match[1].toLowerCase() === BUILD_OF_TRAILER.toLowerCase()) {
+      found.push(match[2]);
+    }
+  }
+  return found.length === 1 && SHA.test(found[0]) ? found[0] : null;
+}
 
 /**
  * The statuses the platform reports for a compile (`extensions.bluestepCompile[0].status`).

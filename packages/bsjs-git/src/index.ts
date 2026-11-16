@@ -46,6 +46,8 @@ export {
 } from "./scriptKey";
 export {
   BUILD_COMMIT_SUBJECT,
+  BUILD_OF_TRAILER,
+  buildSourceOf,
   COMPILE_RETRY,
   KNOWN_DRAFT_COMPILE_STATUSES,
   PUBLISHABLE_COMPILE_STATUSES,

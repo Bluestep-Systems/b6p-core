@@ -110,6 +110,13 @@ function layout(entry) {
 // TypeScript source gets `<outDir>/<path>.js`, output the build no longer writes is deleted, and the manifest is
 // written only when the build is clean (`entry.buildUnclean` makes it unclean). One commit, authored as
 // `entry.buildAuthor`; none when nothing changed. Returns { status, commit, vouched }.
+// The platform's build trailer: the source sha a build commit was built from (the nearest non-build ancestor).
+function buildSourceOf(bare, sha) {
+  const body = git(bare, "log", "-1", "--format=%B", sha);
+  const match = /^Bluestep-Build-Of: ([0-9a-f]{40})$/m.exec(body);
+  return match ? match[1] : null;
+}
+
 function serverBuild(entry, root) {
   const draft = git(entry.bare, "rev-parse", "refs/heads/draft");
   if (entry.externallyBuilt) {
@@ -136,6 +143,10 @@ function serverBuild(entry, root) {
       }
     }
     const vouched = !entry.buildUnclean;
+    if (!vouched && plan.tree.has(plan.manifestPath)) {
+      // An unclean build deletes the manifest.
+      fs.rmSync(path.join(work, plan.manifestPath));
+    }
     if (vouched) {
       const sources = {};
       for (const p of [...plan.sources.keys()].sort()) {
@@ -161,7 +172,9 @@ function serverBuild(entry, root) {
       "commit",
       "-q",
       "-m",
-      "Build draft"
+      "Build draft",
+      "-m",
+      `Bluestep-Build-Of: ${buildSourceOf(entry.bare, draft) ?? draft}`
     );
     git(work, "push", "-q", entry.bare, "draft");
     return { status: "COMPILED", commit: git(work, "rev-parse", "HEAD"), vouched };
@@ -455,14 +468,13 @@ function createStub() {
         entry.beforeBuild?.();
         const queued = entry.buildQueue?.shift();
         const draft = git(entry.bare, "rev-parse", "refs/heads/draft");
-        // The platform's DRAFT_MOVED rule: the head must be the commit asked for, or this server's build of it (a
-        // repeat call after a build whose answer was lost).
+        // The platform's DRAFT_MOVED rule: the head must be the commit asked for, or a build (or rebuild chain) whose
+        // trailer names it (a repeat call after a build whose answer was lost).
         const isBuildOf = () => {
           if (draft === input.expectedDraftSha) {
             return true;
           }
-          const [parents, subject] = git(entry.bare, "log", "-1", "--format=%P|%s", draft).split("|");
-          return parents === input.expectedDraftSha && subject === "Build draft";
+          return buildSourceOf(entry.bare, draft) === input.expectedDraftSha;
         };
         if (input.expectedDraftSha !== undefined && !isBuildOf()) {
           res.end(

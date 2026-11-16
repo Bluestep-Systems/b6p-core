@@ -101,7 +101,8 @@ the root `.gitignore` do). Rules that bind changes here:
   A local copy matching neither side (an edit, an untracked or ignored file) stops it with nothing changed
   (`buildFastForward.state` `blocked`, the paths listed); it is never forced over. A build whose answer was lost is
   taken in by the next push when the platform's draft is exactly the build of the local head
-  (`ScriptRepo.isBuildCommitOf`: the only parent, the build's subject, output paths only), never a platform edit.
+  (`ScriptRepo.isBuildCommitOf`: every commit of the chain carries `Bluestep-Build-Of: <the pushed sha>`, has one
+  parent and changes output and manifests only; the subject never counts), never a platform edit.
 - `PushResult.typeCheckErrors` are the platform build's diagnostics in the script's own sources (no `.d.ts`, nothing
   outside the tree; `ServerCompile.typeCheckErrorsOf`), `typeCheckDiagnostics` the platform's whole count. A build
   that fails after a successful push is `buildError` (`buildErrorKind`), one that ends in a status that does not

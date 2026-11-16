@@ -86,9 +86,10 @@ for a draft that needs no manifest). The local draft is then moved exactly to th
 index, whatever `.gitignore` says), the branch last. A path whose local copy matches neither the pushed commit nor the
 build (a local edit, an untracked or ignored file) stops it before anything is touched; other local edits are kept. The
 outcome is `fastForward: { state, blockedPaths, error }` (`fast-forwarded`, `unchanged`, `blocked`, `failed`), never a
-build failure. `isBuildCommitOf(candidate, base)` says whether a commit is the platform's build of exactly `base` (only
-parent `base`, subject `Build draft`, output paths only by `isBuildOutputPath`), for taking in a build whose answer was
-lost.
+build failure. `isBuildCommitOf(candidate, base)` says whether a commit is the platform's build of exactly the source `base`, or a
+rebuild chain of it: each commit carries the trailer `Bluestep-Build-Of: <base>` (`buildSourceOf`, `BUILD_OF_TRAILER`),
+has one parent and changes only output and manifests (`isBuildOutputPath`); the subject never counts. It is for taking
+in a build whose answer was lost. An unclean build deletes the manifest, and the fast-forward deletes it here too.
 
 It resolves to `{ compile, buildCommitSha, vouched, head, fastForward }`: `buildCommitSha` is `null` when the build made no commit
 (already built at that commit, nothing to build). An unclean build (`vouched: false`) still commits its output, without
