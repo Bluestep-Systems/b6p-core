@@ -1,6 +1,7 @@
 # b6p-core — agent rules
 
-Single-package library `@bluestep-systems/b6p-core`, published to public npm: the vscode-free core
+Library `@bluestep-systems/b6p-core`, published to public npm (an npm-workspaces repo: this package is the repo root,
+and `packages/bsjs-git` is `@bluestep-systems/b6p-core-bsjs-git`, see below): the vscode-free core
 shared by the `b6p` CLI and the VS Code extension, each in its own repo depending on this package by
 version. Public API surface is [src/index.ts](src/index.ts); the headless orchestrator is
 [src/B6PCore.ts](src/B6PCore.ts).
@@ -99,9 +100,40 @@ are load-bearing rather than stylistic — each records something this repo undi
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
-snapshot history), `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit` — web-global's gateway over
-the `b6pt_` token, and pure-JS git through it), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
-parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles, including `FakeGateway`).
+`GitSync` push/pull/audit of the draft as a git working tree, `GitIdentity` commit authors), `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit` — web-global's gateway over
+the `b6pt_` token, and pure-JS git through it), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`),
+`data/` (pure parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles, including `FakeGateway`).
+
+## Scripts are git (since 0.9.0)
+
+A script's `draft/` folder is the working tree of its git repo; push, pull, audit and deploy are in
+`src/script/GitSync.ts` over `bsjsGit.ScriptRepo`. No draft or snapshot file goes over WebDAV (only `declarations/` and
+the root `.gitignore` do). Rules that bind changes here:
+
+- **No default commit author**, ever: `resolveGitIdentity` (explicit, `git config`, environment, else an error before the
+  platform is touched). A literal `"unknown"` author is the bug this replaced.
+- **A pull never switches a WebDAV script to git without the confirmation** (safe answer first); a push does, on its
+  first write, and says so (`switchedToGit`).
+- **A push never overwrites a platform edit without the one confirmation**; a confirmed overwrite is a merge commit so
+  the platform's history stays. Never force-push.
+- The git working tree uses `ScriptContext.gitFs` (Node `fs`), not the `FileSystem` provider; both address the same disk.
+
+## The bsjs-git package
+
+`packages/bsjs-git` (`@bluestep-systems/b6p-core-bsjs-git`) is the browser-safe git client: isomorphic-git against the
+platform's git proxy, publish, git history, and the legacy history archive client. It is a dependency of this package
+(re-exported as `bsjsGit`) and of the BSJS editor. Its rules differ from the rest of the repo:
+
+- **No Node built-ins, no Node-only globals** (`Buffer`, `process`) in `packages/bsjs-git/src`; the file system is
+  injected. `packages/bsjs-git/test/NoNodeBuiltins.test.js` fails the build otherwise.
+- **No WebDAV, no `SessionManager`** there: it talks to the proxy with the bearer token directly and must not import
+  from this package (the dependency runs one way).
+- Its own scripts mirror this package's (`compile`, `check-types`, `format-check`, `test`); the root scripts build and
+  run both, so `npm test` and `npm run check-types` here cover both packages.
+- `npm run watch` (root) is `tsc -b` over project references, so it builds and watches both packages.
+- The `buffer` shim (`src/bufferShim.ts`) is the one allowed mention of `Buffer`; `BrowserBundle.test.js` bundles the
+  package for a browser to prove it still resolves.
+- It is published first (see `publish.yml`); bump its version when its API changes.
 
 ## Commands
 
