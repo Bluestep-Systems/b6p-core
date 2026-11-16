@@ -1,6 +1,7 @@
 import type { PlatformContext } from "../PlatformContext";
 import type { ScriptMetaDataStore } from "../cache/ScriptMetaDataStore";
 import type { OrgCache } from "../cache/OrgCache";
+import type { FetchLike, ScriptRepoOptions } from "@bluestep-systems/b6p-core-bsjs-git";
 
 /**
  * What the script subsystem needs on top of {@link PlatformContext}: the script-tree
@@ -30,4 +31,25 @@ export interface ScriptContext extends PlatformContext {
    * @lastreviewed null
    */
   readonly typescriptLibDirs?: readonly string[];
+  /**
+   * The file system git works on: the draft folder is a git working tree, and isomorphic-git needs a Node-style
+   * `fs` (with `.promises`) rather than the {@link FileSystem} provider. Reads and writes the same disk as `fs`.
+   * @lastreviewed null
+   */
+  readonly gitFs: ScriptRepoOptions["fs"];
+  /**
+   * The `b6pt_` access token the platform's git proxy and publish accept, read when a script is first touched.
+   * @lastreviewed null
+   */
+  gitToken(): Promise<string>;
+  /**
+   * Overrides `fetch` for git and publish requests (tests); default is the global one.
+   * @lastreviewed null
+   */
+  readonly gitFetch?: FetchLike;
+  /**
+   * The environment commit authors are looked up in as a last resort; default `process.env`.
+   * @lastreviewed null
+   */
+  readonly gitEnv?: Readonly<Record<string, string | undefined>>;
 }
