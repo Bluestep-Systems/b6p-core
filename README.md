@@ -1,13 +1,19 @@
 # @bluestep-systems/b6p-core
 
 The core library for **B6P** — BlueStep script management (push / pull / audit / deploy of JavaScript &
-TypeScript "formula" scripts over WebDAV).
+TypeScript "formula" scripts, through git).
 
 This package contains the headless orchestration logic shared by the
 [`b6p` CLI](https://github.com/Bluestep-Systems/b6p-cli) and the
 [VS Code extension](https://github.com/Bluestep-Systems/vscode-extension). It's **platform-agnostic** — it runs
 anywhere Node does. You supply the platform adapters (file system, prompts, logging, progress,
 persistence) through provider interfaces.
+
+## Packages
+
+This repo holds two npm packages: `@bluestep-systems/b6p-core` (this one, Node) and
+[`@bluestep-systems/b6p-core-bsjs-git`](packages/bsjs-git/README.md) (browser and Node: git editing, publish and history
+of BSJS scripts through the platform's git proxy). The first depends on the second and re-exports it as `bsjsGit`.
 
 ## Installation
 
@@ -33,7 +39,7 @@ const providers: B6PProviders = {
 
 const core = new B6PCore(providers);
 
-await core.script.pull({ formulaUrl: "https://org.bluestep.net/files/<id>/draft/", workspacePath });
+await core.script.pull({ formulaUrl: "https://org.bluestep.net/files/<id>/", workspacePath });
 await core.script.push({ rootPath, snapshot: true, message: "Update script" });
 const audit = await core.script.audit({ filePath, workspacePath });
 ```
@@ -46,17 +52,17 @@ functionality as its own service. Script management is `core.script`; further su
 beside it rather than onto `B6PCore` itself.
 
 `core.script` ([`ScriptService`](src/script/ScriptService.ts)) — everything that moves a script tree
-between the local filesystem and the platform over WebDAV:
+between the local filesystem and the platform (the draft over git, `declarations/` over WebDAV):
 
-| Method                 | Purpose                                                                 |
-| ---------------------- | ----------------------------------------------------------------------- |
-| `push` / `pushCurrent` | Upload local script files to the platform (optional versioned snapshot) |
-| `pull` / `pullCurrent` | Download script files from a formula URL into a workspace               |
-| `audit` / `auditPull`  | Compare local vs. server; optionally pull differences                   |
-| `deploy`               | Multi-target deploy driven by a config file                             |
-| `getSetupUrl`          | Resolve a pulled script's web-UI setup page                             |
-| `deriveWorkspacePath`  | Recover the workspace folder from a path inside a script root           |
-| `getFactory`           | The `ScriptFactory` for entering the script tree from a bare path       |
+| Method | Purpose |
+| --- | --- |
+| `push` / `pushCurrent` | Commit and push the draft folder (optionally publish it as a snapshot) |
+| `pull` / `pullCurrent` | Clone or fast-forward the draft into a workspace |
+| `audit` / `auditPull` | Compare local vs. server; optionally pull differences |
+| `deploy` | Multi-target deploy driven by a config file |
+| `getSetupUrl` | Resolve a pulled script's web-UI setup page |
+| `deriveWorkspacePath` | Recover the workspace folder from a path inside a script root |
+| `getFactory` | The `ScriptFactory` for entering the script tree from a bare path |
 
 `core` itself — cross-cutting state that is not specific to any one subsystem:
 
@@ -71,67 +77,93 @@ between the local filesystem and the platform over WebDAV:
 See [`src/index.ts`](src/index.ts) for the full set of exported classes, provider interfaces, data
 utilities, constants, and types.
 
+### Scripts are git (since 0.9.0)
+
+A script's **draft folder is a git working tree**: `<workspace>/<U>/<script>/draft/` holds the files and its `.git`;
+`declarations/` (generated typings, outside git) stays beside it. Everything about a script's draft and snapshot goes
+through the platform's git proxy by way of [`bsjsGit`](packages/bsjs-git/README.md); no draft or snapshot file is read or
+written over WebDAV any more (only `declarations/` and the root `.gitignore` still are).
+
+- **pull** clones the draft branch into `draft/`, or fetches and fast-forwards it. A local edit to a file the platform
+  also changed is kept and reported (`keptLocalPaths`); files missing locally come back. A folder pulled before git (files,
+  no repository) is bound to the repo as it stands: its files that its last sync record shows unedited take the platform
+  copy, edited ones are kept.
+- **push** commits the working tree as the author and pushes the draft branch; the platform then builds it (see below).
+  A **snapshot** push also publishes the build (`publishedSha`) and reads back that the platform's `master` is at that
+  commit.
+- **audit** compares the working tree with the platform's draft (a folder that is not a git working copy yet is reported
+  as not pulled).
+- **deploy** pushes the source draft's files to each target script through a scratch clone, and the target's platform
+  builds them; the source folder is never bound to a target.
+- **A script that still publishes over WebDAV is switched to git, one way.** A push does it on its first write (and
+  `PushResult.switchedToGit` and a warning say so); a pull asks first (`Prompt.confirm`, safe answer first, so
+  auto-confirm declines and the pull returns `null`) unless `enableGit: true` is passed. After the switch the script's
+  draft and snapshot refuse WebDAV writes.
+- **The commit author is never invented.** It is the `author` option of `push`/`pushCurrent`/`deploy`, else `git config
+  user.name`/`user.email` for the draft folder (global config included), else `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`
+  (then `GIT_COMMITTER_*`) from the environment, else a `GitIdentityError` before the platform is touched.
+- `B6PProviders.gitFs` (default `node:fs`) is the Node-style file system git works on; it must read and write the same
+  disk as the `fs` provider.
+
 ### Push results
 
 `push` / `pushCurrent` resolve to a [`PushResult`](src/script/push.ts) (or `null` when no target was
-given). Read `pushed` first: `false` means nothing was uploaded.
+given). Read `pushed` first: `false` means nothing was pushed.
 
-| Field              | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pushed`           | The upload ran. `false` when the draft folder is missing or empty                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `route`            | Which route the push took: `{ mode: "server" \| "draft-only", reason, serverVersion, required }`. `reason` is `dev`, `at-or-above-floor`, `below-floor`, `unknown` or `floor-unset`. `null` when the draft folder was missing                                                                                                                                                                                                                                                                 |
-| `snapshotRefused`  | Set when a snapshot push was asked for on a server without server-side compile: `{ reason: "too-old" \| "unknown" \| "floor-unset", serverVersion, required }`. The sources were saved to the draft and no snapshot was taken. `null` otherwise                                                                                                                                                                                                                                               |
-| `compile`          | What the platform's `compileDraft` came to: `status` (`COMPILED`, `GATE_TRIPPED`, `EMIT_WITHHELD`, `NOTHING_TO_COMPILE`, `SKIPPED_GIT_MANAGED`, `SKIPPED_EXTERNALLY_BUILT`, `OUTPUT_UPLOAD`, `NOT_PERMITTED`, `COMPILER_UNAVAILABLE`, `WRITE_FAILED`, `INPUT_INCOMPLETE`, `BUSY`, or `UNKNOWN` with `rawStatus` kept), `errors` / `warnings`, `written` / `deleted`, `diagnostics` (+ `diagnosticsOmitted`) and the `gate` block (`tripped`, `withheld`, `problems`). `null` when nothing ran |
-| `publish`          | What `takeSnapshot` came to (`published`, counts, diagnostics, `withheld`, `gate`). `null` for a plain push and for a snapshot push whose compile status does not publish (anything but `COMPILED`, `NOTHING_TO_COMPILE`, `SKIPPED_EXTERNALLY_BUILT`)                                                                                                                                                                                                                                         |
-| `historyRecorded`  | A snapshot's history entry was recorded. `false` also when nothing was published or the push stopped early                                                                                                                                                                                                                                                                                                                                                                                    |
-| `keptPlatformOnly` | Platform-only files kept because deleting them was not confirmed                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Field | Meaning |
+| --- | --- |
+| `pushed` | The draft is on the platform. `false` when the draft folder is missing or empty |
+| `commitSha` | The draft commit this push made, or the one already there; `null` when `pushed` is `false` |
+| `route` | Which route ran: `{ mode: "server-build" \| "push-only", reason, serverVersion, required }`, `reason` one of `dev`, `at-or-above-floor`, `below-floor`, `unknown`, `floor-unset`. `null` when the push stopped before asking |
+| `snapshotRefused` | Set when a snapshot was asked for on a server that does not build git drafts: `{ reason: "too-old" \| "unknown" \| "floor-unset", serverVersion, required }`. The draft was pushed; nothing was built or published |
+| `build` | The platform's compile of the pushed draft (`compileDraft`): `status` (`COMPILED`, `GATE_TRIPPED`, `EMIT_WITHHELD`, `NOTHING_TO_COMPILE`, `SKIPPED_EXTERNALLY_BUILT`, …, or `UNKNOWN` with `rawStatus`), `errors` / `warnings`, `diagnostics` (+ `diagnosticsOmitted`), `gate`. `null` when no build ran or the request failed |
+| `buildCommitSha` | The platform's build commit (output, and the manifest when it vouched); the folder was fast-forwarded to it. `null` when it made none (already built, nothing to build) |
+| `buildVouched` | `true`: the build is clean and its manifest committed. `false`: unclean, output committed without a manifest, so a publish is refused until it builds cleanly. `null`: no build ran |
+| `buildError` | Why the build request failed after a successful push; otherwise `null` |
+| `publishedSha` | The commit the platform published on a snapshot push (the build commit); `null` on a plain push, when nothing was published, or on a failed publish. A caller that asked for a snapshot treats `null` as a failure |
+| `publishError` / `publishRefusal` | Why the platform refused or failed the publish (the draft stays pushed), and the structured `{ reason, withheld }` (`BUILD_STALE`, `BUILD_MANIFEST_MISSING`, `DRAFT_MOVED`, `ENTRYPOINT_MISSING`, …) |
+| `switchedToGit` | This push switched a WebDAV script to git, which cannot be undone |
+| `typeCheckDiagnostics` / `typeCheckErrors` | The build's diagnostics in the script's own sources (never a `.d.ts`): `{ file, line, column, code, message, severity }`, a type-checker finding being a `WARNING`. `null` / empty when no build ran |
+| `liveVerified` | `true`: the platform's `master` is at `publishedSha`. `false`: it is at another commit. `null`: not proven either way |
+| `liveMismatches` | Draft-relative paths that differ between `publishedSha` and `master` when `liveVerified` is `false` |
+| `keptPlatformOnly` | Platform-only files kept because deleting them was not confirmed (they are part of the pushed commit) |
 
-### How a push works
+### How a push builds (since 1.0.0)
 
-Push uploads sources only, and only to `draft/`. Core does not compile or type-check, never PUTs
-`snapshot/` or a build folder (`.build` by default), and never reads `X-Bluestep-Compile`:
+Nothing compiles in core or in `bsjsGit`; neither package has a runtime `typescript` dependency. The platform builds:
 
-1. Each changed source is PUT to `draft/` (WebDAV writes never compile). Uploads stop at the first
-   failure; if any file went up the draft is still compiled, then the upload error is thrown.
-2. Platform-only files are offered for deletion (declined by default).
-3. `compileDraft` (GraphQL) compiles the whole draft on the platform. `BUSY` is retried 3 times 5 s
-   apart, `INPUT_INCOMPLETE` 3 times 2 s apart, `COMPILER_UNAVAILABLE` and a network failure once.
-   `GATE_TRIPPED` and `EMIT_WITHHELD` are results (`compile.status`), not errors: the sources are saved.
-4. A snapshot push whose compile status is `COMPILED`, `NOTHING_TO_COMPILE` or
-   `SKIPPED_EXTERNALLY_BUILT` then calls `takeSnapshot`, which recompiles and publishes on the
-   platform, and records the history entry. A refusal throws `Err.PublishRefusedError`
-   (`reason`: `GATE_TRIPPED` | `EMIT_WITHHELD` | `ENTRYPOINT_MISSING` | `OUTPUT_SHADOWS` |
-   `COMPILER_UNAVAILABLE` | `BUSY` | `INPUT_INCOMPLETE` | `WRITE_FAILED` | `NOT_PERMITTED` |
-   `UNKNOWN`, with the platform's detail in `publish`); `BUSY` and `INPUT_INCOMPLETE` are retried first.
-   A request that fails without an outcome throws `Err.ServerCompileRequestError` (`phase`, `messages`).
+1. The draft is committed and pushed over git (the confirmations above).
+2. `compileDraft` (GraphQL, `bsjsGit.ScriptRepo.compileDraft`) asks the platform to build the draft branch at the pushed
+   commit (`expectedDraftSha`; a draft that moved meanwhile is refused, `DraftBuildMovedError`). It commits the output,
+   plus the build manifest when the build is clean, as one build commit authored by the pushing user, and the folder is
+   fast-forwarded to it. `BUSY` is retried 3 times 5 s apart, `INPUT_INCOMPLETE` 3 times 2 s apart,
+   `COMPILER_UNAVAILABLE` and a failed request once. Every push builds, plain ones too.
+3. A snapshot push whose build status publishes (`COMPILED`, `NOTHING_TO_COMPILE`, `SKIPPED_EXTERNALLY_BUILT`) then
+   publishes the build commit and reads `master` back. An unclean build is refused by the platform's manifest check
+   (`publishRefusal.reason` `BUILD_MANIFEST_MISSING` or `BUILD_STALE`); a tripped gate or withheld emit publishes
+   nothing. Once the push succeeded, nothing throws: a failed build is `buildError`, a failed publish `publishError`.
 
-There is no read-back of `snapshot/`: the platform writes it itself. The pieces are exported
-(`compileDraft`, `takeSnapshot`, `uploadAndCompile`, `COMPILE_RETRY`) for consumers and tests.
-
-### Push by server version
-
-Before uploading anything, a push asks the org's server for its version (`/appinfo/version`) and
-picks a route; it never refuses a push for the version.
-
-| Server                                                                       | Plain push                                                                                 | Snapshot push                                                                                          |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `dev` or `latest`, or at or above `MIN_SERVER_VERSION`                       | the flow above (compile on the platform)                                                   | the flow above, then `takeSnapshot`                                                                    |
-| below the floor, version unreadable or not a release tag, or the floor unset | sources PUT to `draft/` (usual platform-only cleanup); no `compileDraft`, no snapshot work | exactly that plain push, then no publish: `PushResult.snapshotRefused` is set and no snapshot is taken |
-
-`MIN_SERVER_VERSION` is `26.11.09.00`, the first web release containing the flow. Core has no compiler of its own.
-`PushResult.route` says which route ran.
+Before pushing, a push asks the org's server for its version (`/appinfo/version`) and picks the route; it never refuses
+a push for the version. A `dev` or `latest` server, or one at or above `MIN_SERVER_VERSION`, builds as above. Any other
+(below the floor, an unreadable version, the floor unset) gets the git push alone: no build, and a snapshot push takes
+no snapshot (`snapshotRefused`). `MIN_SERVER_VERSION` is unset (`null`) until the first web release with the git build
+is tagged.
 
 ### Overwrites and destructive prompts
 
-Before uploading, a push asks **once** about every file whose upload would overwrite a platform
-version nobody here has seen: the platform has a `draft/` copy that differs from local and from the
-last push or pull here, or that was never synced here. New files and files already in sync never
-ask. Declining throws `Err.OverwriteDeclinedError` (a `UserCancelledError`) with the files in
-`paths`, before anything is written. To confirm without a prompt, pass their draft-relative paths:
+Before anything is pushed, a push asks **once** about every file it would overwrite that the platform changed since
+this folder was last synced (git: the draft branch moved on, or, for a folder with no repo of its own, the platform copy
+differs from what the sync record says this machine last had). Files only changed here never ask. Declining throws
+`Err.OverwriteDeclinedError` (a `UserCancelledError`) with the files in `paths`, before anything is pushed. Confirming
+pushes a merge commit, so the platform's commits stay in the history. To confirm without a prompt, pass the
+draft-relative paths:
 
 ```typescript
 await core.script.push({ rootPath, overwrite: ["scripts/app.ts"] });
 ```
+
+A second prompt covers platform files the platform gained since the last sync that have no local copy ("delete them from
+the platform?", `No` first); anything but `Yes` keeps them and reports them in `keptPlatformOnly`.
 
 Every prompt that overwrites or deletes puts its **safe option first** and marks itself with the
 optional third argument of `Prompt.confirm`:

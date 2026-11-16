@@ -1,6 +1,6 @@
 import * as path from "path";
 import { webcrypto } from "node:crypto";
-import { CryptoAlgorithms, FileExtensions, Http, MimeTypes } from "../constants";
+import { CryptoAlgorithms, FileExtensions, Http } from "../constants";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
 import { Err } from "../Err";
 import { ResponseCodes } from "../network/StatusCodes";
@@ -27,8 +27,6 @@ export class ScriptFile extends ScriptNode {
     }
     return new ScriptFile(downstairsUri, this.scriptRoot);
   }
-
-  private _reasonToNotPush: string | undefined | null;
 
   /**
    * SHA-512 of the file's bytes, hex-encoded — the local half of the ETag
@@ -154,42 +152,6 @@ export class ScriptFile extends ScriptNode {
 
   public async currentIntegrityMatches(ops?: { upstairsOverride?: URL }): Promise<boolean> {
     return (await this.currentIntegrityStatus(ops)) === "match";
-  }
-
-  /**
-   * Whether an upload would overwrite a platform-side version nobody here has seen, which is what
-   * the overwrite prompt guards. A file is at risk only when all of these hold:
-   *  - it isn't a snapshot or build-folder file (the platform owns those);
-   *  - the platform has a `draft/` copy (its `HEAD` isn't 404);
-   *  - that copy differs from the local bytes (writing the same bytes loses nothing);
-   *  - it differs from the last sync record, or there is no record (never pulled or pushed here).
-   *
-   * A copy served without a content hash can't be compared, so it counts as at risk. A missing
-   * sync record used to count as a platform change on its own, so every new file asked. Once the
-   * prompt's default became "Cancel", that would have stopped every auto-confirmed push (the CLI's
-   * `--yes`) that adds a file.
-   * @param upstairsOverride The file's `draft/` URL, when it differs from {@link upstairsUrl}
-   * @returns `"changed"` when the platform copy moved since the last sync here, `"unsynced"` when
-   *   the platform has a different copy and this machine never synced it, or `null` when nothing
-   *   is at risk
-   * @lastreviewed null
-   */
-  public async platformChangeAtRisk(upstairsOverride?: URL): Promise<"changed" | "unsynced" | null> {
-    if (this.isInSnapshot() || (await this.isInItsRespectiveBuildFolder())) {
-      return null;
-    }
-    const response = await this.ctx.sessionManager.fetch(upstairsOverride ?? (await this.upstairsUrl()), {
-      method: Http.Methods.HEAD,
-    });
-    if (response.status === ResponseCodes.NOT_FOUND) {
-      return null;
-    }
-    const upstairsHash = this.hashFromEtag(response.headers.get(Http.Headers.ETAG));
-    const lastHash = await this.getLastVerifiedHash();
-    if (upstairsHash !== null && (upstairsHash === (await this.getHash()) || upstairsHash === lastHash)) {
-      return null;
-    }
-    return lastHash ? "changed" : "unsynced";
   }
 
   public async oldIntegrityMatches(ops?: { upstairsOverride?: URL }): Promise<boolean> {
@@ -386,48 +348,6 @@ export class ScriptFile extends ScriptNode {
     return newUrl;
   }
 
-  public async getReasonToNotPush(ops?: { upstairsOverride?: URL }): Promise<string | null> {
-    // The answer is cached for the life of this instance and ignores later `ops`; executePush()
-    // builds one ScriptFile per file per push.
-    if (this._reasonToNotPush !== undefined) {
-      return this._reasonToNotPush;
-    }
-    return await this.setReasonToNotPush(ops);
-  }
-
-  private async setReasonToNotPush(ops?: { upstairsOverride?: URL }): Promise<string | null> {
-    if (this.parser.type === "root") {
-      this._reasonToNotPush = "Node is the root folder";
-    } else if (this.isInDeclarations()) {
-      this._reasonToNotPush = "Node is in declarations";
-    } else if (this.isInGitFolder()) {
-      this._reasonToNotPush = "Node is in .git folder";
-    } else if (await this.isInGitIgnore()) {
-      this._reasonToNotPush = "Node is ignored by .gitignore";
-    } else if ((await this.isFile()) && (await this.platformCopiesMatch(ops))) {
-      this._reasonToNotPush = "File integrity matches";
-    } else if (!this._reasonToNotPush) {
-      this._reasonToNotPush = null;
-    }
-    return this._reasonToNotPush;
-  }
-
-  /**
-   * Whether the platform's `draft/` copy already holds this file's local bytes, so a push may skip it.
-   * @param ops.upstairsOverride The file's `draft/` URL, when it differs from {@link upstairsUrl}
-   * @lastreviewed null
-   */
-  private async platformCopiesMatch(ops?: { upstairsOverride?: URL }): Promise<boolean> {
-    const draftUrl = ops?.upstairsOverride ?? (await this.upstairsUrl());
-    return await this.currentIntegrityMatches({ upstairsOverride: draftUrl });
-  }
-
-  private isInGitFolder(): boolean {
-    const gitFolder = path.sep + ".git" + path.sep;
-    const normalizedPath = path.normalize(this.uri().fsPath);
-    return normalizedPath.includes(gitFolder);
-  }
-
   public shouldCopyRaw() {
     return path.extname(this.name()).toLowerCase() !== FileExtensions.TYPESCRIPT;
   }
@@ -442,111 +362,6 @@ export class ScriptFile extends ScriptNode {
 
   public isNotTypescript(): boolean {
     return !this.isTypescript();
-  }
-
-  /**
-   * Pushes this file to its `draft/` copy, unless {@link getReasonToNotPush} says to skip it. Never
-   * writes `snapshot/` or a build folder: the platform compiles and publishes (see `executePush`).
-   * Asks before overwriting a `draft/` copy that changed on the platform since the last push or pull.
-   * @param arg.upstairsUrlOverrideString A URL whose host replaces the file's own (deploy targets)
-   * @param arg.overwriteConfirmed The overwrite was already confirmed for this file (the push's one
-   *   up-front confirmation, or the caller's own list), so don't ask again
-   * @returns `undefined` when the file was skipped; otherwise the response of the write. A resolved
-   *   `Response` means the platform accepted it: a refused write throws.
-   * @throws an {@link Err.FileSendError} when the platform refuses the write
-   * @throws an {@link Err.UserCancelledError} when the user declines the overwrite
-   * @lastreviewed null
-   */
-  async upload(arg?: { upstairsUrlOverrideString?: string; overwriteConfirmed?: boolean }): Promise<Response | void> {
-    if (await this.isFolder()) {
-      throw new Err.ScriptOperationError("somehow a folder got created to upload with this method. ");
-    }
-    this.ctx.logger.info("Preparing to send file:", this.uri().fsPath);
-    this.ctx.logger.info("To target formula URI:", arg?.upstairsUrlOverrideString);
-    const upstairsOverride = new URL(arg?.upstairsUrlOverrideString || (await this.upstairsUrl()).toString());
-    const thisUpstairs = await this.upstairsUrl();
-    upstairsOverride.pathname = thisUpstairs.pathname;
-    // Skip check first: a file that won't be uploaded (ignored, declarations, already in sync) is
-    // never asked about.
-    const reason = await this.getReasonToNotPush({ upstairsOverride });
-
-    if (reason) {
-      this.ctx.logger.info(`${reason}; not pushing file:`, this.uri().fsPath);
-      return;
-    }
-    // Without a prior confirmation this is the fallback: a file that became at risk after the
-    // push's up-front check (a platform edit landing mid-push) still asks here.
-    const risk = arg?.overwriteConfirmed ? null : await this.platformChangeAtRisk(upstairsOverride);
-    if (risk) {
-      // "Cancel" is FIRST: an empty answer and the CLI's --yes both take options[0], and this
-      // prompt authorizes overwriting someone's edit on the platform (ClickUp 86bc2h3ef).
-      const CANCEL = "Cancel";
-      const OVERWRITE = "Overwrite";
-      const relative = this.pathWithRespectToDraftRoot().split(path.sep).join("/");
-      const why =
-        risk === "changed"
-          ? `${relative} changed on the platform since the last push or pull from here.`
-          : `The platform has a different ${relative}, and this machine has never pulled or pushed it.`;
-      const answer = await this.ctx.prompt.confirm(
-        `${why} Overwrite the platform copy (${upstairsOverride}) with your local file?`,
-        [CANCEL, OVERWRITE],
-        { destructive: true, safeOption: CANCEL }
-      );
-      if (answer !== OVERWRITE) {
-        await this.ctx.prompt.popup(`Push cancelled: ${relative} was not overwritten.`);
-        // The message is all a non-interactive caller sees, so it says what was kept and why.
-        // How to confirm an overwrite depends on the consumer (a flag, a button), so it is left to
-        // the consumer, which gets the files in `paths`.
-        throw new Err.OverwriteDeclinedError(
-          `Push stopped: ${relative} was not overwritten. ${why} Pull or audit it to see the ` +
-            `platform version before overwriting it.`,
-          [relative]
-        );
-      }
-    }
-    this.ctx.logger.info("Destination:", upstairsOverride.toString());
-
-    const draftResp = await this.putTo(upstairsOverride);
-    // The sync record describes the draft/ copy (platformChangeAtRisk compares it with the draft/ ETag).
-    await this.touch();
-    this.ctx.logger.info("File sent successfully:", this.uri().fsPath);
-    return draftResp;
-  }
-
-  /**
-   * PUTs the local bytes to one WebDAV location, with no prompt, skip check or sync record. It is
-   * the single write an upload goes through.
-   * @param target The WebDAV URL to write, a `draft/` URL
-   * @returns The platform's response, always ok
-   * @throws an {@link Err.FileSendError} naming the URL and status when the platform refuses the write
-   * @lastreviewed null
-   */
-  public async putTo(target: URL): Promise<Response> {
-    const fileContents = await this.ctx.fs.readFile(B6PUri.fromFsPath(this.uri().fsPath));
-    const resp = await this.ctx.sessionManager.fetch(target, {
-      method: Http.Methods.PUT,
-      headers: {
-        [Http.Headers.CONTENT_TYPE]: MimeTypes.APPLICATION_JSON,
-      },
-      body: fileContents,
-    });
-    if (!resp.ok) {
-      throw new Err.FileSendError(await getDetails(resp, target));
-    }
-    return resp;
-    async function getDetails(resp: Response, target: URL) {
-      return `
-  ========
-  ========
-  url: ${target}
-  status: ${resp.status}
-  statusText: ${resp.statusText}
-  ========
-  ========
-  text: ${await resp.text()}
-  ========
-  ========`;
-    }
   }
 
   public isTsConfig(): boolean {

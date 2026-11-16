@@ -9,7 +9,6 @@ import { Err } from "../Err";
 import { ScriptFactory } from "./ScriptFactory";
 import { B6PUri } from "../B6PUri";
 import type { ScriptFolder } from "./ScriptFolder";
-import { ScriptNode } from "./ScriptNode";
 import { TsConfig } from "./TsConfig";
 import type { ScriptContext } from "./ScriptContext";
 
@@ -289,27 +288,6 @@ export class ScriptRoot {
       }
     }
     return badFiles;
-  }
-
-  public async getPushableNodes(): Promise<ScriptNode[]> {
-    const flattenedDraft = await this.getDraftFolder().flatten();
-    const pushableNodes: ScriptNode[] = [];
-    for (const f of flattenedDraft) {
-      const reason = await f.getReasonToNotPush();
-      if (reason) {
-        this.ctx.logger.info(`Excluding draft file from push: ${f.path()} (${reason})`);
-        continue;
-      }
-
-      const fileName = f.path();
-      if (!(await f.isInItsRespectiveBuildFolder())) {
-        pushableNodes.push(f);
-      } else {
-        this.ctx.logger.info(`Excluding file in build folder from push: ${fileName}`);
-      }
-    }
-
-    return pushableNodes;
   }
 
   public async preflightCheck(): Promise<string> {

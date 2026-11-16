@@ -3,14 +3,31 @@ export { B6PCore } from "./B6PCore";
 export type { ReportResult } from "./B6PCore";
 export { B6PUri } from "./B6PUri";
 export { Err } from "./Err";
+export { executePush, legacySyncRecords } from "./script/push";
+export type { PushResult } from "./script/push";
+export { resolveGitIdentity } from "./script/GitIdentity";
+export type { GitConfigReader, GitIdentitySources } from "./script/GitIdentity";
 export {
-  cleanupUnusedUpstairsPaths,
-  collectOverwriteCandidates,
-  confirmOverwrites,
-  executePush,
-  uploadAndCompile,
-} from "./script/push";
-export type { OverwriteCandidate, PushResult } from "./script/push";
+  GitSwitchDeclinedError,
+  GitWrongBranchError,
+  GitStagedChangesError,
+  GitSymlinkError,
+  legacyIgnoreRulesForDraft,
+  auditDraft,
+  confirmOverwrittenFiles,
+  pullDraft,
+  pushDraft,
+} from "./script/GitSync";
+export type {
+  DraftAudit,
+  DraftBuildOutcome,
+  DraftPullOutcome,
+  DraftPullOptions,
+  DraftPushOptions,
+  DraftPushOutcome,
+  LastSyncedLookup,
+  PublishRefusal,
+} from "./script/GitSync";
 export type { PlatformContext } from "./PlatformContext";
 
 // ─── Provider interfaces ─────────────────────────────────────────────
@@ -61,30 +78,9 @@ export { ScriptFile } from "./script/ScriptFile";
 export type { ScriptFolder } from "./script/ScriptFolder";
 export type { ScriptContext } from "./script/ScriptContext";
 export { ScriptService } from "./script/ScriptService";
-export {
-  COMPILE_RETRY,
-  KNOWN_DRAFT_COMPILE_STATUSES,
-  KNOWN_PUBLISH_REFUSAL_REASONS,
-  PUBLISHABLE_COMPILE_STATUSES,
-  compileAllowsPublish,
-  compileDraft,
-  parseDraftCompileOutcome,
-  parsePublishOutcome,
-  takeSnapshot,
-} from "./script/ServerCompile";
-export type {
-  CompileDiagnostic,
-  DraftCompileOutcome,
-  DraftCompileStatus,
-  GateProblem,
-  GateReport,
-  PublishOutcome,
-  PublishRefusalReason,
-  RetryPolicy,
-  ServerCompileOptions,
-  ServerCompileTarget,
-} from "./script/ServerCompile";
-export type { AuditResult, DeployConfig, PullResult } from "./script/ScriptService";
+export { isOwnSourceDiagnostic, typeCheckErrorsOf } from "./script/ServerCompile";
+export type { TypeCheckError } from "./script/ServerCompile";
+export type { AuditResult, DeployConfig, DeployTargetResult, PullResult } from "./script/ScriptService";
 
 // ─── Constants ───────────────────────────────────────────────────────
 export {
@@ -159,3 +155,6 @@ export type {
   ScriptGQLBadResp,
   ConfigJsonContent,
 } from "./types";
+
+// ─── Browser-safe git client (separate package, re-exported for consumers of this one) ───
+export * as bsjsGit from "@bluestep-systems/b6p-core-bsjs-git";

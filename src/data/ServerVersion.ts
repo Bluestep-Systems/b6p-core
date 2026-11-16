@@ -1,21 +1,21 @@
 import { ApiEndpoints } from "../constants";
 
 /**
- * Earliest server release whose push flow core 0.9.0 speaks: WebDAV never compiles, GraphQL
- * `compileDraft` compiles the draft, and `takeSnapshot` recompiles and publishes (web #1961 and
- * #1957). A server at or above it (or a `dev` build) gets the server flow; any other server gets a
- * draft-only push, and a snapshot push to it takes no snapshot (ruling 46). `26.11.09.00` is the
- * first web release tag containing web #1961 and #1957 (2731b31060, 3c44dc71fc). The type keeps
- * `null` ("unset": every server but a `dev` build gets the draft-only route) for tests and a future
- * floor that is not yet tagged.
+ * Earliest server release that builds a git-pushed draft: GraphQL `compileDraft` with `expectedDraftSha` compiles the
+ * script's draft branch and commits the output (and, when it vouches for the build, the build manifest) as a build
+ * commit (web CU-1k5g91bq6u2). A server at or above it (or a `dev` build) gets the build after every push; any other
+ * gets the git push alone, and a snapshot push to it publishes nothing. `null` means unset: every server but a `dev`
+ * build then gets the push alone.
  * @lastreviewed null
  */
-export const MIN_SERVER_VERSION: string | null = "26.11.09.00";
+// HUMAN-REVIEW-NEEDED: placeholder. Set this to the first web release tag containing the compileDraft git build
+// (CU-1k5g91bq6u2) once it is cut; 1.0.0 must not release while it is null.
+export const MIN_SERVER_VERSION: string | null = null;
 
 /**
  * What a development build reports instead of a release tag, taken as current: `dev`, and `latest`
  * (web's fast local image build sets it, ruling 49). A stale local image predating the floor would
- * get the server flow anyway and fail its compile request instead of saving the draft only.
+ * get the build anyway, and its build request would fail after the push.
  * @lastreviewed null
  */
 const DEV_VERSIONS: ReadonlySet<string> = new Set(["dev", "latest"]);
@@ -56,17 +56,16 @@ export function meetsMinimumVersion(serverVersion: string, floor: string): boole
 }
 
 /**
- * Which route a push takes, and why (ruling 46).
- *  - `server`: sources go to `draft/`, then the platform compiles (`compileDraft`) and, for a
- *    snapshot push, publishes (`takeSnapshot`); reason `dev` or `at-or-above-floor`.
- *  - `draft-only`: sources go to `draft/` and nothing else happens, because the server does not
- *    support server-side compile; reason `below-floor`, `unknown` (the version could not be read,
- *    or is not a release tag) or `floor-unset`.
+ * Which route a push takes, and why.
+ *  - `server-build`: the draft is git-pushed, then the platform builds it (`compileDraft`) and, for a snapshot push,
+ *    the build commit is published; reason `dev` or `at-or-above-floor`.
+ *  - `push-only`: the draft is git-pushed and nothing else happens, because the server does not build git drafts;
+ *    reason `below-floor`, `unknown` (the version could not be read, or is not a release tag) or `floor-unset`.
  * @lastreviewed null
  */
 export interface PushRoute {
-  /** What the push does after the sources are saved. @lastreviewed null */
-  readonly mode: "server" | "draft-only";
+  /** What the push does after the draft is pushed. @lastreviewed null */
+  readonly mode: "server-build" | "push-only";
   /** Why this mode was chosen. @lastreviewed null */
   readonly reason: "dev" | "at-or-above-floor" | "below-floor" | "unknown" | "floor-unset";
   /** The version the server reported (trimmed), or `null` when it could not be read. @lastreviewed null */
@@ -76,9 +75,9 @@ export interface PushRoute {
 }
 
 /**
- * Why a snapshot push took no snapshot: the server does not support server-side compile.
+ * Why a snapshot push took no snapshot: the server does not build git drafts.
  * `too-old` (a readable version below the floor), `unknown` (no readable version) or `floor-unset`
- * (the floor is not yet known). The sources were still saved to the draft.
+ * (the floor is not yet known). The draft was still pushed.
  * @lastreviewed null
  */
 export interface SnapshotRefusal {
@@ -91,12 +90,12 @@ export interface SnapshotRefusal {
 }
 
 /**
- * The snapshot refusal a route implies: `null` on the server route, otherwise why the draft-only
+ * The snapshot refusal a route implies: `null` on the build route, otherwise why the push-only
  * route cannot take a snapshot.
  * @lastreviewed null
  */
 export function snapshotRefusalFor(route: PushRoute): SnapshotRefusal | null {
-  if (route.mode === "server") {
+  if (route.mode === "server-build") {
     return null;
   }
   const reason =
@@ -105,10 +104,10 @@ export function snapshotRefusalFor(route: PushRoute): SnapshotRefusal | null {
 }
 
 /**
- * Asks the org's server for its version and picks the push's route: the server flow when it is a
- * `dev` build or at or above the floor, otherwise draft-only. Never throws and never refuses a
- * push: a version that cannot be read picks draft-only, which every server supports. Called once
- * per push, before anything is uploaded.
+ * Asks the org's server for its version and picks the push's route: the build when it is a
+ * `dev` build or at or above the floor, otherwise push-only. Never throws and never refuses a
+ * push: a version that cannot be read picks push-only, which every git server supports. Called once
+ * per push, before anything is pushed.
  * @param opts.origin The org's origin (same as the push's)
  * @param opts.fetchFn The session's `fetch`, so the request shares the push's origin and session
  * @param opts.floor Overrides {@link MIN_SERVER_VERSION} (`null` means unset); used by tests
@@ -137,16 +136,16 @@ export async function resolvePushRoute(opts: {
   }
 
   if (serverVersion !== null && DEV_VERSIONS.has(serverVersion)) {
-    return { mode: "server", reason: "dev", serverVersion, required };
+    return { mode: "server-build", reason: "dev", serverVersion, required };
   }
   if (serverVersion === null || parseReleaseTag(serverVersion) === null) {
     // Nothing readable, or something that is not a release tag: not trusted to compile.
-    return { mode: "draft-only", reason: "unknown", serverVersion, required };
+    return { mode: "push-only", reason: "unknown", serverVersion, required };
   }
   if (required === null) {
-    return { mode: "draft-only", reason: "floor-unset", serverVersion, required };
+    return { mode: "push-only", reason: "floor-unset", serverVersion, required };
   }
   return meetsMinimumVersion(serverVersion, required)
-    ? { mode: "server", reason: "at-or-above-floor", serverVersion, required }
-    : { mode: "draft-only", reason: "below-floor", serverVersion, required };
+    ? { mode: "server-build", reason: "at-or-above-floor", serverVersion, required }
+    : { mode: "push-only", reason: "below-floor", serverVersion, required };
 }

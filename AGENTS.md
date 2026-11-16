@@ -1,6 +1,7 @@
 # b6p-core — agent rules
 
-Single-package library `@bluestep-systems/b6p-core`, published to public npm: the vscode-free core
+Library `@bluestep-systems/b6p-core`, published to public npm (an npm-workspaces repo: this package is the repo root,
+and `packages/bsjs-git` is `@bluestep-systems/b6p-core-bsjs-git`, see below): the vscode-free core
 shared by the `b6p` CLI and the VS Code extension, each in its own repo depending on this package by
 version. Public API surface is [src/index.ts](src/index.ts); the headless orchestrator is
 [src/B6PCore.ts](src/B6PCore.ts).
@@ -69,8 +70,56 @@ are load-bearing rather than stylistic — each records something this repo undi
   coalesce `save()` before parallelizing anything.
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
-CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, server compile/publish calls, snapshot history), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure
-parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles).
+CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, `GitSync` push/pull/audit of the draft
+as a git working tree, `GitIdentity` commit authors, `ServerCompile` reading the platform's build diagnostics),
+`persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure parsers and utilities, `ServerVersion`),
+`constants/`, `update/`, `testing/` (vscode-free doubles).
+
+## Scripts are git (since 0.9.0), and the platform builds them (since 1.0.0)
+
+A script's `draft/` folder is the working tree of its git repo; push, pull, audit and deploy are in
+`src/script/GitSync.ts` over `bsjsGit.ScriptRepo`. No draft or snapshot file goes over WebDAV (only `declarations/` and
+the root `.gitignore` do). Rules that bind changes here:
+
+- **No default commit author**, ever: `resolveGitIdentity` (explicit, `git config`, environment, else an error before the
+  platform is touched). A literal `"unknown"` author is the bug this replaced.
+- **A pull never switches a WebDAV script to git without the confirmation** (safe answer first); a push does, on its
+  first write, and says so (`switchedToGit`).
+- **A push never overwrites a platform edit without the one confirmation**; a confirmed overwrite is a merge commit so
+  the platform's history stays. Never force-push.
+- **Nothing compiles here, in either package.** The push chain is git push → `compileDraft` pinned to the pushed commit
+  (`ScriptRepo.compileDraft`, `expectedDraftSha`) → fast-forward the folder to the platform's build commit → (snapshot)
+  publish that commit → read back `master`. The platform commits the output, and the build manifest only when it vouches
+  for the build, authored by the pushing user; an unclean build is published-or-refused by the platform's manifest check
+  (`BUILD_STALE`, `BUILD_MANIFEST_MISSING`), never decided by core. Every push builds, plain ones too.
+- **`MIN_SERVER_VERSION` (`data/ServerVersion.ts`) routes every push**: a `dev`/`latest` server or one at or above it
+  builds; any other (below it, unreadable version, floor unset) gets the git push alone, and a snapshot there is a
+  result (`PushResult.snapshotRefused`), not an error. It stays `null` until the first web tag with the git build
+  exists; 1.0.0 cannot release while it is `null`.
+- `PushResult.typeCheckErrors` are the platform build's diagnostics in the script's own sources (no `.d.ts`, nothing
+  outside the tree; `ServerCompile.typeCheckErrorsOf`). A build that fails after a successful push is `buildError`, a
+  failed publish `publishError`: once the push succeeded, nothing throws.
+- The git working tree uses `ScriptContext.gitFs` (Node `fs`), not the `FileSystem` provider; both address the same disk.
+
+## The bsjs-git package
+
+`packages/bsjs-git` (`@bluestep-systems/b6p-core-bsjs-git`) is the browser-safe git client: isomorphic-git against the
+platform's git proxy, the platform's build (`compileDraft`) and publish, git history, and the legacy history archive
+client. It is a dependency of this package (re-exported as `bsjsGit`) and of the BSJS editor. Its rules differ from the
+rest of the repo:
+
+- **No Node built-ins, no Node-only globals** (`Buffer`, `process`) in `packages/bsjs-git/src`; the file system is
+  injected. `packages/bsjs-git/test/NoNodeBuiltins.test.js` fails the build otherwise.
+- **No compiler**: the editor and this package push sources and ask the platform to build (`ScriptRepo.compileDraft`).
+  `typescript` is a devDependency there too, for building the package only.
+- **No WebDAV, no `SessionManager`** there: it talks to the proxy with the bearer token directly and must not import
+  from this package (the dependency runs one way).
+- Its own scripts mirror this package's (`compile`, `check-types`, `format-check`, `test`); the root scripts build and
+  run both, so `npm test` and `npm run check-types` here cover both packages.
+- `npm run watch` (root) is `tsc -b` over project references, so it builds and watches both packages.
+- The `buffer` shim (`src/bufferShim.ts`) is the one allowed mention of `Buffer`; `BrowserBundle.test.js` bundles the
+  package for a browser to prove it still resolves.
+- It is published first (see `publish.yml`); bump its version when its API changes.
 
 ## Commands
 
@@ -94,22 +143,10 @@ no matter what. Correctness comes from `check-types` under `strict` + `noUnusedL
 in `tsconfig.base.json` — strictness belongs there, and `tsconfig.json` carries only this package's
 output settings. Do not reintroduce a linter without wiring it to a **failing** exit code.
 
-**`typescript` is an exact-pinned `devDependency` (7.x) and builds the package only.** This library
-ships no compiler and nothing in `src/` may import `typescript`: the platform compiles BSJS
-server-side, so `push` uploads sources and never emits, uploads `.build` or type-checks. Do not move it back to `dependencies`, do not float the
-pin, and read `b6p-cli/docs/adr/0003-*` (the TypeScript version strategy, superseding 0002) before
-changing this.
-
-**The push flow is PUT `draft/` → `compileDraft` → (snapshot push) `takeSnapshot`, all against the
-server's contract** (`src/script/ServerCompile.ts`, `push.ts`). Core never PUTs into `snapshot/` or a
-build folder, reads no `X-Bluestep-Compile` header, and parses a publish refusal from the error's
-`extensions.reason` / `extensions.publish`, never its message. A tripped gate or withheld emit is a
-`PushResult.compile` result, not an exception. `MIN_SERVER_VERSION` (`data/ServerVersion.ts`) _routes_
-every push and is `26.11.09.00`, the first web release containing the flow: a `dev` server or
-one at or above it takes the flow above; any other (below it, unreadable version, floor unset) takes the
-**draft-only route** (sources PUT to `draft/`, no GraphQL compile or snapshot call), and a snapshot push
-there is not an error but a result, `PushResult.snapshotRefused` (ruling 46). A plain push is never
-refused, and core has no local compiler to fall back on.
+**`typescript` is an exact-pinned `devDependency` (7.x) in both packages and builds them only.** Nothing ships a
+compiler and nothing in `src/` (of either package) may import `typescript`: the platform compiles BSJS, so a push sends
+sources over git and never emits or type-checks. Do not move it back to `dependencies`, do not float the pin, and read
+`b6p-cli/docs/adr/0003-*` (the TypeScript version strategy, superseding 0002) before changing this.
 
 ## Documentation, in the same change
 
