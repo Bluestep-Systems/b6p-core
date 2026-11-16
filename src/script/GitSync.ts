@@ -854,7 +854,7 @@ export interface DraftBuildOutcome {
    */
   readonly buildCommitSha: string | null;
   /**
-   * Whether the platform vouched for the build (manifest committed, so the draft can publish).
+   * Whether the draft passes the platform's build check (a clean build with its manifest committed, or none needed).
    * @lastreviewed null
    */
   readonly vouched: boolean;

@@ -1,13 +1,13 @@
-// Behavioral spec for the build manifest (contract v1): where it lives, which files are sources, its hashes and format,
-// when none is written, and the publish check's refusals mapped to typed errors. The pure functions are checked directly;
-// the commit and publish paths run against the platform stand-in (support/GitProxyStub.js), whose check is written
-// independently of the client. Dependency-free node script over the COMPILED dist/ (run via `npm test`).
+// Behavioral spec for the build manifest (contract v1): where it lives, which files are sources, and the publish check's
+// refusals mapped to typed errors. The client never writes a manifest (the platform's build does, see
+// CompileDraft.test.js); the pure layout rules are checked directly, and the publish paths run against the platform
+// stand-in (support/GitProxyStub.js), whose build and check are written independently of the client. Dependency-free
+// node script over the COMPILED dist/ (run via `npm test`).
 
 const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { execFileSync } = require("node:child_process");
 const { createStub } = require("./support/GitProxyStub");
 const lib = require("../dist/index.js");
 
@@ -117,66 +117,6 @@ test("sources: in-place output sits beside its sources and counts; a nested outD
   assert.strictEqual(lib.isBuildSource("client/dist/script.js", "dist"), true);
 });
 
-// ── §3 hashes and format ──────────────────────────────────────────────
-
-test("hashes equal git hash-object, and the text is sorted, two-space, newline-terminated, version 1", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bm-hash-"));
-  const cases = ["", "hello\n", "tab\tand é bytes\r\n", "a".repeat(100_000)];
-  for (const [i, text] of cases.entries()) {
-    const file = path.join(tmp, `f${i}`);
-    fs.writeFileSync(file, text);
-    const expected = execFileSync("git", ["hash-object", file], { encoding: "utf8" }).trim();
-    assert.strictEqual(await lib.gitBlobSha1(new Uint8Array(fs.readFileSync(file))), expected);
-  }
-  assert.strictEqual(await lib.gitBlobSha1(new Uint8Array()), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
-  fs.rmSync(tmp, { recursive: true, force: true });
-
-  const text = lib.formatBuildManifest({ "scripts/app.ts": "b".repeat(40), "package.json": "a".repeat(40) });
-  assert.strictEqual(text.endsWith("}\n"), true);
-  const parsed = JSON.parse(text);
-  assert.strictEqual(parsed.version, 1);
-  assert.deepStrictEqual(Object.keys(parsed.sources), ["package.json", "scripts/app.ts"]);
-  assert.ok(text.includes('\n    "package.json": "' + "a".repeat(40) + '"'), "two-space indent");
-});
-
-test("planBuildManifest: hashes come from the tree as committed; the manifest and outputs are left out", async () => {
-  const tree = [
-    { path: "tsconfig.json", oid: "1".repeat(40) },
-    { path: "scripts/app.ts", oid: "2".repeat(40) },
-    { path: ".build/scripts/app.js", oid: "3".repeat(40) },
-    { path: ".build/.b6p-build.json", oid: "4".repeat(40) },
-    { path: "README.md", oid: "5".repeat(40) },
-  ];
-  const plan = await lib.planBuildManifest(tree, async (p) =>
-    p === "tsconfig.json" ? new TextEncoder().encode("{}") : undefined
-  );
-  assert.strictEqual(plan.path, ".build/.b6p-build.json");
-  assert.deepStrictEqual(JSON.parse(plan.content).sources, {
-    "scripts/app.ts": "2".repeat(40),
-    "tsconfig.json": "1".repeat(40),
-  });
-});
-
-test("exempt: an externally built script, and a tree with no tsconfig.json at any depth, get no manifest", async () => {
-  const none = async () => undefined;
-  assert.strictEqual(
-    await lib.planBuildManifest([{ path: "tsconfig.json", oid: "1".repeat(40) }], none, { externallyBuilt: true }),
-    undefined
-  );
-  assert.strictEqual(await lib.planBuildManifest([{ path: "scripts/app.js", oid: "1".repeat(40) }], none), undefined);
-  assert.notStrictEqual(
-    await lib.planBuildManifest(
-      [
-        { path: "client/tsconfig.json", oid: "1".repeat(40) },
-        { path: "client/main.ts", oid: "2".repeat(40) },
-      ],
-      none
-    ),
-    undefined,
-    "a nested tsconfig counts"
-  );
-});
-
 // ── commit and publish against the stand-in ───────────────────────────
 
 const stub = createStub();
@@ -209,32 +149,35 @@ async function rejects(promise, type, check) {
 const SEED = { "tsconfig.json": tsconfig(), "scripts/app.ts": "export const v = 1;\n" };
 const read = (repo, rel) => fs.readFileSync(path.join(repo.dir, rel), "utf8");
 
-test("commit with the manifest: published as it is; its hashes are what git ls-tree shows", async () => {
+/** Push what is committed, then have the platform build it. */
+async function pushAndBuild(repo) {
+  await repo.push();
+  return repo.compileDraft();
+}
+
+test("the platform's clean build: its manifest lists the committed sources by blob id, and it publishes", async () => {
   stub.addRepo("654015___7201", { files: SEED });
   const repo = repoFor("654015___7201");
   await repo.clone();
   await repo.writeFile("scripts/app.ts", "export const v = 2;\n");
-  await repo.writeFile(".build/scripts/app.js", "exports.v = 2;\n");
-  assert.ok(await repo.commit("build", AUTHOR, { buildManifest: {} }));
+  await repo.commit("edit", AUTHOR);
+  const build = await pushAndBuild(repo);
+  assert.strictEqual(build.vouched, true);
   const manifest = JSON.parse(read(repo, ".build/.b6p-build.json"));
   const tree = new Map((await repo.listTree("draft")).map((f) => [f.path, f.oid]));
   assert.deepStrictEqual(Object.keys(manifest.sources), ["scripts/app.ts", "tsconfig.json"]);
   for (const [p, oid] of Object.entries(manifest.sources)) {
     assert.strictEqual(oid, tree.get(p), p);
   }
-  await repo.push();
-  assert.strictEqual((await repo.publish()).publishedSha, await repo.sha("draft"));
-  // Committing again with nothing changed writes nothing new.
-  assert.strictEqual(await repo.commit("again", AUTHOR, { buildManifest: {} }), undefined);
+  assert.strictEqual((await repo.publish()).publishedSha, build.buildCommitSha);
 });
 
-test("a source changed without a rebuild: the publish is refused BUILD_STALE with the stale paths; rebuilding fixes it", async () => {
+test("a source pushed without a build: the publish is refused BUILD_STALE with the stale paths; a build fixes it", async () => {
   stub.addRepo("654015___7202", { files: SEED });
   const repo = repoFor("654015___7202");
   await repo.clone();
-  await repo.writeFile(".build/scripts/app.js", "exports.v = 1;\n");
-  await repo.commit("build", AUTHOR, { buildManifest: {} });
-  await repo.push();
+  await repo.commit("seed", AUTHOR, { parents: [await repo.sha("draft")] });
+  await pushAndBuild(repo);
   await repo.publish();
 
   await repo.writeFile("scripts/app.ts", "export const v = 3;\n");
@@ -253,33 +196,36 @@ test("a source changed without a rebuild: the publish is refused BUILD_STALE wit
     "nothing was promoted"
   );
 
-  await repo.commit("rebuild", AUTHOR, { buildManifest: {}, parents: [await repo.sha("draft")] });
-  await repo.push();
+  await repo.compileDraft();
   await repo.publish();
 });
 
-test("a failed or partial build leaves the existing manifest exactly as it was (so it goes stale)", async () => {
+test("an unclean build leaves the existing manifest exactly as it was (so it goes stale)", async () => {
   stub.addRepo("654015___7203", { files: SEED });
   const repo = repoFor("654015___7203");
+  const entry = stub.repos.get("654015___7203");
   await repo.clone();
-  await repo.commit("build", AUTHOR, { buildManifest: {}, parents: [await repo.sha("draft")] });
+  await repo.commit("seed", AUTHOR, { parents: [await repo.sha("draft")] });
+  await pushAndBuild(repo);
   const before = read(repo, ".build/.b6p-build.json");
   await repo.writeFile("scripts/app.ts", "export const broken = ;\n");
-  await repo.commit("the build failed: no buildManifest option", AUTHOR);
+  await repo.commit("broken", AUTHOR);
+  entry.buildUnclean = true;
+  const build = await pushAndBuild(repo);
+  assert.strictEqual(build.vouched, false);
   assert.strictEqual(read(repo, ".build/.b6p-build.json"), before);
   assert.strictEqual(new TextDecoder().decode(await repo.readFile("draft", ".build/.b6p-build.json")), before);
-  await repo.push();
   await rejects(repo.publish(), lib.PublishBuildStaleError);
 });
 
-test("no tsconfig.json: no manifest is written and the publish is not checked; externally built: none either", async () => {
+test("no tsconfig.json: nothing to build, no manifest, the publish is not checked; externally built: none either", async () => {
   stub.addRepo("654015___7204", { files: { "scripts/app.js": "exports.v = 1;\n" } });
   const plain = repoFor("654015___7204");
   await plain.clone();
   await plain.writeFile("scripts/app.js", "exports.v = 2;\n");
-  await plain.commit("edit", AUTHOR, { buildManifest: {} });
+  await plain.commit("edit", AUTHOR);
+  assert.strictEqual((await pushAndBuild(plain)).compile.status, "NOTHING_TO_COMPILE");
   assert.ok(!fs.existsSync(path.join(plain.dir, ".build", ".b6p-build.json")));
-  await plain.push();
   await plain.publish();
 
   stub.addRepo("654015___7205", { files: SEED });
@@ -287,42 +233,23 @@ test("no tsconfig.json: no manifest is written and the publish is not checked; e
   const external = repoFor("654015___7205");
   await external.clone();
   await external.writeFile("scripts/app.ts", "export const v = 9;\n");
-  await external.commit("bundled elsewhere", AUTHOR, { buildManifest: { externallyBuilt: true } });
+  await external.commit("bundled elsewhere", AUTHOR);
+  assert.strictEqual((await pushAndBuild(external)).compile.status, "SKIPPED_EXTERNALLY_BUILT");
   assert.ok(!fs.existsSync(path.join(external.dir, ".build", ".b6p-build.json")));
-  await external.push();
   await external.publish();
 });
 
-test("a nested outDir and in-place output follow §1/§2 through a real commit", async () => {
+test("a nested outDir follows §1/§2: the manifest sits in it and lists output outside it as a source", async () => {
   stub.addRepo("654015___7206", { files: { "tsconfig.json": tsconfig("./dist/"), "scripts/app.ts": "export {};\n" } });
   const dist = repoFor("654015___7206");
   await dist.clone();
-  await dist.writeFile("dist/scripts/app.js", "x\n");
   await dist.writeFile("client/.build/script.js", "client output\n");
-  await dist.commit("build", AUTHOR, { buildManifest: {} });
+  await dist.commit("client output", AUTHOR);
+  await pushAndBuild(dist);
+  assert.ok(fs.existsSync(path.join(dist.dir, "dist", "scripts", "app.js")));
   const m = JSON.parse(read(dist, "dist/.b6p-build.json"));
   assert.deepStrictEqual(Object.keys(m.sources), ["client/.build/script.js", "scripts/app.ts", "tsconfig.json"]);
-  await dist.push();
   await dist.publish();
-
-  stub.addRepo("654015___7207", { files: { "tsconfig.json": tsconfig("."), "scripts/app.ts": "export {};\n" } });
-  const inPlace = repoFor("654015___7207");
-  await inPlace.clone();
-  await inPlace.writeFile("scripts/app.js", "emitted\n");
-  await inPlace.commit("build", AUTHOR, { buildManifest: {} });
-  assert.deepStrictEqual(Object.keys(JSON.parse(read(inPlace, ".b6p-build.json")).sources), [
-    "scripts/app.js",
-    "scripts/app.ts",
-    "tsconfig.json",
-  ]);
-  await inPlace.push();
-  await inPlace.publish();
-  await inPlace.writeFile("scripts/app.js", "edited by hand\n");
-  await inPlace.commit("hand edit of an output", AUTHOR);
-  await inPlace.push();
-  await rejects(inPlace.publish(), lib.PublishBuildStaleError, (e) =>
-    assert.deepStrictEqual(e.withheld, ["scripts/app.js"])
-  );
 });
 
 test("a tsconfig with no manifest is BUILD_MANIFEST_MISSING; a manifest that does not parse is BUILD_MANIFEST_INVALID", async () => {
@@ -374,21 +301,20 @@ test("a JS-only draft is exempt: no manifest, it publishes; one .ts makes the ma
   const repo = repoFor("654015___7301");
   await repo.clone();
   await repo.writeFile("scripts/app.js", "exports.v = 2;\n");
-  await repo.commit("js edit", AUTHOR, { buildManifest: {} });
+  await repo.commit("js edit", AUTHOR);
+  await pushAndBuild(repo);
   assert.ok(
     !fs.existsSync(path.join(repo.dir, ".build", ".b6p-build.json")),
     "no manifest for a draft with no TypeScript"
   );
-  await repo.push();
   await repo.publish();
 
   await repo.writeFile("scripts/new.ts", "export const n = 1;\n");
   await repo.commit("add one .ts, no build", AUTHOR);
   await repo.push();
   await rejects(repo.publish(), lib.PublishBuildManifestMissingError);
-  await repo.commit("build", AUTHOR, { buildManifest: {}, parents: [await repo.sha("draft")] });
+  await repo.compileDraft();
   assert.ok(fs.existsSync(path.join(repo.dir, ".build", ".b6p-build.json")));
-  await repo.push();
   await repo.publish();
 
   stub.addRepo("654015___7302", {
@@ -397,20 +323,20 @@ test("a JS-only draft is exempt: no manifest, it publishes; one .ts makes the ma
   const decl = repoFor("654015___7302");
   await decl.clone();
   await decl.writeFile("types/globals.d.ts", "declare const g: string;\n");
-  await decl.commit("declaration only", AUTHOR, { buildManifest: {} });
+  await decl.commit("declaration only", AUTHOR);
+  await pushAndBuild(decl);
   assert.ok(!fs.existsSync(path.join(decl.dir, ".build", ".b6p-build.json")), "a .d.ts alone is exempt");
-  await decl.push();
   await decl.publish();
 
   await decl.writeFile("scripts/app.ts", "export {};\n");
-  await decl.commit("a real ts", AUTHOR, { buildManifest: {} });
+  await decl.commit("a real ts", AUTHOR);
+  await pushAndBuild(decl);
   const sources = Object.keys(JSON.parse(read(decl, ".build/.b6p-build.json")).sources);
   assert.deepStrictEqual(
     sources,
     ["scripts/app.js", "scripts/app.ts", "tsconfig.json", "types/globals.d.ts"],
     "the declaration is still listed"
   );
-  await decl.push();
   await decl.publish();
 
   // A .ts only under the output folder does not count.
@@ -420,9 +346,9 @@ test("a JS-only draft is exempt: no manifest, it publishes; one .ts makes the ma
   const inside = repoFor("654015___7303");
   await inside.clone();
   await inside.writeFile("a.js", "y\n");
-  await inside.commit("edit", AUTHOR, { buildManifest: {} });
+  await inside.commit("edit", AUTHOR);
+  await pushAndBuild(inside);
   assert.ok(!fs.existsSync(path.join(inside.dir, ".build", ".b6p-build.json")));
-  await inside.push();
   await inside.publish();
 });
 (async () => {

@@ -122,8 +122,9 @@ export interface PushResult {
    */
   buildCommitSha: string | null;
   /**
-   * Whether the platform vouched for the build (every project's output written, no blocking error), so the manifest is
-   * committed and the draft can publish. `false` after an unclean build: the output is committed without a manifest
+   * Whether the draft passes the platform's build check: the build is clean (every project's output written, no
+   * blocking error) and its manifest committed, or the draft needs none (externally built, nothing to build). `false`
+   * after an unclean build: the output is committed without a manifest
    * and a publish is refused (`BUILD_STALE` or `BUILD_MANIFEST_MISSING`). `null` when no build ran.
    * @lastreviewed null
    */

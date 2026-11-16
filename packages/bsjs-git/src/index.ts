@@ -61,16 +61,11 @@ export { CsrfFetch, type ScriptAuth } from "./csrf";
 export { basicTokenFetch, createProxyHttp, gitAuthHeader, refusalFor, type FetchLike } from "./http";
 export * from "./errors";
 export {
-  BUILD_MANIFEST_BUILDER,
   BUILD_MANIFEST_NAME,
   buildManifestPath,
   buildOutputFolder,
-  formatBuildManifest,
-  gitBlobSha1,
   hasNoTsconfig,
   isBuildSource,
   isTypeScriptSource,
   parseJsonc,
-  planBuildManifest,
-  type BuildManifestPlan,
 } from "./buildManifest";

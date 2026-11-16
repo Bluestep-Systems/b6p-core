@@ -17,7 +17,6 @@ import {
   PublishFailedError,
   PublishRefusedError,
 } from "./errors";
-import { gitBlobSha1, planBuildManifest } from "./buildManifest";
 import { CsrfFetch, type ScriptAuth } from "./csrf";
 import {
   COMPILE_RETRY,
@@ -198,8 +197,6 @@ export interface CommitOptions {
   readonly parents?: readonly string[];
   /** Stage these paths even when .gitignore matches them. */
   readonly force?: readonly string[];
-  /** Write the build manifest in this commit; see {@link ScriptRepo.commit}. */
-  readonly buildManifest?: { readonly externallyBuilt?: boolean };
 }
 
 /**
@@ -549,11 +546,6 @@ export class ScriptRepo {
    * @param author overrides the constructor's author.
    * @param options `parents` makes the commit over exactly those parents (a merge when there are two) and commits even
    *        with nothing staged: the tree is whatever is staged now.
-   * @param options `buildManifest` writes the build manifest ({@link planBuildManifest}) for the tree this commit will
-   *        hold, outputs included, and commits it with them. Pass it only after a build that succeeded and emitted
-   *        everything; after a failed or partial build omit it, which leaves any existing manifest as it is (stale,
-   *        so a publish refuses it). No manifest is written for an externally built script or a tree with no
-   *        `tsconfig.json`.
    * @returns the new commit's sha, or `undefined` when nothing changed.
    * @throws {GitIdentityError} when there is no author.
    * @lastreviewed null
@@ -583,9 +575,6 @@ export class ScriptRepo {
         await git.add({ fs: this.#fs, dir: this.dir, filepath: path });
       }
     }
-    if (options.buildManifest && (await this.#writeBuildManifest(options.buildManifest))) {
-      changed += 1;
-    }
     if (changed === 0 && !parent) {
       return undefined;
     }
@@ -597,45 +586,6 @@ export class ScriptRepo {
       committer: who,
       ...(parent ? { parent } : {}),
     });
-  }
-
-  async #stagedTree(): Promise<{ path: string; oid: string }[]> {
-    const tree: { path: string; oid: string }[] = [];
-    await git.walk({
-      fs: this.#fs,
-      dir: this.dir,
-      trees: [git.STAGE()],
-      map: async (filepath, [entry]) => {
-        if (entry && (await entry.type()) === "blob") {
-          tree.push({ path: filepath, oid: await entry.oid() });
-        }
-        return undefined;
-      },
-    });
-    return tree;
-  }
-
-  /** @returns whether the manifest changed (and was staged). */
-  async #writeBuildManifest(options: { readonly externallyBuilt?: boolean }): Promise<boolean> {
-    const tree = await this.#stagedTree();
-    const plan = await planBuildManifest(
-      tree,
-      async (path) => {
-        const entry = tree.find((f) => f.path === path);
-        return entry ? (await git.readBlob({ fs: this.#fs, dir: this.dir, oid: entry.oid })).blob : undefined;
-      },
-      options
-    );
-    if (!plan) {
-      return false;
-    }
-    const bytes = new TextEncoder().encode(plan.content);
-    if (tree.find((f) => f.path === plan.path)?.oid === (await gitBlobSha1(bytes))) {
-      return false;
-    }
-    await this.writeFile(plan.path, bytes);
-    await git.add({ fs: this.#fs, dir: this.dir, filepath: plan.path, force: true });
-    return true;
   }
 
   /**

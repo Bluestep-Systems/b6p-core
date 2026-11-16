@@ -80,7 +80,8 @@ commit against its siblings' snapshots and commits the output and stale-output d
 it vouches for the build (every project's output written, no blocking error; a type-checker finding is a warning), as one
 build commit authored by the caller. The answer's `extensions.bluestepCompile[0]` is the compile (`status`, counts,
 `diagnostics`, `gate`; `parseDraftCompileOutcome`) and `extensions.bluestepBuild[0]` the build commit (`{ commit,
-vouched }`; `parseDraftBuildCommit`). The local draft and working tree are then moved exactly to the build commit.
+vouched }` of `{ script, draftSha, commit, built, vouched, status }`; `parseDraftBuildCommit`; `vouched` is also true
+for a draft that needs no manifest). The local draft and working tree are then moved exactly to the build commit.
 
 It resolves to `{ compile, buildCommitSha, vouched, head }`: `buildCommitSha` is `null` when the build made no commit
 (already built at that commit, nothing to build). An unclean build (`vouched: false`) still commits its output, without
@@ -115,16 +116,14 @@ package with esbuild (`platform: "browser"`, no plugins) to keep that true.
 
 ## Build manifest
 
-The platform writes the manifest in its build commit (see Build); a client does not need to. The helpers below are the
-contract's own and stay for tools that build outside the platform.
-
 A git script publishes `draft` exactly as committed, so the server refuses a draft whose sources no longer match the
 build manifest (`<outDir>/.b6p-build.json`, contract v1): the git blob SHA-1 of every source file the build was made
-from. Whoever builds writes it in the same commit as the output: `commit(msg, author, { buildManifest: {} })` stages the
-tree, computes the manifest over what the commit will hold and commits it with it. Pass the option only after a build that
-succeeded and emitted everything; after a failed or partial build omit it, which leaves any existing manifest as it is
-(so a publish refuses it). `{ buildManifest: { externallyBuilt: true } }` writes none, and none is written for a tree
-with no `tsconfig.json`, nor for a draft with no TypeScript source outside the output folder (`isTypeScriptSource`: `ts tsx mts cts`, never a `*.d.*` declaration; declarations are still listed in `sources` when a manifest is written). The pure helpers (`buildOutputFolder`, `buildManifestPath`, `isBuildSource`, `gitBlobSha1`,
-`planBuildManifest`, `formatBuildManifest`) are exported. A refused publish is `PublishBuildStaleError`
-(`BUILD_STALE`), `PublishBuildManifestMissingError` (`BUILD_MANIFEST_MISSING`) or `PublishBuildManifestInvalidError`
-(`BUILD_MANIFEST_INVALID`), each with `withheld` (the stale paths, or the manifest's path).
+from. The platform writes it in its build commit (see Build), only for a clean build; no client writes one, and this
+package has no manifest writer (0.3.0 removed `commit({ buildManifest })`, `planBuildManifest`, `formatBuildManifest`,
+`gitBlobSha1` and `BUILD_MANIFEST_BUILDER`). None is needed for an externally built script, a tree with no
+`tsconfig.json`, or a draft with no TypeScript source outside the output folder (`isTypeScriptSource`: `ts tsx mts
+cts`, never a `*.d.*` declaration). The layout helpers (`buildOutputFolder`, `buildManifestPath`, `isBuildSource`,
+`isTypeScriptSource`, `hasNoTsconfig`, `parseJsonc`) stay exported for reading. A refused publish is
+`PublishBuildStaleError` (`BUILD_STALE`), `PublishBuildManifestMissingError` (`BUILD_MANIFEST_MISSING`) or
+`PublishBuildManifestInvalidError` (`BUILD_MANIFEST_INVALID`), each with `withheld` (the stale paths, or the
+manifest's path).

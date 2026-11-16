@@ -113,11 +113,11 @@ function layout(entry) {
 function serverBuild(entry, root) {
   const draft = git(entry.bare, "rev-parse", "refs/heads/draft");
   if (entry.externallyBuilt) {
-    return { status: "SKIPPED_EXTERNALLY_BUILT", commit: draft, vouched: false };
+    return { status: "SKIPPED_EXTERNALLY_BUILT", commit: draft, vouched: true };
   }
   const plan = layout(entry);
   if (!plan.needsBuild) {
-    return { status: "NOTHING_TO_COMPILE", commit: draft, vouched: false };
+    return { status: "NOTHING_TO_COMPILE", commit: draft, vouched: true };
   }
   const work = fs.mkdtempSync(path.join(root, "build-"));
   try {
@@ -507,7 +507,17 @@ function createStub() {
                   diagnosticsOmitted: 0,
                 },
               ],
-              bluestepBuild: [{ commit: built.commit, vouched: built.vouched }],
+              // The platform's shape (web CU-1k5g91bq6u2): `built` says a build commit was made.
+              bluestepBuild: [
+                {
+                  script: input.topId,
+                  draftSha: input.expectedDraftSha ?? null,
+                  commit: built.commit,
+                  built: built.commit !== input.expectedDraftSha,
+                  vouched: built.vouched,
+                  status: built.status,
+                },
+              ],
             },
           })
         );

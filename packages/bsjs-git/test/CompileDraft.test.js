@@ -188,6 +188,7 @@ test("a draft with nothing to build (no tsconfig, or no TypeScript source) makes
   const result = await repo.compileDraft();
   assert.strictEqual(result.compile.status, "NOTHING_TO_COMPILE");
   assert.strictEqual(result.buildCommitSha, null);
+  assert.strictEqual(result.vouched, true, "nothing to build needs no manifest");
   await repo.publish();
 });
 
@@ -196,6 +197,11 @@ test("parsers: an unknown status is UNKNOWN with the raw text; a build commit th
   assert.deepStrictEqual([outcome.status, outcome.rawStatus, outcome.errors], ["UNKNOWN", "NEW_THING", 2]);
   assert.deepStrictEqual(lib.parseDraftBuildCommit({ commit: "abc", vouched: true }), { commit: null, vouched: true });
   assert.deepStrictEqual(lib.parseDraftBuildCommit(undefined), { commit: null, vouched: false });
+  const sha256 = "a".repeat(64);
+  assert.deepStrictEqual(lib.parseDraftBuildCommit({ commit: sha256, built: true, vouched: false }), {
+    commit: sha256,
+    vouched: false,
+  });
   assert.strictEqual(lib.compileAllowsPublish("COMPILED"), true);
   assert.strictEqual(lib.compileAllowsPublish("GATE_TRIPPED"), false);
 });

@@ -131,8 +131,9 @@ export interface DraftBuildCommit {
    */
   commit: string | null;
   /**
-   * Whether the platform vouched for the build: every project's output written, no blocking error. Only then is the
-   * build manifest in the commit, and only then can the draft publish.
+   * Whether a publish's build check passes at `commit`: the platform vouched for the build (every project's output
+   * written, no blocking error, so the manifest is in the commit), or the draft needs none (externally built, nothing
+   * to build).
    * @lastreviewed null
    */
   vouched: boolean;
@@ -295,11 +296,12 @@ export function parseDraftCompileOutcome(raw: unknown): DraftCompileOutcome {
   return outcome;
 }
 
-const SHA = /^[0-9a-f]{40}$/;
+const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /**
- * Reads one element of `extensions.bluestepBuild`. A commit that is not a full sha reads as `null`; `vouched` is true
- * only when the platform says so.
+ * Reads one element of `extensions.bluestepBuild` (`{ script, draftSha, commit, built, vouched, status }`; only
+ * `commit` and `vouched` are read: a build commit was made exactly when `commit` differs from the pushed sha). A commit
+ * that is not a full sha (40 or 64 lowercase hex) reads as `null`; `vouched` is true only when the platform says so.
  * @param raw The element as parsed JSON
  * @lastreviewed null
  */

@@ -47,8 +47,11 @@ Target release: **1.0.0** (breaking).
   `parseDraftCompileOutcome`, `parseDraftBuildCommit`, `compileAllowsPublish`, `KNOWN_DRAFT_COMPILE_STATUSES`,
   `PUBLISHABLE_COMPILE_STATUSES`, and the types `DraftBuildResult`, `CompileDraftOptions`, `DraftCompileOutcome`,
   `DraftCompileStatus`, `DraftBuildCommit`, `CompileDiagnostic`, `GateReport`, `GateProblem`, `RetryPolicy`. Its
-  `typescript` devDependency moves to 7.0.2. The manifest helpers and `commit({ buildManifest })` stay for tools that
-  build outside the platform; nothing here uses them.
+  `typescript` devDependency moves to 7.0.2. **BREAKING there:** the client manifest writer is
+  removed (`commit({ buildManifest })` / `CommitOptions.buildManifest`, `planBuildManifest`, `formatBuildManifest`,
+  `gitBlobSha1`, `BUILD_MANIFEST_BUILDER`, `BuildManifestPlan`): the platform writes the manifest. The layout readers
+  (`buildOutputFolder`, `buildManifestPath`, `isBuildSource`, `isTypeScriptSource`, `hasNoTsconfig`, `parseJsonc`)
+  stay. `bluestepBuild` shas may be 40 or 64 hex.
 
 ### Added
 
