@@ -9,6 +9,8 @@ export {
   DRAFT_BRANCH,
   PUBLISHED_BRANCH,
   decodeText,
+  type BuildFastForward,
+  type BuildFastForwardState,
   type CloneOptions,
   type CommitOptions,
   type CommitInfo,
@@ -43,6 +45,7 @@ export {
   type ScriptRef,
 } from "./scriptKey";
 export {
+  BUILD_COMMIT_SUBJECT,
   COMPILE_RETRY,
   KNOWN_DRAFT_COMPILE_STATUSES,
   PUBLISHABLE_COMPILE_STATUSES,
@@ -64,6 +67,8 @@ export {
   BUILD_MANIFEST_NAME,
   buildManifestPath,
   buildOutputFolder,
+  isBuildOutputPath,
+  type BuildProjectConfig,
   hasNoTsconfig,
   isBuildSource,
   isTypeScriptSource,

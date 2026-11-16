@@ -576,6 +576,9 @@ test("executePush (plain): the result carries commitSha, no publishedSha, and no
     "build",
     "buildCommitSha",
     "buildError",
+    "buildErrorKind",
+    "buildFastForward",
+    "buildIncomplete",
     "buildVouched",
     "commitSha",
     "keptPlatformOnly",
@@ -931,6 +934,9 @@ test("deploy returns a result per target: a target failing on identity does not 
     buildCommitSha: null,
     buildVouched: null,
     buildError: null,
+    buildErrorKind: null,
+    buildIncomplete: null,
+    buildFastForward: null,
     snapshotRefused: null,
     typeCheckDiagnostics: null,
     typeCheckErrors: [],
@@ -1182,12 +1188,14 @@ async function builtScenario(id, version, entryOptions = {}) {
   const prompt = recordingPrompt();
   const errors = [];
   prompt.error = (m) => errors.push(m);
+  const infos = [];
+  prompt.info = (m) => infos.push(m);
   const rootPath = path.join(tmp, `ws${++n}`, "U100001", "MyScript");
   const draftPath = path.join(rootPath, "draft");
   const ctx = pushContext(prompt, name, version);
   await pullDraft({ ctx, script: { classid: "654015", seqnum: id }, baseUrl, draftPath });
   fs.writeFileSync(path.join(draftPath, "scripts", "app.ts"), "export const v = 2;\n");
-  return { name, ctx, rootPath, draftPath, prompt, errors, entry: stub.repos.get(name) };
+  return { name, ctx, rootPath, draftPath, prompt, errors, infos, entry: stub.repos.get(name) };
 }
 
 test("executePush on a building server: every push builds; a snapshot publishes the build commit; typeCheckErrors are the build's own-source diagnostics", async () => {
@@ -1227,7 +1235,7 @@ test("executePush on a building server: every push builds; a snapshot publishes 
   assert.strictEqual(plain.buildVouched, true);
   assert.ok(plain.buildCommitSha && plain.buildCommitSha !== plain.commitSha);
   assert.strictEqual(plain.publishedSha, null, "a plain push builds but does not publish");
-  assert.strictEqual(plain.typeCheckDiagnostics, 1);
+  assert.strictEqual(plain.typeCheckDiagnostics, 2, "the platform's whole count, the .d.ts error included");
   assert.deepStrictEqual(plain.typeCheckErrors, [
     { file: "scripts/app.ts", line: 1, column: 14, code: 2322, message: "Type mismatch.", severity: "WARNING" },
   ]);
@@ -1327,7 +1335,178 @@ test("executePush, a build request that fails after the push: buildError, nothin
   assert.strictEqual(result.pushed, true);
   assert.ok(/You may not edit this script/.test(result.buildError));
   assert.deepStrictEqual([result.build, result.buildVouched, result.publishedSha], [null, null, null]);
-  assert.ok(s.errors.some((m) => /build of it failed/.test(m)));
+  assert.strictEqual(result.buildErrorKind, "request-failed");
+  assert.ok(s.errors.some((m) => /build request failed/.test(m)));
+  assert.ok(!s.infos.some((m) => /complete/i.test(m)));
+});
+
+test("executePush, a build status that does not publish (BUSY after the retries, GATE_TRIPPED, NOT_PERMITTED, UNKNOWN): buildIncomplete, said in words, never complete", async () => {
+  for (const [id, queue, status, raw, words] of [
+    ["9411", ["BUSY", "BUSY", "BUSY", "BUSY"], "BUSY", "BUSY", /busy/],
+    ["9412", ["GATE_TRIPPED"], "GATE_TRIPPED", "GATE_TRIPPED", /save gate/],
+    ["9413", ["NOT_PERMITTED"], "NOT_PERMITTED", "NOT_PERMITTED", /did not permit/],
+    ["9414", ["BRAND_NEW"], "UNKNOWN", "BRAND_NEW", /does not know \(BRAND_NEW\)/],
+  ]) {
+    for (const snapshot of [false, true]) {
+      const s = await builtScenario(`${id}${snapshot ? 1 : 0}`, "dev", { buildQueue: [...queue] });
+      const result = await executePush({
+        ctx: s.ctx,
+        targetUrl: `${baseUrl}files/100001/`,
+        rootPath: s.rootPath,
+        snapshot,
+        author: AUTHOR,
+        sleep: async () => {},
+      });
+      assert.strictEqual(result.pushed, true);
+      assert.deepStrictEqual([result.buildIncomplete.status, result.buildIncomplete.rawStatus], [status, raw], id);
+      assert.ok(words.test(result.buildIncomplete.description), result.buildIncomplete.description);
+      assert.strictEqual(result.publishedSha, null);
+      assert.ok(
+        s.errors.some((m) => words.test(m)),
+        `${id}: the reason is said`
+      );
+      assert.ok(!s.infos.some((m) => /complete/i.test(m)), `${id}: no complete over it`);
+    }
+  }
+});
+
+test("deploy: a snapshot target whose build did not publish is a failure, never Deploy complete", async () => {
+  const prompt = recordingPrompt();
+  const errors = [];
+  const infos = [];
+  prompt.error = (m) => errors.push(m);
+  prompt.info = (m) => infos.push(m);
+  const config = JSON.stringify({
+    sourceRootPath: tmp,
+    targets: [
+      { url: "https://a.example.test/files/1/", snapshot: true },
+      { url: "https://c.example.test/files/3/", snapshot: true },
+    ],
+  });
+  const service = new ScriptService({
+    ...fakeCtx(prompt),
+    fs: { exists: async () => true, readFile: async () => Buffer.from(config) },
+  });
+  service.push = async (opts) => ({
+    pushed: true,
+    commitSha: "a".repeat(40),
+    publishedSha: null,
+    publishError: null,
+    publishRefusal: null,
+    switchedToGit: false,
+    buildIncomplete: opts.targetUrl.includes("//a.")
+      ? {
+          status: "GATE_TRIPPED",
+          rawStatus: "GATE_TRIPPED",
+          description: "the platform's save gate held back the new output",
+        }
+      : null,
+    typeCheckDiagnostics: 0,
+    typeCheckErrors: [],
+  });
+  const results = await service.deploy({ configPath: path.join(tmp, "deploy.json") });
+  assert.strictEqual(results[0].buildIncomplete.status, "GATE_TRIPPED");
+  assert.ok(!infos.some((m) => /Deploy complete/.test(m)));
+  assert.ok(errors.some((m) => m.includes("2 of 2") && m.includes("save gate") && m.includes("nothing was published")));
+});
+
+test("a build whose answer was lost: the next push takes the build in as a fast-forward, with no overwrite prompt, and pushes on top of it", async () => {
+  const s = await builtScenario("9421", "dev", { buildQueue: ["BUILD_THEN_NETWORK", "NETWORK"] });
+  const first = await executePush({
+    ctx: s.ctx,
+    targetUrl: `${baseUrl}files/100001/`,
+    rootPath: s.rootPath,
+    snapshot: false,
+    author: AUTHOR,
+    sleep: async () => {},
+  });
+  assert.strictEqual(first.buildErrorKind, "request-failed");
+  const build = stub.git(s.entry.bare, "rev-parse", "draft");
+  assert.notStrictEqual(build, first.commitSha, "the platform built it anyway");
+
+  fs.writeFileSync(path.join(s.draftPath, "scripts", "app.ts"), "export const v = 3;\n");
+  const asked = s.prompt.calls.length;
+  const second = await executePush({
+    ctx: s.ctx,
+    targetUrl: `${baseUrl}files/100001/`,
+    rootPath: s.rootPath,
+    snapshot: false,
+    author: AUTHOR,
+  });
+  assert.strictEqual(s.prompt.calls.length, asked, "nothing was asked: the build is not a platform edit");
+  assert.strictEqual(stub.git(s.entry.bare, "rev-parse", `${second.commitSha}^`), build, "pushed on top of the build");
+  assert.strictEqual(second.buildFastForward.state, "fast-forwarded");
+  assert.ok(
+    stub
+      .git(s.entry.bare, "ls-tree", "-r", "--name-only", second.commitSha)
+      .split("\n")
+      .includes(".build/scripts/app.js"),
+    "the output was not deleted"
+  );
+});
+
+test("a real platform edit after a push is still an edit: it asks, even with a build's subject", async () => {
+  const s = await builtScenario("9422", "dev");
+  await executePush({
+    ctx: s.ctx,
+    targetUrl: `${baseUrl}files/100001/`,
+    rootPath: s.rootPath,
+    snapshot: false,
+    author: AUTHOR,
+  });
+  const work = fs.mkdtempSync(path.join(tmp, "edit-"));
+  stub.git(tmp, "clone", "-q", "-b", "draft", s.entry.bare, work);
+  fs.writeFileSync(path.join(work, "scripts", "app.ts"), "export const v = 'platform';\n");
+  stub.git(work, "-c", "user.name=P", "-c", "user.email=p@x", "commit", "-q", "-am", "Build draft");
+  stub.git(work, "push", "-q", s.entry.bare, "draft");
+  fs.writeFileSync(path.join(s.draftPath, "scripts", "app.ts"), "export const v = 'mine';\n");
+  await rejects(
+    executePush({
+      ctx: s.ctx,
+      targetUrl: `${baseUrl}files/100001/`,
+      rootPath: s.rootPath,
+      snapshot: false,
+      author: AUTHOR,
+    }),
+    (e) => assert.ok(e instanceof Err.OverwriteDeclinedError)
+  );
+  assert.ok(s.prompt.calls.some((c) => c.message.includes("scripts/app.ts")));
+});
+
+test("a stale ignored output in the way: the build is reported blocked with the path, the folder is untouched, and the next push stops with the same paths", async () => {
+  const s = await builtScenario("9423", "dev");
+  fs.writeFileSync(path.join(s.draftPath, ".gitignore"), ".build/\n");
+  fs.mkdirSync(path.join(s.draftPath, ".build", "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(s.draftPath, ".build", "scripts", "app.js"), "// local tsc\n");
+  const result = await executePush({
+    ctx: s.ctx,
+    targetUrl: `${baseUrl}files/100001/`,
+    rootPath: s.rootPath,
+    snapshot: true,
+    author: AUTHOR,
+  });
+  assert.strictEqual(result.buildFastForward.state, "blocked");
+  assert.deepStrictEqual(result.buildFastForward.blockedPaths, [".build/scripts/app.js"]);
+  assert.strictEqual(result.publishedSha, null, "nothing was published");
+  assert.ok(s.errors.some((m) => m.includes(".build/scripts/app.js")));
+  assert.ok(!s.infos.some((m) => /complete/i.test(m)));
+  assert.strictEqual(fs.readFileSync(path.join(s.draftPath, ".build", "scripts", "app.js"), "utf8"), "// local tsc\n");
+
+  await rejects(
+    executePush({
+      ctx: s.ctx,
+      targetUrl: `${baseUrl}files/100001/`,
+      rootPath: s.rootPath,
+      snapshot: false,
+      author: AUTHOR,
+    }),
+    (e) => {
+      assert.ok(e instanceof bsjsGit.GitBuildFastForwardBlockedError);
+      assert.deepStrictEqual(e.paths, [".build/scripts/app.js"]);
+    }
+  );
+  const before = stub.git(s.entry.bare, "rev-parse", "draft");
+  assert.strictEqual(before, result.buildCommitSha, "nothing more was pushed");
 });
 
 (async () => {

@@ -117,13 +117,16 @@ given). Read `pushed` first: `false` means nothing was pushed.
 | `route` | Which route ran: `{ mode: "server-build" \| "push-only", reason, serverVersion, required }`, `reason` one of `dev`, `at-or-above-floor`, `below-floor`, `unknown`, `floor-unset`. `null` when the push stopped before asking |
 | `snapshotRefused` | Set when a snapshot was asked for on a server that does not build git drafts: `{ reason: "too-old" \| "unknown" \| "floor-unset", serverVersion, required }`. The draft was pushed; nothing was built or published |
 | `build` | The platform's compile of the pushed draft (`compileDraft`): `status` (`COMPILED`, `GATE_TRIPPED`, `EMIT_WITHHELD`, `NOTHING_TO_COMPILE`, `SKIPPED_EXTERNALLY_BUILT`, …, or `UNKNOWN` with `rawStatus`), `errors` / `warnings`, `diagnostics` (+ `diagnosticsOmitted`), `gate`. `null` when no build ran or the request failed |
-| `buildCommitSha` | The platform's build commit (output, and the manifest when it vouched); the folder was fast-forwarded to it. `null` when it made none (already built, nothing to build) |
+| `buildCommitSha` | The platform's build commit (output, and the manifest when it vouched); the folder was moved to it unless `buildFastForward` says otherwise. `null` when it made none (already built, nothing to build) |
+| `buildFastForward` | How the folder was moved to the build: `{ state, blockedPaths, error }`, `state` `fast-forwarded`, `unchanged`, `blocked` (local files the build changes match neither side, listed; nothing was changed, nothing published) or `failed`. `null` when no build answer came |
+| `buildIncomplete` | The build ended in a status after which the draft does not publish (`BUSY` / `INPUT_INCOMPLETE` once retries ran out, `COMPILER_UNAVAILABLE`, `NOT_PERMITTED`, `WRITE_FAILED`, `OUTPUT_UPLOAD`, `SKIPPED_GIT_MANAGED`, `GATE_TRIPPED`, `EMIT_WITHHELD`, `UNKNOWN`): `{ status, rawStatus, description }`. `null` otherwise |
 | `buildVouched` | `true`: the build is clean and its manifest committed, or the draft needs none (externally built, nothing to build). `false`: unclean, output committed without a manifest, so a publish is refused until it builds cleanly. `null`: no build ran |
-| `buildError` | Why the build request failed after a successful push; otherwise `null` |
+| `buildError` / `buildErrorKind` | Why no build answer came after a successful push, and whether a build was `not-requested` (the platform's draft was no longer the pushed commit) or the `request-failed` (it may have run); otherwise `null` |
 | `publishedSha` | The commit the platform published on a snapshot push (the build commit); `null` on a plain push, when nothing was published, or on a failed publish. A caller that asked for a snapshot treats `null` as a failure |
 | `publishError` / `publishRefusal` | Why the platform refused or failed the publish (the draft stays pushed), and the structured `{ reason, withheld }` (`BUILD_STALE`, `BUILD_MANIFEST_MISSING`, `DRAFT_MOVED`, `ENTRYPOINT_MISSING`, …) |
 | `switchedToGit` | This push switched a WebDAV script to git, which cannot be undone |
-| `typeCheckDiagnostics` / `typeCheckErrors` | The build's diagnostics in the script's own sources (never a `.d.ts`): `{ file, line, column, code, message, severity }`, a type-checker finding being a `WARNING`. `null` / empty when no build ran |
+| `typeCheckDiagnostics` | The platform build's whole count of `ERROR` and `WARNING` diagnostics; `null` when no build ran |
+| `typeCheckErrors` | Those in the script's own sources (never a `.d.ts`), as listed by the platform, which lists at most 20: `{ file, line, column, code, message, severity }`, a type-checker finding being a `WARNING`. Empty when none or no build ran |
 | `liveVerified` | `true`: the platform's `master` is at `publishedSha`. `false`: it is at another commit. `null`: not proven either way |
 | `liveMismatches` | Draft-relative paths that differ between `publishedSha` and `master` when `liveVerified` is `false` |
 | `keptPlatformOnly` | Platform-only files kept because deleting them was not confirmed (they are part of the pushed commit) |
@@ -136,12 +139,17 @@ Nothing compiles in core or in `bsjsGit`; neither package has a runtime `typescr
 2. `compileDraft` (GraphQL, `bsjsGit.ScriptRepo.compileDraft`) asks the platform to build the draft branch at the pushed
    commit (`expectedDraftSha`; a draft that moved meanwhile is refused, `DraftBuildMovedError`). It commits the output,
    plus the build manifest when the build is clean, as one build commit authored by the pushing user, and the folder is
-   fast-forwarded to it. `BUSY` is retried 3 times 5 s apart, `INPUT_INCOMPLETE` 3 times 2 s apart,
+   fast-forwarded to it: the working tree and index first, for exactly the paths the build changed, then the branch. A
+   local file in the way (an edit, or an untracked or ignored copy matching neither side) leaves the folder as it was
+   and is reported (`buildFastForward`); a later push stops on it (`GitBuildFastForwardBlockedError`, with the paths)
+   until it is out of the way. A build whose answer was lost is taken in by the next push, not asked about. `BUSY` is retried 3 times 5 s apart, `INPUT_INCOMPLETE` 3 times 2 s apart,
    `COMPILER_UNAVAILABLE` and a failed request once. Every push builds, plain ones too.
 3. A snapshot push whose build status publishes (`COMPILED`, `NOTHING_TO_COMPILE`, `SKIPPED_EXTERNALLY_BUILT`) then
    publishes the build commit and reads `master` back. An unclean build is refused by the platform's manifest check
    (`publishRefusal.reason` `BUILD_MANIFEST_MISSING` or `BUILD_STALE`); a tripped gate or withheld emit publishes
-   nothing. Once the push succeeded, nothing throws: a failed build is `buildError`, a failed publish `publishError`.
+   nothing. Once the push succeeded, nothing throws: a failed build is `buildError`, a status that does not publish
+   `buildIncomplete`, a failed publish `publishError`, and none of them is reported complete. A deploy counts a
+   snapshot target that published nothing as failed.
 
 Before pushing, a push asks the org's server for its version (`/appinfo/version`) and picks the route; it never refuses
 a push for the version. A `dev` or `latest` server, or one at or above `MIN_SERVER_VERSION`, builds as above. Any other

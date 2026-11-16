@@ -95,10 +95,18 @@ the root `.gitignore` do). Rules that bind changes here:
 - **`MIN_SERVER_VERSION` (`data/ServerVersion.ts`) routes every push**: a `dev`/`latest` server or one at or above it
   builds; any other (below it, unreadable version, floor unset) gets the git push alone, and a snapshot there is a
   result (`PushResult.snapshotRefused`), not an error. It stays `null` until the first web tag with the git build
-  exists; 1.0.0 cannot release while it is `null`.
+  exists; 1.0.0 cannot release while it is `null` (`test/ServerVersionFloor.test.js` fails then).
+- **The fast-forward to the build commit never loses a local edit** (`ScriptRepo.fastForwardToBuild`): it updates the
+  working tree and index for exactly the paths the build changed, and moves the draft ref only after that succeeded.
+  A local copy matching neither side (an edit, an untracked or ignored file) stops it with nothing changed
+  (`buildFastForward.state` `blocked`, the paths listed); it is never forced over. A build whose answer was lost is
+  taken in by the next push when the platform's draft is exactly the build of the local head
+  (`ScriptRepo.isBuildCommitOf`: the only parent, the build's subject, output paths only), never a platform edit.
 - `PushResult.typeCheckErrors` are the platform build's diagnostics in the script's own sources (no `.d.ts`, nothing
-  outside the tree; `ServerCompile.typeCheckErrorsOf`). A build that fails after a successful push is `buildError`, a
-  failed publish `publishError`: once the push succeeded, nothing throws.
+  outside the tree; `ServerCompile.typeCheckErrorsOf`), `typeCheckDiagnostics` the platform's whole count. A build
+  that fails after a successful push is `buildError` (`buildErrorKind`), one that ends in a status that does not
+  publish `buildIncomplete`, a failed publish `publishError`: once the push succeeded, nothing throws, and none of
+  these reports "complete". A deploy target asked for a snapshot that published nothing is a failure.
 - The git working tree uses `ScriptContext.gitFs` (Node `fs`), not the `FileSystem` provider; both address the same disk.
 
 ## The bsjs-git package
@@ -150,12 +158,12 @@ sources over git and never emits or type-checks. Do not move it back to `depende
 
 ## Documentation, in the same change
 
-| File                    | Update when                                             |
-| ----------------------- | ------------------------------------------------------- |
-| `README.md`             | public API, install or usage changes                    |
+| File | Update when |
+|------|-------------|
+| `README.md` | public API, install or usage changes |
 | `AGENTS.md` (this file) | architecture, subsystem, conventions or process changes |
-| `test/README.md`        | how tests are written or run changes                    |
-| `CHANGELOG.md`          | any user-visible change, fix, or breaking change        |
+| `test/README.md` | how tests are written or run changes |
+| `CHANGELOG.md` | any user-visible change, fix, or breaking change |
 
 `CLAUDE.md` is a one-line bridge to this file; do not put rules there. Outdated documentation is worse
 than none — if uncertain, leave a `//HUMAN-REVIEW-NEEDED` note.
@@ -167,7 +175,7 @@ with the review date. Modifying an already-reviewed block resets its tag to `nul
 not cover the new text.
 
 `test/JsdocLastReviewed.test.js` enforces this as a **ratchet, and only half of it**: it fails when a
-file gains net-new _untagged_ blocks beyond the tolerated count in
+file gains net-new *untagged* blocks beyond the tolerated count in
 `test/jsdoc-lastreviewed.baseline.json`. It **cannot catch a modified block** — a rewritten block
 keeps its old count and its stale review date, so resetting that date is reviewer diligence, not
 something CI verifies. Moving an untagged grandfathered block between files reads as new in the

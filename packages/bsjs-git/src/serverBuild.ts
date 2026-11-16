@@ -8,6 +8,12 @@
  */
 
 /**
+ * The subject of the platform's build commit (web `UserCodeScriptHelper.BUILD_MESSAGE`).
+ * @lastreviewed null
+ */
+export const BUILD_COMMIT_SUBJECT = "Build draft";
+
+/**
  * The statuses the platform reports for a compile (`extensions.bluestepCompile[0].status`).
  * @lastreviewed null
  */

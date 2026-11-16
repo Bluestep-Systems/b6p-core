@@ -18,7 +18,9 @@ import {
   PublishRefusedError,
 } from "./errors";
 import { CsrfFetch, type ScriptAuth } from "./csrf";
+import { isBuildOutputPath, type BuildProjectConfig } from "./buildManifest";
 import {
+  BUILD_COMMIT_SUBJECT,
   COMPILE_RETRY,
   parseDraftBuildCommit,
   parseDraftCompileOutcome,
@@ -251,7 +253,42 @@ export interface DraftBuildResult {
    * @lastreviewed null
    */
   readonly head: string;
+  /**
+   * How the local draft was moved to `buildCommitSha` ({@link ScriptRepo.fastForwardToBuild}); `unchanged` when there
+   * is no build commit.
+   * @lastreviewed null
+   */
+  readonly fastForward: BuildFastForward;
 }
+
+/**
+ * How {@link ScriptRepo.fastForwardToBuild} went:
+ *  - `fast-forwarded`: the working tree, index and local draft branch are at the build commit.
+ *  - `unchanged`: the local draft was there already, or there was nothing to move to.
+ *  - `blocked`: local files the build changes are in the way (`blockedPaths`); nothing was changed.
+ *  - `failed`: the move could not be done (`error`); the local draft branch was not moved.
+ * @lastreviewed null
+ */
+export type BuildFastForwardState = "fast-forwarded" | "unchanged" | "blocked" | "failed";
+
+/**
+ * What {@link ScriptRepo.fastForwardToBuild} did.
+ * @lastreviewed null
+ */
+export interface BuildFastForward {
+  /** See {@link BuildFastForwardState}. @lastreviewed null */
+  readonly state: BuildFastForwardState;
+  /**
+   * When `blocked`: the paths the build changes whose local copy matches neither the local draft's commit nor the
+   * build (a local edit, or an untracked or ignored file), sorted. Empty otherwise.
+   * @lastreviewed null
+   */
+  readonly blockedPaths: readonly string[];
+  /** When `failed`: why. `null` otherwise. @lastreviewed null */
+  readonly error: string | null;
+}
+
+const UNCHANGED: BuildFastForward = { state: "unchanged", blockedPaths: [], error: null };
 
 /**
  * Options of {@link ScriptRepo.compileDraft}.
@@ -829,23 +866,155 @@ export class ScriptRepo {
       }
       const build = parseDraftBuildCommit(firstOf(body.extensions?.bluestepBuild));
       if (!build.commit || build.commit === local) {
-        return { compile, buildCommitSha: null, vouched: build.vouched, head: local };
+        return { compile, buildCommitSha: null, vouched: build.vouched, head: local, fastForward: UNCHANGED };
       }
-      await this.fetch();
-      if (!(await this.isAncestor(local, build.commit).catch(() => false))) {
-        throw new DraftBuildFailedError(`the platform's build commit ${build.commit} does not follow the pushed draft`);
+      // The build exists on the platform from here on: a failure to take it in is not a build failure.
+      let fastForward: BuildFastForward;
+      try {
+        await this.fetch();
+        fastForward = (await this.isAncestor(local, build.commit))
+          ? await this.fastForwardToBuild(build.commit)
+          : {
+              state: "failed",
+              blockedPaths: [],
+              error: `the platform's build commit ${build.commit} does not follow the pushed commit ${local}`,
+            };
+      } catch (error) {
+        fastForward = {
+          state: "failed",
+          blockedPaths: [],
+          error: error instanceof Error ? error.message : String(error),
+        };
       }
-      // Exactly to the build commit, not to whatever the draft is now: a push landing after the build is not taken in.
+      const head = fastForward.state === "fast-forwarded" ? build.commit : local;
+      return { compile, buildCommitSha: build.commit, vouched: build.vouched, head, fastForward };
+    }
+  }
+
+  /**
+   * Moves the local draft to `buildSha`, the platform's build commit of it (output and manifest only), without losing a
+   * local edit. The working tree and index are brought to the build first, for exactly the paths the build changes
+   * relative to the local draft's commit, and the draft branch is moved only once that succeeded. A path whose local
+   * copy matches neither side (a local edit, or an untracked or ignored file) stops it before anything is touched
+   * (`blocked`, with the paths); a local copy that already matches the build is fine. Other local edits are kept.
+   * Exactly to `buildSha`, not to whatever the draft is now: a push landing after the build is not taken in.
+   * @param buildSha A commit that has the local draft as an ancestor, already fetched
+   * @lastreviewed null
+   */
+  async fastForwardToBuild(buildSha: string): Promise<BuildFastForward> {
+    const local = await this.#resolve(DRAFT_BRANCH);
+    if (local === buildSha) {
+      return UNCHANGED;
+    }
+    try {
+      if (!(await this.isAncestor(local, buildSha))) {
+        return { state: "failed", blockedPaths: [], error: `${buildSha} does not follow the local draft ${local}` };
+      }
+      const changes = await this.diff(local, buildSha);
+      const blocked: string[] = [];
+      const current = new Map<string, string | undefined>();
+      for (const change of changes) {
+        let oid: string | undefined;
+        try {
+          oid = await this.#workingOid(change.path);
+        } catch {
+          blocked.push(change.path);
+          continue;
+        }
+        current.set(change.path, oid);
+        if (oid !== change.oldOid && oid !== change.newOid) {
+          blocked.push(change.path);
+        }
+      }
+      if (blocked.length > 0) {
+        return { state: "blocked", blockedPaths: blocked.sort(), error: null };
+      }
+      for (const change of changes) {
+        const filepath = posixClean(change.path);
+        if (change.newOid) {
+          if (current.get(change.path) !== change.newOid) {
+            const { blob } = await git.readBlob({ fs: this.#fs, dir: this.dir, oid: change.newOid });
+            await this.writeFile(filepath, blob);
+          }
+          // Straight into the index, whatever .gitignore says: the build committed it.
+          await git.updateIndex({ fs: this.#fs, dir: this.dir, filepath, add: true });
+        } else {
+          if (current.get(change.path) !== undefined) {
+            await this.#fs.promises.unlink(`${this.dir}/${filepath}`);
+          }
+          await git.updateIndex({ fs: this.#fs, dir: this.dir, filepath, remove: true });
+        }
+      }
       await git.writeRef({
         fs: this.#fs,
         dir: this.dir,
         ref: `refs/heads/${DRAFT_BRANCH}`,
-        value: build.commit,
+        value: buildSha,
         force: true,
       });
-      await git.checkout({ fs: this.#fs, dir: this.dir, ref: DRAFT_BRANCH });
-      return { compile, buildCommitSha: build.commit, vouched: build.vouched, head: build.commit };
+      return { state: "fast-forwarded", blockedPaths: [], error: null };
+    } catch (error) {
+      return { state: "failed", blockedPaths: [], error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  /**
+   * Whether `candidate` is the platform's build commit of exactly `base`: its only parent is `base`, its subject is
+   * the build's ({@link BUILD_COMMIT_SUBJECT}), and every path it changes is build output or a manifest
+   * ({@link isBuildOutputPath}, by the build projects at `base`). An edit made on the platform fails at least one of
+   * these, so it is never taken for a build. Both commits must be fetched.
+   * @lastreviewed null
+   */
+  async isBuildCommitOf(candidate: string, base: string): Promise<boolean> {
+    try {
+      const [oid, parent] = await Promise.all([this.#resolve(candidate), this.#resolve(base)]);
+      const { commit } = await git.readCommit({ fs: this.#fs, dir: this.dir, oid });
+      if (commit.parent.length !== 1 || commit.parent[0] !== parent) {
+        return false;
+      }
+      if (commit.message.split("\n")[0].trim() !== BUILD_COMMIT_SUBJECT) {
+        return false;
+      }
+      const projects: BuildProjectConfig[] = [];
+      for (const file of await this.listTree(parent)) {
+        const name = file.path.slice(file.path.lastIndexOf("/") + 1);
+        if (name === "tsconfig.json" || name === "jsconfig.json") {
+          const dir = file.path.slice(0, Math.max(0, file.path.lastIndexOf("/")));
+          if (name === "jsconfig.json" && projects.some((p) => p.dir === dir)) {
+            continue;
+          }
+          const text = await this.readText(parent, file.path);
+          const at = projects.findIndex((p) => p.dir === dir);
+          if (at >= 0) {
+            projects[at] = { dir, text };
+          } else {
+            projects.push({ dir, text });
+          }
+        }
+      }
+      if (projects.length === 0) {
+        // Nothing there is built, so no commit on it is a build.
+        return false;
+      }
+      const changes = await this.diff(parent, oid);
+      return changes.length > 0 && changes.every((c) => isBuildOutputPath(c.path, projects));
+    } catch {
+      return false;
+    }
+  }
+
+  /** The git blob id of a working-tree file, `undefined` when there is none. */
+  async #workingOid(path: string): Promise<string | undefined> {
+    let bytes: Uint8Array;
+    try {
+      bytes = await this.#fs.promises.readFile(`${this.dir}/${posixClean(path)}`);
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") {
+        return undefined;
+      }
+      throw error;
+    }
+    return (await git.hashBlob({ object: bytes })).oid;
   }
 
   async #buildRequest(expectedDraftSha: string): Promise<GraphQlBody> {

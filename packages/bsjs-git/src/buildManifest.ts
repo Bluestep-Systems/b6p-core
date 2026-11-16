@@ -180,3 +180,42 @@ export function hasNoTsconfig(paths: Iterable<string>): boolean {
   }
   return true;
 }
+
+/**
+ * One build project of a tree: the folder its `tsconfig.json` (or `jsconfig.json`) sits in (`""` at the root) and
+ * that file's text.
+ * @lastreviewed null
+ */
+export interface BuildProjectConfig {
+  readonly dir: string;
+  readonly text: string;
+}
+
+const EMITTED_IN_PLACE = /\.(?:[cm]?js|[cm]?js\.map|d\.[cm]?ts|d\.[cm]?ts\.map)$/i;
+
+/**
+ * Whether a path is something a build writes, never an author's source: under a project's output folder
+ * ({@link buildOutputFolder}, relative to the project's folder), the manifest, or, for a project with in-place output,
+ * an emitted file (`.js`, `.mjs`, `.cjs`, a declaration, or a map of one) under the project's folder. Used to tell the
+ * platform's build commit from an edit: a commit that changes any other path is not a build.
+ * @param path A tree path (`/`-separated)
+ * @param projects Every build project of the tree the build ran on
+ * @lastreviewed null
+ */
+export function isBuildOutputPath(path: string, projects: readonly BuildProjectConfig[]): boolean {
+  for (const project of projects) {
+    const base = project.dir === "" ? "" : `${project.dir}/`;
+    if (base !== "" && !path.startsWith(base)) {
+      continue;
+    }
+    const relative = path.slice(base.length);
+    const folder = buildOutputFolder(project.text);
+    if (relative === buildManifestPath(folder)) {
+      return true;
+    }
+    if (folder === "" ? EMITTED_IN_PLACE.test(relative) : relative.startsWith(`${folder}/`)) {
+      return true;
+    }
+  }
+  return false;
+}

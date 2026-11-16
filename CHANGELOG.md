@@ -34,7 +34,16 @@ Target release: **1.0.0** (breaking).
     `WARNING` diagnostics in the script's own sources (never a `.d.ts`, nothing outside the tree), and
     `TypeCheckError` gains `severity`. New exports `typeCheckErrorsOf`, `isOwnSourceDiagnostic`; `TypeCheckError` now
     comes from `script/ServerCompile`. A build that fails after the push is `buildError`; nothing throws once the push
-    succeeded. Deploy builds on each target.
+    succeeded. Deploy builds on each target. A build that ends in a status that does not publish is
+    `PushResult.buildIncomplete` (`{ status, rawStatus, description }`, `BuildIncomplete`, `describeBuildStatus`),
+    said in words, and no push reports itself complete over it; `buildErrorKind` tells a build `not-requested` from a
+    `request-failed` one. `typeCheckDiagnostics` is the platform's whole `ERROR` + `WARNING` count; `typeCheckErrors`
+    lists at most 20. A deploy target with `snapshot: true` that published nothing is a failure.
+  - **The folder is moved to the build commit without losing a local edit**: the working tree and index first, for
+    exactly the paths the build changed, then the branch. A local file in the way is `PushResult.buildFastForward`
+    (`state` `blocked`, `blockedPaths`), with nothing changed and nothing published, and a later push stops on it
+    (`GitBuildFastForwardBlockedError`). A build whose answer was lost is taken in by the next push as a
+    fast-forward instead of being asked about as a platform edit.
   - Removed: `ScriptTranspiler` (`TranspileOutcome`, `ProjectBuildReport`, `buildUncleanReasons`), `TsLibResolver`,
     `checkEmittedEntrypoint` / `EmittedEntrypointCheck` (the platform refuses a missing entrypoint,
     `ENTRYPOINT_MISSING`), the stale client bundle warning, `B6PProviders.typescriptLibDirs` and its `ScriptContext`
@@ -42,7 +51,9 @@ Target release: **1.0.0** (breaking).
     `pushCurrent` and `DeployConfig` (the platform reads the script's own flag). `DraftPushOptions.buildManifest` is
     replaced by `build` (and `sleep`); `DraftPushOutcome` gains `build` (`DraftBuildOutcome`).
 - **`@bluestep-systems/b6p-core-bsjs-git` 0.3.0**: `ScriptRepo.compileDraft()` asks the platform to build the pushed
-  draft and moves the local draft to the build commit (`{ compile, buildCommitSha, vouched, head }`), with the
+  draft and moves the local draft to the build commit (`{ compile, buildCommitSha, vouched, head, fastForward }`;
+  `fastForwardToBuild`, `isBuildCommitOf`, `isBuildOutputPath`, `BUILD_COMMIT_SUBJECT`, `GitBuildFastForwardBlockedError`,
+  the types `BuildFastForward`, `BuildFastForwardState`, `BuildProjectConfig`), with the
   `COMPILE_RETRY` policy, `DraftBuildFailedError` and `DraftBuildMovedError` (`DRAFT_MOVED`). New exports
   `parseDraftCompileOutcome`, `parseDraftBuildCommit`, `compileAllowsPublish`, `KNOWN_DRAFT_COMPILE_STATUSES`,
   `PUBLISHABLE_COMPILE_STATUSES`, and the types `DraftBuildResult`, `CompileDraftOptions`, `DraftCompileOutcome`,
@@ -135,7 +146,7 @@ Target release: **1.0.0** (breaking).
   ([b6p-cli#35](https://github.com/Bluestep-Systems/b6p-cli/issues/35), ClickUp 86bcn314g). The
   platform sends files last saved before about May 2026 with `W/"<ms>-<id>"`, which matched none of
   the ETag patterns, so `ScriptFile.download()` threw `Err.EtagParsingError` (`Could not parse
-upstairs etag`) and the pull ended there, before `declarations/` was refreshed. A weak numeric
+  upstairs etag`) and the pull ended there, before `declarations/` was refreshed. A weak numeric
   ETag is now handled like a strong one: it carries no content hash, so the integrity check is
   skipped (logged at debug), the file is written and its sync record kept. `getUpstairsHash()`
   already returned `null` for it and still does; audit and push read it as indeterminate, as before.

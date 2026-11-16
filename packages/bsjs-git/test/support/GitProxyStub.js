@@ -144,7 +144,8 @@ function serverBuild(entry, root) {
       fs.mkdirSync(path.dirname(path.join(work, plan.manifestPath)), { recursive: true });
       fs.writeFileSync(path.join(work, plan.manifestPath), JSON.stringify({ version: 1, builder: "stub", sources }));
     }
-    git(work, "add", "-A");
+    // The platform commits its output whatever .gitignore says.
+    git(work, "add", "-A", "-f");
     if (git(work, "status", "--porcelain") === "") {
       return { status: "COMPILED", commit: draft, vouched };
     }
@@ -453,6 +454,49 @@ function createStub() {
         state.buildInputs.push(input);
         entry.beforeBuild?.();
         const queued = entry.buildQueue?.shift();
+        const draft = git(entry.bare, "rev-parse", "refs/heads/draft");
+        // The platform's DRAFT_MOVED rule: the head must be the commit asked for, or this server's build of it (a
+        // repeat call after a build whose answer was lost).
+        const isBuildOf = () => {
+          if (draft === input.expectedDraftSha) {
+            return true;
+          }
+          const [parents, subject] = git(entry.bare, "log", "-1", "--format=%P|%s", draft).split("|");
+          return parents === input.expectedDraftSha && subject === "Build draft";
+        };
+        if (input.expectedDraftSha !== undefined && !isBuildOf()) {
+          res.end(
+            JSON.stringify({
+              errors: [
+                {
+                  message: "The draft changed after it was pushed",
+                  extensions: {
+                    code: "PRECONDITION",
+                    reason: "DRAFT_MOVED",
+                    publish: { expected: input.expectedDraftSha, actual: draft },
+                  },
+                },
+              ],
+            })
+          );
+          return;
+        }
+        if (queued === "BUILD_THEN_NETWORK" || queued === "BUILD_THEN_BUSY") {
+          // The platform built and committed, then the answer was lost (a 503 from the ingress) or said BUSY.
+          serverBuild(entry, root);
+          if (queued === "BUILD_THEN_NETWORK") {
+            res.writeHead(503);
+            res.end("{}");
+          } else {
+            res.end(
+              JSON.stringify({
+                data: { [mutation]: [{ id: input.topId }] },
+                extensions: { bluestepCompile: [{ status: "BUSY", diagnostics: [] }] },
+              })
+            );
+          }
+          return;
+        }
         if (queued === "NETWORK") {
           res.writeHead(503);
           res.end("{}");
@@ -471,24 +515,6 @@ function createStub() {
           );
           return;
         }
-        const draft = git(entry.bare, "rev-parse", "refs/heads/draft");
-        if (input.expectedDraftSha !== draft) {
-          res.end(
-            JSON.stringify({
-              errors: [
-                {
-                  message: "The draft changed after it was pushed",
-                  extensions: {
-                    code: "PUBLISH_REFUSED",
-                    reason: "DRAFT_MOVED",
-                    publish: { expected: input.expectedDraftSha, actual: draft },
-                  },
-                },
-              ],
-            })
-          );
-          return;
-        }
         const built = serverBuild(entry, root);
         const diagnostics = entry.buildDiagnostics || [];
         const count = (severity) => diagnostics.filter((d) => d.severity === severity).length;
@@ -499,12 +525,12 @@ function createStub() {
               bluestepCompile: [
                 {
                   status: built.status,
-                  errors: count("ERROR"),
-                  warnings: count("WARNING"),
+                  errors: entry.buildCounts?.errors ?? count("ERROR"),
+                  warnings: entry.buildCounts?.warnings ?? count("WARNING"),
                   written: 0,
                   deleted: 0,
                   diagnostics,
-                  diagnosticsOmitted: 0,
+                  diagnosticsOmitted: entry.buildCounts?.omitted ?? 0,
                 },
               ],
               // The platform's shape (web CU-1k5g91bq6u2): `built` says a build commit was made.

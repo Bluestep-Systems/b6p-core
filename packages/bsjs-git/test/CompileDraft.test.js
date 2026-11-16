@@ -73,6 +73,7 @@ test("a clean build: one build commit with output and manifest, authored by the 
   assert.strictEqual(result.vouched, true);
   assert.ok(result.buildCommitSha && result.buildCommitSha !== pushedSha);
   assert.strictEqual(result.head, result.buildCommitSha);
+  assert.deepStrictEqual(result.fastForward, { state: "fast-forwarded", blockedPaths: [], error: null });
   assert.strictEqual(await repo.sha("draft"), result.buildCommitSha, "the local draft is at the build commit");
   assert.strictEqual(stub.git(entry.bare, "rev-parse", "draft"), result.buildCommitSha);
   assert.strictEqual(stub.git(entry.bare, "log", "-1", "--format=%an|%s", "draft"), "Ada Tester|Build draft");
@@ -190,6 +191,125 @@ test("a draft with nothing to build (no tsconfig, or no TypeScript source) makes
   assert.strictEqual(result.buildCommitSha, null);
   assert.strictEqual(result.vouched, true, "nothing to build needs no manifest");
   await repo.publish();
+});
+
+test("a build whose answer was lost (a 503 after the commit): the retry is the platform's repeat call and the folder still fast-forwards", async () => {
+  const { repo, entry } = await pushed();
+  const pushedSha = await repo.sha("draft");
+  entry.buildQueue = ["BUILD_THEN_NETWORK"];
+  const { waits, sleep } = noSleep();
+  const result = await repo.compileDraft({ sleep });
+  assert.deepStrictEqual(waits, [2_000]);
+  assert.strictEqual(result.fastForward.state, "fast-forwarded");
+  assert.strictEqual(await repo.sha("draft"), result.buildCommitSha);
+  assert.strictEqual(stub.git(entry.bare, "rev-parse", "draft^"), pushedSha, "one build commit, on the pushed one");
+  assert.strictEqual(stub.state.buildInputs.at(-1).expectedDraftSha, pushedSha, "the retry asks for the same commit");
+  assert.deepStrictEqual(await repo.status(), []);
+});
+
+test("a BUSY answer from a build that committed anyway: the retry finds the build and takes it", async () => {
+  const { repo, entry } = await pushed();
+  entry.buildQueue = ["BUILD_THEN_BUSY"];
+  const result = await repo.compileDraft(noSleep());
+  assert.strictEqual(result.compile.status, "COMPILED");
+  assert.strictEqual(result.fastForward.state, "fast-forwarded");
+  assert.strictEqual(stub.git(entry.bare, "rev-parse", "draft"), result.buildCommitSha);
+});
+
+test("the fast-forward keeps a local edit to a file the build does not touch", async () => {
+  const { repo } = await pushed();
+  await repo.writeFile("notes.txt", "mine\n");
+  await repo.writeFile("tsconfig.json", '{ "compilerOptions": {} }');
+  const result = await repo.compileDraft();
+  assert.strictEqual(result.fastForward.state, "fast-forwarded");
+  assert.strictEqual(fs.readFileSync(path.join(repo.dir, "notes.txt"), "utf8"), "mine\n");
+  assert.strictEqual(fs.readFileSync(path.join(repo.dir, "tsconfig.json"), "utf8"), '{ "compilerOptions": {} }');
+  assert.deepStrictEqual(
+    (await repo.status()).map((c) => c.path).sort(),
+    ["notes.txt", "tsconfig.json"],
+    "only the local edits differ from the build commit"
+  );
+});
+
+test("a local edit to an output the build changes blocks the fast-forward: ref, index and tree stay, and it says which paths", async () => {
+  const { repo, entry } = await pushed();
+  await repo.compileDraft();
+  await repo.writeFile("scripts/app.ts", "export const v = 5;\n");
+  await repo.commit("edit", AUTHOR);
+  await repo.push();
+  const pushedSha = await repo.sha("draft");
+  await repo.writeFile(".build/scripts/app.js", "// mine\n");
+  const result = await repo.compileDraft();
+  assert.strictEqual(result.fastForward.state, "blocked");
+  assert.deepStrictEqual(result.fastForward.blockedPaths, [".build/scripts/app.js"], "the manifest is untouched here");
+  assert.ok(result.buildCommitSha, "the build happened on the platform");
+  assert.strictEqual(result.head, pushedSha);
+  assert.strictEqual(await repo.sha("draft"), pushedSha, "the ref did not move");
+  assert.strictEqual(fs.readFileSync(path.join(repo.dir, ".build/scripts/app.js"), "utf8"), "// mine\n");
+  assert.deepStrictEqual(
+    (await repo.status()).map((c) => c.path),
+    [".build/scripts/app.js"],
+    "the index is still the pushed commit's"
+  );
+  assert.strictEqual(stub.git(entry.bare, "rev-parse", "draft"), result.buildCommitSha);
+});
+
+test("an ignored stale output blocks the fast-forward; once it is gone the build comes in, staged, and the next push keeps it", async () => {
+  const { repo, entry } = await pushed({ ...SEED, ".gitignore": ".build/\n" });
+  const pushedSha = await repo.sha("draft");
+  await repo.writeFile(".build/scripts/app.js", "// from a local tsc\n");
+  const blocked = await repo.compileDraft();
+  assert.strictEqual(blocked.fastForward.state, "blocked");
+  assert.deepStrictEqual(blocked.fastForward.blockedPaths, [".build/scripts/app.js"]);
+  assert.strictEqual(await repo.sha("draft"), pushedSha);
+
+  fs.rmSync(path.join(repo.dir, ".build"), { recursive: true });
+  const moved = await repo.fastForwardToBuild(blocked.buildCommitSha);
+  assert.strictEqual(moved.state, "fast-forwarded");
+  assert.strictEqual(await repo.sha("draft"), blocked.buildCommitSha);
+  assert.deepStrictEqual(await repo.status(), [], "the ignored output is in the index as the build committed it");
+
+  await repo.writeFile("scripts/app.ts", "export const v = 6;\n");
+  await repo.commit("next", AUTHOR);
+  await repo.push();
+  const tree = stub.git(entry.bare, "ls-tree", "-r", "--name-only", "draft").split("\n");
+  assert.ok(tree.includes(".build/scripts/app.js") && tree.includes(".build/.b6p-build.json"), "nothing was deleted");
+});
+
+test("an ignored local file that already matches the build does not block it", async () => {
+  const { repo } = await pushed({ ...SEED, ".gitignore": ".build/\n" });
+  const source = (await repo.listTree("draft")).find((f) => f.path === "scripts/app.ts");
+  // What the stand-in's build writes for that source.
+  await repo.writeFile(".build/scripts/app.js", `// built from scripts/app.ts ${source.oid}\n`);
+  const result = await repo.compileDraft();
+  assert.strictEqual(result.fastForward.state, "fast-forwarded");
+  assert.deepStrictEqual(await repo.status(), []);
+});
+
+test("isBuildCommitOf: the build of exactly that commit; never a platform edit, even one titled like a build", async () => {
+  const { repo, entry } = await pushed();
+  const pushedSha = await repo.sha("draft");
+  const result = await repo.compileDraft();
+  assert.strictEqual(await repo.isBuildCommitOf(result.buildCommitSha, pushedSha), true);
+  assert.strictEqual(await repo.isBuildCommitOf(result.buildCommitSha, `${pushedSha}`.replace(/./, "0")), false);
+
+  const forge = (subject, file, text) => {
+    const work = fs.mkdtempSync(path.join(tmp, "forge-"));
+    stub.git(tmp, "clone", "-q", "-b", "draft", entry.bare, work);
+    fs.mkdirSync(path.dirname(path.join(work, file)), { recursive: true });
+    fs.writeFileSync(path.join(work, file), text);
+    stub.git(work, "add", "-A");
+    stub.git(work, "-c", "user.name=P", "-c", "user.email=p@x", "commit", "-q", "-m", subject);
+    stub.git(work, "push", "-q", entry.bare, "draft");
+    return stub.git(work, "rev-parse", "HEAD");
+  };
+  const base = result.buildCommitSha;
+  const sourceEdit = forge("Build draft", "scripts/app.ts", "export const v = 99;\n");
+  await repo.fetch();
+  assert.strictEqual(await repo.isBuildCommitOf(sourceEdit, base), false, "a source edit is not a build");
+  const outputEdit = forge("Edit output", ".build/scripts/app.js", "// by hand\n");
+  await repo.fetch();
+  assert.strictEqual(await repo.isBuildCommitOf(outputEdit, sourceEdit), false, "another subject is not a build");
 });
 
 test("parsers: an unknown status is UNKNOWN with the raw text; a build commit that is not a sha reads as null", () => {

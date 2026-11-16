@@ -41,7 +41,11 @@ bare repo over loopback HTTP with `git http-backend`.
 No spec compiles TypeScript, and none may: neither package has a compiler. The stand-in
 `packages/bsjs-git/test/support/GitProxyStub.js` answers `compileDraft` the way the platform's git build does (a
 stand-in output per TypeScript source, the manifest only when the build is clean, one build commit), steered per repo
-entry: `buildUnclean`, `buildDiagnostics`, `buildAuthor`, `buildQueue` (statuses such as `BUSY`, or `NETWORK` /
-`GRAPHQL_ERROR`, answered before a real build) and `beforeBuild`. `executePush` picks its route from
+entry: `buildUnclean`, `buildDiagnostics`, `buildCounts` (`errors`, `warnings`, `omitted` over the listed ones),
+`buildAuthor`, `buildQueue` and `beforeBuild`. A `buildQueue` entry answers one request: a status such as `BUSY`, or
+`NETWORK` / `GRAPHQL_ERROR`, answers before a real build; `BUILD_THEN_NETWORK` / `BUILD_THEN_BUSY` build and commit,
+then answer 503 / `BUSY` (a lost answer). Like the platform, it refuses a moved draft with code `PRECONDITION`, reason
+`DRAFT_MOVED`, except when the head is its build of the commit asked for (the repeat call), and it commits output
+whatever `.gitignore` says. `executePush` picks its route from
 `/appinfo/version`; the `pushContext` fake in `GitDraftSync.test.js` answers it (`dev` by default) and specs pass
 `floor` to pin `MIN_SERVER_VERSION`.

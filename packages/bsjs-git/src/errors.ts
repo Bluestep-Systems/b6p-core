@@ -20,6 +20,7 @@ export type BsjsGitErrorCode =
   | "PUBLISH_REFUSED"
   | "PUBLISH_FAILED"
   | "BUILD_FAILED"
+  | "BUILD_FAST_FORWARD_BLOCKED"
   | "GIT_MODE_FAILED"
   | "UNKNOWN_SCRIPT_TYPE"
   | "LEGACY_HISTORY"
@@ -233,6 +234,26 @@ export class DraftBuildMovedError extends DraftBuildFailedError {
     message: string
   ) {
     super(message, [message]);
+  }
+}
+
+/**
+ * The platform built the draft, but the local draft could not be moved to its build commit because local files are in
+ * the way: each path in `paths` is one the build changes whose local copy matches neither the pushed commit nor the
+ * build (a local edit, or an untracked or ignored file). Nothing was changed here: the local draft branch, index and
+ * working tree are as they were.
+ * @lastreviewed null
+ */
+export class GitBuildFastForwardBlockedError extends BsjsGitError {
+  constructor(
+    readonly buildCommitSha: string,
+    readonly paths: readonly string[]
+  ) {
+    super(
+      "BUILD_FAST_FORWARD_BLOCKED",
+      `The draft folder was not moved to the platform's build commit ${buildCommitSha}: ${paths.length} local ` +
+        `file(s) the build changes differ from both the pushed commit and the build: ${paths.join(", ")}`
+    );
   }
 }
 

@@ -29,7 +29,7 @@ await repo.commit("Edit main");        // stages every working-tree change
 await repo.push();                     // the draft branch
                                        // commit(msg, author, { force: [".build/app.js"] }) stages those paths even when .gitignore matches them
 const build = await repo.compileDraft();  // the platform builds the pushed draft; the local draft moves to its build commit
-                                          // { compile, buildCommitSha, vouched, head }
+                                          // { compile, buildCommitSha, vouched, head, fastForward }
 const { publishedSha, refreshed } = await repo.publish(); // the platform promotes draft (the build commit) to master
 
 await repo.sha("origin/draft");                 // a branch or sha as a commit sha
@@ -54,7 +54,7 @@ Every refusal is a typed `BsjsGitError` with a `code`: `GitAuthError` (401), `Gi
 publishes over WebDAV, so its repo is read-only), `GitCodeLockedError`, `GitPermissionError` (other 403),
 `GitRepoNotFoundError` (404: no repo, not visible, or git integration off), `GitPushRejectedError` (the forge refused
 the ref; `protectedBranch` for master), `GitNotFastForwardError`, `PublishRefusedError` (`reason` is the server's
-`PUBLISH_REFUSED` reason), `DraftBuildFailedError` / `DraftBuildMovedError` (the build), `GitUnpushedChangesError`,
+`PUBLISH_REFUSED` reason), `DraftBuildFailedError` / `DraftBuildMovedError` (the build), `GitBuildFastForwardBlockedError` (`paths`), `GitUnpushedChangesError`,
 `GitIdentityError`, `GitTransportError`.
 
 ## Auth modes
@@ -81,9 +81,16 @@ it vouches for the build (every project's output written, no blocking error; a t
 build commit authored by the caller. The answer's `extensions.bluestepCompile[0]` is the compile (`status`, counts,
 `diagnostics`, `gate`; `parseDraftCompileOutcome`) and `extensions.bluestepBuild[0]` the build commit (`{ commit,
 vouched }` of `{ script, draftSha, commit, built, vouched, status }`; `parseDraftBuildCommit`; `vouched` is also true
-for a draft that needs no manifest). The local draft and working tree are then moved exactly to the build commit.
+for a draft that needs no manifest). The local draft is then moved exactly to the build commit by
+`fastForwardToBuild(sha)`: the working tree and index first, for exactly the paths the build changed (straight into the
+index, whatever `.gitignore` says), the branch last. A path whose local copy matches neither the pushed commit nor the
+build (a local edit, an untracked or ignored file) stops it before anything is touched; other local edits are kept. The
+outcome is `fastForward: { state, blockedPaths, error }` (`fast-forwarded`, `unchanged`, `blocked`, `failed`), never a
+build failure. `isBuildCommitOf(candidate, base)` says whether a commit is the platform's build of exactly `base` (only
+parent `base`, subject `Build draft`, output paths only by `isBuildOutputPath`), for taking in a build whose answer was
+lost.
 
-It resolves to `{ compile, buildCommitSha, vouched, head }`: `buildCommitSha` is `null` when the build made no commit
+It resolves to `{ compile, buildCommitSha, vouched, head, fastForward }`: `buildCommitSha` is `null` when the build made no commit
 (already built at that commit, nothing to build). An unclean build (`vouched: false`) still commits its output, without
 a manifest, so `publish()` is refused until a clean build. `BUSY` is retried 3 times 5 s apart, `INPUT_INCOMPLETE` 3
 times 2 s apart, `COMPILER_UNAVAILABLE` and a failed request once (`COMPILE_RETRY`; `options.sleep` replaces the

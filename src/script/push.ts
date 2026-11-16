@@ -1,5 +1,11 @@
 import * as path from "path";
-import type { DraftCompileOutcome, GitIdentity } from "@bluestep-systems/b6p-core-bsjs-git";
+import {
+  compileAllowsPublish,
+  type BuildFastForward,
+  type DraftCompileOutcome,
+  type DraftCompileStatus,
+  type GitIdentity,
+} from "@bluestep-systems/b6p-core-bsjs-git";
 import { FolderNames } from "../constants";
 import { B6PUri } from "../B6PUri";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
@@ -45,6 +51,53 @@ export async function legacySyncRecords(scriptRoot: ScriptRoot, draftPath: strin
   const records = new Map((metadata?.pushPullRecords ?? []).map((r) => [r.downstairsPath, r.lastVerifiedHash]));
   return async (relative) =>
     records.get(B6PUri.fromFsPath(path.join(draftPath, ...relative.split("/"))).fsPath) ?? null;
+}
+
+/**
+ * A platform build that ended in a status after which the draft does not publish: anything but `COMPILED`,
+ * `NOTHING_TO_COMPILE` and `SKIPPED_EXTERNALLY_BUILT` (for example `BUSY` or `INPUT_INCOMPLETE` once the retries ran
+ * out, `COMPILER_UNAVAILABLE`, `NOT_PERMITTED`, `WRITE_FAILED`, `OUTPUT_UPLOAD`, `SKIPPED_GIT_MANAGED`, `GATE_TRIPPED`,
+ * `EMIT_WITHHELD`, `UNKNOWN`).
+ * @lastreviewed null
+ */
+export interface BuildIncomplete {
+  /** The status, `UNKNOWN` for one this version does not know. @lastreviewed null */
+  readonly status: DraftCompileStatus;
+  /** The status exactly as the platform sent it. @lastreviewed null */
+  readonly rawStatus: string;
+  /** What the status means, in words. @lastreviewed null */
+  readonly description: string;
+}
+
+/**
+ * What a build status that does not publish means, for {@link BuildIncomplete.description}.
+ * @lastreviewed null
+ */
+export function describeBuildStatus(status: DraftCompileStatus, rawStatus: string): string {
+  switch (status) {
+    case "BUSY":
+      return "the platform was busy and did not build the draft";
+    case "INPUT_INCOMPLETE":
+      return "the platform's copy of the draft was incomplete, so it did not build it";
+    case "COMPILER_UNAVAILABLE":
+      return "the platform's compiler was unavailable";
+    case "NOT_PERMITTED":
+      return "the platform did not permit building this script";
+    case "WRITE_FAILED":
+      return "the platform could not write the build output";
+    case "OUTPUT_UPLOAD":
+      return "the platform took the output as uploaded and did not build it";
+    case "SKIPPED_GIT_MANAGED":
+      return "this server does not build git drafts";
+    case "GATE_TRIPPED":
+      return "the platform's save gate held back the new output";
+    case "EMIT_WITHHELD":
+      return "the platform withheld the new output";
+    case "UNKNOWN":
+      return `the platform reported a build status this version does not know (${rawStatus || "none"})`;
+    default:
+      return `the platform reported ${rawStatus}`;
+  }
 }
 
 /**
@@ -116,7 +169,7 @@ export interface PushResult {
   build: DraftCompileOutcome | null;
   /**
    * The build commit the platform made on the draft branch (the output, and the build manifest when it vouched for the
-   * build). The local draft folder was fast-forwarded to it. `null` when it made none: already built, nothing to build,
+   * build). The local draft folder was moved to it unless `buildFastForward` says otherwise. `null` when it made none: already built, nothing to build,
    * no build ran, or the request failed.
    * @lastreviewed null
    */
@@ -130,14 +183,35 @@ export interface PushResult {
    */
   buildVouched: boolean | null;
   /**
-   * Why the build request failed after a successful push (the draft is pushed, nothing was built or published).
-   * `null` otherwise.
+   * Why no build answer came after a successful push (the draft is pushed; nothing was published). `null` otherwise.
    * @lastreviewed null
    */
   buildError: string | null;
   /**
-   * How many diagnostics {@link typeCheckErrors} lists: `null` when no build ran, `0` when the platform's build
-   * reported none in the script's own sources. The platform builds and type-checks; a type-checker finding is a
+   * What `buildError` is: `not-requested` (no build was asked for: the platform's draft was no longer the pushed
+   * commit) or `request-failed` (the build was asked for and refused, or the request failed; it may have run).
+   * `null` with no `buildError`.
+   * @lastreviewed null
+   */
+  buildErrorKind: "not-requested" | "request-failed" | null;
+  /**
+   * Set when the build answered with a status after which the draft does not publish (see {@link BuildIncomplete}):
+   * a snapshot push then publishes nothing, and neither push reports itself complete. `null` otherwise.
+   * @lastreviewed null
+   */
+  buildIncomplete: BuildIncomplete | null;
+  /**
+   * How the local draft folder was moved to `buildCommitSha`: `fast-forwarded`, `unchanged` (no build commit),
+   * `blocked` (local files the build changes are in the way, `blockedPaths`; the folder was left as it was, and a
+   * snapshot published nothing) or `failed` (`error`; the folder's draft branch did not move). `null` when no build
+   * answer came.
+   * @lastreviewed null
+   */
+  buildFastForward: BuildFastForward | null;
+  /**
+   * How many `ERROR` and `WARNING` diagnostics the platform's build reported in all (its `errors` + `warnings`):
+   * `null` when no build ran. {@link typeCheckErrors} lists fewer when the platform capped its list (at most 20) or
+   * some were outside the script's own sources. The platform builds and type-checks; a type-checker finding is a
    * warning and does not stop the publish, so `> 0` is "built with findings", not a failure.
    * @lastreviewed null
    */
@@ -188,6 +262,9 @@ function notPushed(route: PushRoute | null): PushResult {
     buildCommitSha: null,
     buildVouched: null,
     buildError: null,
+    buildErrorKind: null,
+    buildIncomplete: null,
+    buildFastForward: null,
     typeCheckDiagnostics: null,
     typeCheckErrors: [],
     liveVerified: null,
@@ -312,19 +389,31 @@ export async function executePush(opts: {
 
   const built = outcome.build;
   const typeCheckErrors = typeCheckErrorsOf(built?.compile ?? null);
+  const nothingPublished = snapshot ? " Nothing was published." : "";
+  const status = built?.compile?.status;
+  const buildIncomplete: BuildIncomplete | null =
+    built?.compile && status && !compileAllowsPublish(status)
+      ? {
+          status,
+          rawStatus: built.compile.rawStatus,
+          description: describeBuildStatus(status, built.compile.rawStatus),
+        }
+      : null;
+  const fastForward = built?.fastForward ?? null;
   if (built?.error) {
     prompt.error(
-      `The draft was pushed (commit ${outcome.commitSha}) but the platform's build of it failed: ${built.error}` +
-        (snapshot ? " Nothing was published." : "")
+      built.errorKind === "not-requested"
+        ? `The draft was pushed (commit ${outcome.commitSha}), but no build was asked for: ${built.error}${nothingPublished}`
+        : `The draft was pushed (commit ${outcome.commitSha}), but the platform's build request failed: ${built.error}${nothingPublished}`
     );
   } else if (built?.compile) {
-    const status = built.compile.status;
-    if (status === "GATE_TRIPPED" || status === "EMIT_WITHHELD") {
+    if (buildIncomplete) {
+      const gate = built.compile.gate;
       prompt.error(
-        `The platform did not write the new output (${status})` +
-          (snapshot ? ", so nothing was published." : ".") +
-          (built.compile.gate && built.compile.gate.problems.length > 0
-            ? `\n\n${built.compile.gate.problems.map((p) => `${p.tsconfig}: ${p.message}`).join("\n")}`
+        `The draft was pushed (commit ${outcome.commitSha}), but ${buildIncomplete.description} ` +
+          `(${buildIncomplete.rawStatus || buildIncomplete.status}).${nothingPublished}` +
+          (gate && gate.problems.length > 0
+            ? `\n\n${gate.problems.map((p) => `${p.tsconfig}: ${p.message}`).join("\n")}`
             : "")
       );
     } else if (!built.vouched && status === "COMPILED") {
@@ -333,9 +422,26 @@ export async function executePush(opts: {
           "draft is refused until it builds cleanly."
       );
     }
+    if (fastForward?.state === "blocked") {
+      prompt.error(
+        `The platform built the draft (build commit ${built.buildCommitSha}), but the draft folder was left at ` +
+          `${outcome.commitSha}: ${fastForward.blockedPaths.length} local file(s) the build changes differ from both ` +
+          `the pushed commit and the build.${nothingPublished}\n\n${fastForward.blockedPaths.join("\n")}`
+      );
+    } else if (fastForward?.state === "failed") {
+      prompt.error(
+        `The platform built the draft (build commit ${built.buildCommitSha}), but the draft folder could not be ` +
+          `moved to it: ${fastForward.error}${nothingPublished}`
+      );
+    }
     if (typeCheckErrors.length > 0) {
+      const total = built.compile.errors + built.compile.warnings;
       prompt.warn(
-        `The platform's build reported ${typeCheckErrors.length} diagnostic(s) in the script's sources:\n\n` +
+        `The platform's build reported ${total} diagnostic(s)` +
+          (total > typeCheckErrors.length
+            ? `; ${typeCheckErrors.length} of them in the script's sources are listed`
+            : " in the script's sources") +
+          `:\n\n` +
           typeCheckErrors
             .map((e) => `${e.file}:${e.line}:${e.column} ${e.severity} TS${e.code}: ${e.message}`)
             .join("\n")
@@ -360,7 +466,12 @@ export async function executePush(opts: {
     prompt.warn("Could not read the platform's published branch back to verify the publish.");
   }
 
-  const succeeded = snapshot ? !!publish && !publish.error && publish.liveVerified !== false : !built?.error;
+  const builtCleanly =
+    !built ||
+    (!built.error &&
+      !buildIncomplete &&
+      (fastForward === null || fastForward.state === "fast-forwarded" || fastForward.state === "unchanged"));
+  const succeeded = snapshot ? !!publish && !publish.error && publish.liveVerified !== false : builtCleanly;
   if (succeeded) {
     prompt.info(snapshot ? "Snapshot complete!" : "Push complete!");
   }
@@ -378,7 +489,10 @@ export async function executePush(opts: {
     buildCommitSha: built?.buildCommitSha ?? null,
     buildVouched: built && !built.error ? built.vouched : null,
     buildError: built?.error ?? null,
-    typeCheckDiagnostics: built?.compile ? typeCheckErrors.length : null,
+    buildErrorKind: built?.errorKind ?? null,
+    buildIncomplete,
+    buildFastForward: fastForward,
+    typeCheckDiagnostics: built?.compile ? built.compile.errors + built.compile.warnings : null,
     typeCheckErrors,
     liveVerified: publish?.liveVerified ?? null,
     liveMismatches: publish?.liveMismatches ?? [],

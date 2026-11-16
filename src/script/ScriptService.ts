@@ -2,13 +2,13 @@ import * as path from "path";
 import { B6PUri } from "../B6PUri";
 import { DownstairsPathParser } from "../data/DownstairsPathParser";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
-import type { GitIdentity } from "@bluestep-systems/b6p-core-bsjs-git";
+import type { BuildFastForward, GitIdentity } from "@bluestep-systems/b6p-core-bsjs-git";
 import { FolderNames } from "../constants";
 import type { PublishRefusal } from "./GitSync";
 import type { TypeCheckError } from "./ServerCompile";
 import type { SnapshotRefusal } from "../data/ServerVersion";
 import { auditDraft, draftFolderOf, GitSwitchDeclinedError, pullDraft, type DraftTarget } from "./GitSync";
-import { executePush, legacySyncRecords, type PushResult } from "./push";
+import { executePush, legacySyncRecords, type BuildIncomplete, type PushResult } from "./push";
 import type { ScriptContext } from "./ScriptContext";
 import { ScriptFactory } from "./ScriptFactory";
 
@@ -105,6 +105,21 @@ export interface DeployTargetResult {
    * @lastreviewed null
    */
   buildError: string | null;
+  /**
+   * What the target's `buildError` is (see `PushResult.buildErrorKind`).
+   * @lastreviewed null
+   */
+  buildErrorKind: "not-requested" | "request-failed" | null;
+  /**
+   * The target's build status after which it does not publish, when it had one (see `PushResult.buildIncomplete`).
+   * @lastreviewed null
+   */
+  buildIncomplete: BuildIncomplete | null;
+  /**
+   * How the scratch clone was moved to the target's build commit (see `PushResult.buildFastForward`).
+   * @lastreviewed null
+   */
+  buildFastForward: BuildFastForward | null;
   /**
    * Set when a snapshot was asked for but the target's server does not build git drafts (see `PushResult.snapshotRefused`).
    * @lastreviewed null
@@ -616,6 +631,9 @@ export class ScriptService {
           buildCommitSha: pushed?.buildCommitSha ?? null,
           buildVouched: pushed?.buildVouched ?? null,
           buildError: pushed?.buildError ?? null,
+          buildErrorKind: pushed?.buildErrorKind ?? null,
+          buildIncomplete: pushed?.buildIncomplete ?? null,
+          buildFastForward: pushed?.buildFastForward ?? null,
           snapshotRefused: pushed?.snapshotRefused ?? null,
           typeCheckDiagnostics: pushed?.typeCheckDiagnostics ?? null,
           typeCheckErrors: pushed?.typeCheckErrors ?? [],
@@ -633,6 +651,9 @@ export class ScriptService {
           buildCommitSha: null,
           buildVouched: null,
           buildError: null,
+          buildErrorKind: null,
+          buildIncomplete: null,
+          buildFastForward: null,
           snapshotRefused: null,
           typeCheckDiagnostics: null,
           typeCheckErrors: [],
@@ -642,13 +663,20 @@ export class ScriptService {
       }
     }
 
+    // One result per target, in order.
     const failed = results.filter(
-      (r) =>
+      (r, i) =>
         r.error !== undefined ||
         !r.pushed ||
         r.publishError !== null ||
         r.buildError !== null ||
-        r.snapshotRefused !== null
+        r.buildIncomplete !== null ||
+        (r.buildFastForward !== null &&
+          r.buildFastForward.state !== "fast-forwarded" &&
+          r.buildFastForward.state !== "unchanged") ||
+        r.snapshotRefused !== null ||
+        // A snapshot that published nothing failed, whatever else is set.
+        (config.targets[i].snapshot === true && r.publishedSha === null)
     );
     if (failed.length === 0) {
       this.ctx.prompt.info("Deploy complete!");
@@ -663,7 +691,18 @@ export class ScriptService {
                     ? r.error.message
                     : (r.publishError ??
                       r.buildError ??
-                      (r.snapshotRefused ? "pushed, but the server does not build git drafts" : "not pushed"))
+                      (r.buildIncomplete ? `pushed, but ${r.buildIncomplete.description}` : null) ??
+                      (r.buildFastForward?.state === "blocked"
+                        ? `pushed and built, but local files are in the way: ${r.buildFastForward.blockedPaths.join(", ")}`
+                        : null) ??
+                      (r.buildFastForward?.state === "failed"
+                        ? `pushed and built, but not taken in: ${r.buildFastForward.error}`
+                        : null) ??
+                      (r.snapshotRefused
+                        ? "pushed, but the server does not build git drafts"
+                        : r.pushed
+                          ? "pushed, but nothing was published"
+                          : "not pushed"))
                 }`
             )
             .join("\n")

@@ -48,8 +48,21 @@ test("whitespace around a tag is ignored", () => {
   assert.strictEqual(meetsMinimumVersion("26.11.09.00\n", FLOOR), true);
   assert.strictEqual(parseReleaseTag("nope"), null);
 });
-test("the real floor is unset until the web tag with the git build exists", () => {
-  assert.strictEqual(MIN_SERVER_VERSION, null);
+// The release guard: with the floor unset every release server takes the push-only route, so no snapshot could
+// publish. A 1.0.0 (or later) package.json with MIN_SERVER_VERSION still null must fail the suite.
+test("release guard: version 1.0.0 or later needs MIN_SERVER_VERSION set to a release tag", () => {
+  const { version } = require("../package.json");
+  const major = Number(String(version).split(".")[0]);
+  if (major >= 1) {
+    assert.notStrictEqual(
+      MIN_SERVER_VERSION,
+      null,
+      `package.json is ${version} but MIN_SERVER_VERSION is null: set it to the first web tag with the git build`
+    );
+  }
+  if (MIN_SERVER_VERSION !== null) {
+    assert.ok(parseReleaseTag(MIN_SERVER_VERSION), `MIN_SERVER_VERSION ${MIN_SERVER_VERSION} is not a release tag`);
+  }
 });
 
 // ── Gate ──

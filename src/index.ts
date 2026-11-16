@@ -3,8 +3,8 @@ export { B6PCore } from "./B6PCore";
 export type { ReportResult } from "./B6PCore";
 export { B6PUri } from "./B6PUri";
 export { Err } from "./Err";
-export { executePush, legacySyncRecords } from "./script/push";
-export type { PushResult } from "./script/push";
+export { describeBuildStatus, executePush, legacySyncRecords } from "./script/push";
+export type { BuildIncomplete, PushResult } from "./script/push";
 export { resolveGitIdentity } from "./script/GitIdentity";
 export type { GitConfigReader, GitIdentitySources } from "./script/GitIdentity";
 export {
