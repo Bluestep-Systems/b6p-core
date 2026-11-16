@@ -320,8 +320,6 @@ test("isBuildCommitOf: the trailer names the source, one parent, output only; th
   await repo.fetch();
   assert.strictEqual(await repo.isBuildCommitOf(sourceEdit, subjectOnly), false, "the trailer on a source edit");
   assert.strictEqual(lib.buildSourceOf(`Build draft\n\nBluestep-Build-Of: ${pushedSha}\n`), pushedSha);
-  assert.strictEqual(lib.buildSourceOf(`Bluestep-Build-Of: ${pushedSha}`), null, "a subject is not a trailer");
-  assert.strictEqual(lib.buildSourceOf(`x\n\nBluestep-Build-Of: ${pushedSha}\nBluestep-Build-Of: ${other}`), null);
 });
 
 test("a chain of two builds of the pushed commit (a lost answer, then a rebuild) is recognised and fast-forwards", async () => {
@@ -359,6 +357,43 @@ test("an unvouched rebuild deletes the manifest: the fast-forward removes it fro
   assert.strictEqual(result.fastForward.state, "fast-forwarded");
   assert.ok(!fs.existsSync(path.join(repo.dir, ".build", ".b6p-build.json")));
   assert.deepStrictEqual(await repo.status(), []);
+});
+
+test("buildSourceOf mirrors web's buildTrailer exactly (DraftBuildRefusalTest), case by case", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+  const BUILT = "89abcdef0123456789abcdef0123456789abcdef";
+  const sha256 = SHA + SHA.slice(0, 24);
+  const t = lib.buildSourceOf;
+  assert.strictEqual(t(`Build draft\n\nBluestep-Build-Of: ${SHA}\n`), SHA, "the message web writes");
+  assert.strictEqual(t(`Build draft\r\n\r\nSigned-off-by: a\r\nBluestep-Build-Of: ${SHA}\r\n\r\n`), SHA, "CRLF");
+  assert.strictEqual(t(`x\n\nBluestep-Build-Of: ${sha256}`), sha256, "a 64-hex id");
+  assert.strictEqual(t(`Bluestep-Build-Of: ${SHA}`), SHA, "no blank line: the whole message is the last paragraph");
+  assert.strictEqual(t(`Bluestep-Build-Of: ${SHA}  \n \n`), SHA, "the message's trailing whitespace is dropped");
+  assert.strictEqual(t(`x\n\nBluestep-Build-Of: ${SHA} \nOther: y`), null, "a space ending the line, mid-paragraph");
+  assert.strictEqual(t("Build draft"), null, "the subject alone never counts");
+  assert.strictEqual(t(`Bluestep-Build-Of: ${SHA}\n\nmore text`), null, "not in the last paragraph");
+  assert.strictEqual(t(`x\n\nBluestep-Build-Of: ${SHA.slice(0, 12)}`), null, "abbreviated");
+  assert.strictEqual(t(`x\n\nBluestep-Build-Of: ${SHA.toUpperCase()}`), null, "an upper-case id");
+  assert.strictEqual(t(`x\n\nBluestep-Build-Of: ${SHA} extra`), null, "trailing text");
+  assert.strictEqual(t(`x\n\nbluestep-build-of: ${SHA}`), null, "a wrong-case key");
+  assert.strictEqual(t(`x\n\nBluestep-Build-Of:  ${SHA}`), null, "two spaces");
+  assert.strictEqual(t(`x\n\nBluestep-Build-Of :${SHA}`), null, "a space before the colon");
+  assert.strictEqual(t(`x\n\n Bluestep-Build-Of: ${SHA}`), null, "leading space");
+  assert.strictEqual(t(`x\n\nBluestep-Build-Of: ${SHA}\nBluestep-Build-Of: ${BUILT}`), null, "two trailers");
+});
+
+test("changesOnlyBuildOutput is web's rule 3: under F of the root config only; F empty means no build", () => {
+  const r = lib.changesOnlyBuildOutput;
+  assert.strictEqual(r([".build/scripts/app.js", ".build/.b6p-build.json"], "{}"), true, "default F .build");
+  assert.strictEqual(r([".build/scripts/app.js"], undefined), true, "no config: .build");
+  assert.strictEqual(r(["dist/a.js"], JSON.stringify({ compilerOptions: { outDir: "./dist/" } })), true);
+  assert.strictEqual(r(["dist/a.js"], "{}"), false, "outside F");
+  assert.strictEqual(r([".buildx/a.js"], "{}"), false, "only the folder F itself");
+  assert.strictEqual(r(["scripts/app.js"], JSON.stringify({ compilerOptions: { outDir: "." } })), false, "F empty");
+  assert.strictEqual(r([".b6p-build.json"], JSON.stringify({ compilerOptions: { outDir: "./" } })), false, "F empty");
+  assert.strictEqual(r(["../x/a.js"], JSON.stringify({ compilerOptions: { outDir: "../x" } })), false, "F leaves");
+  assert.strictEqual(r(["client/.build/script.js"], "{}"), false, "a nested project's output is not under F");
+  assert.strictEqual(r([], "{}"), true, "no change is under F, as web's allMatch");
 });
 
 test("parsers: an unknown status is UNKNOWN with the raw text; a build commit that is not a sha reads as null", () => {

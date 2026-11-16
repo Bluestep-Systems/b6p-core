@@ -18,7 +18,7 @@ import {
   PublishRefusedError,
 } from "./errors";
 import { CsrfFetch, type ScriptAuth } from "./csrf";
-import { isBuildOutputPath, type BuildProjectConfig } from "./buildManifest";
+import { changesOnlyBuildOutput } from "./buildManifest";
 import {
   buildSourceOf,
   COMPILE_RETRY,
@@ -41,7 +41,8 @@ export const DRAFT_BRANCH = "draft";
 export const PUBLISHED_BRANCH = "master";
 
 const REMOTE = "origin";
-const SHA = /^[0-9a-f]{40}$/;
+/** A full lowercase commit id: SHA-1 (40 hex) or SHA-256 (64 hex). */
+const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /**
  * Who a commit is by. Always supplied by the caller: this package never invents an identity.
@@ -962,10 +963,11 @@ export class ScriptRepo {
   }
 
   /**
-   * Whether `candidate` is the platform's build of exactly the source commit `base`, or a rebuild chain of it. Each
-   * commit of the chain carries the trailer `Bluestep-Build-Of: <base>` ({@link buildSourceOf}), has exactly one
-   * parent, and changes only build output and manifests relative to it ({@link isBuildOutputPath}, by the build
-   * projects at that parent); the chain ends at `base`. The subject counts for nothing. An edit made on the platform
+   * Whether `candidate` is the platform's build of the source commit `base`, after any chain of rebuilds of it. Every
+   * commit from `candidate` down to `base` must be a build commit by the web rule (`bsjs-git-snapshot-design.md`):
+   * its trailer names `base` ({@link buildSourceOf}), it has exactly one parent, and relative to that parent it changes
+   * only paths under the output folder ({@link changesOnlyBuildOutput}). The subject counts for nothing. Checking each
+   * link, not just the head, is stricter than the server's retry match, and only refuses chains the server never makes. An edit made on the platform
    * fails at least one of these, so it is never taken for a build. The commits must be fetched.
    * @lastreviewed null
    */
@@ -993,31 +995,16 @@ export class ScriptRepo {
     }
   }
 
-  /** Whether `oid` changes something relative to `parent`, and only build output and manifests. */
+  /** Rule 3 of the build-commit rule for `oid` over `parent` ({@link changesOnlyBuildOutput}). */
   async #changesOnlyOutput(parent: string, oid: string): Promise<boolean> {
-    const projects: BuildProjectConfig[] = [];
-    for (const file of await this.listTree(parent)) {
-      const name = file.path.slice(file.path.lastIndexOf("/") + 1);
-      if (name === "tsconfig.json" || name === "jsconfig.json") {
-        const dir = file.path.slice(0, Math.max(0, file.path.lastIndexOf("/")));
-        if (name === "jsconfig.json" && projects.some((p) => p.dir === dir)) {
-          continue;
-        }
-        const text = await this.readText(parent, file.path);
-        const at = projects.findIndex((p) => p.dir === dir);
-        if (at >= 0) {
-          projects[at] = { dir, text };
-        } else {
-          projects.push({ dir, text });
-        }
-      }
-    }
-    if (projects.length === 0) {
-      // Nothing there is built, so no commit on it is a build.
-      return false;
-    }
+    const root = new Set((await this.listTree(parent)).map((f) => f.path));
+    const configPath = root.has("tsconfig.json") ? "tsconfig.json" : root.has("jsconfig.json") ? "jsconfig.json" : null;
+    const config = configPath === null ? undefined : await this.readText(parent, configPath);
     const changes = await this.diff(parent, oid);
-    return changes.length > 0 && changes.every((c) => isBuildOutputPath(c.path, projects));
+    return changesOnlyBuildOutput(
+      changes.map((c) => c.path),
+      config
+    );
   }
 
   /** The git blob id of a working-tree file, `undefined` when there is none. */

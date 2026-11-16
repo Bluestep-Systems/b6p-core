@@ -22,25 +22,32 @@ export const BUILD_COMMIT_SUBJECT = "Build draft";
 export const BUILD_OF_TRAILER = "Bluestep-Build-Of";
 
 /**
- * The source sha a commit message's {@link BUILD_OF_TRAILER} trailer names, or `null` when it has none (or more than
- * one, or one that is not a full lowercase sha). Only the last paragraph of the message is read, as git reads trailers.
+ * The source sha a commit message's {@link BUILD_OF_TRAILER} trailer names, or `null` when it names none. The web
+ * rule exactly (`UserCodeScriptHelper.buildTrailer`): CRLF read as LF and trailing whitespace dropped, the last
+ * paragraph is the text after the last blank line (`\n\n`), or the whole message when there is none, and it must hold
+ * exactly one line that is, in full, `Bluestep-Build-Of: ` followed by a full lowercase commit id (40 or 64 hex). Exact
+ * case, exactly one space, nothing else on the line.
  * @param message A commit's full message
  * @lastreviewed null
  */
 export function buildSourceOf(message: string): string | null {
-  const paragraphs = message.replace(/\s+$/, "").split(/\n[ \t]*\n/);
-  if (paragraphs.length < 2) {
-    return null;
-  }
-  const found: string[] = [];
-  for (const line of paragraphs[paragraphs.length - 1].split("\n")) {
-    const match = /^([A-Za-z0-9-]+)[ \t]*:[ \t]*(.*?)[ \t]*$/.exec(line);
-    if (match && match[1].toLowerCase() === BUILD_OF_TRAILER.toLowerCase()) {
-      found.push(match[2]);
+  const trimmed = message.replace(/\r\n/g, "\n").trimEnd();
+  const blank = trimmed.lastIndexOf("\n\n");
+  const last = blank < 0 ? trimmed : trimmed.slice(blank + 2);
+  let found: string | null = null;
+  for (const line of last.split("\n")) {
+    const match = TRAILER_LINE.exec(line);
+    if (match) {
+      if (found !== null) {
+        return null;
+      }
+      found = match[1];
     }
   }
-  return found.length === 1 && SHA.test(found[0]) ? found[0] : null;
+  return found;
 }
+
+const TRAILER_LINE = /^Bluestep-Build-Of: ([0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /**
  * The statuses the platform reports for a compile (`extensions.bluestepCompile[0].status`).

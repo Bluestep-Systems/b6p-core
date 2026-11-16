@@ -44,8 +44,10 @@ Target release: **1.0.0** (breaking).
     (`state` `blocked`, `blockedPaths`), with nothing changed and nothing published, and a later push stops on it
     (`GitBuildFastForwardBlockedError`). A build whose answer was lost is taken in by the next push as a
     fast-forward instead of being asked about as a platform edit: a commit counts as a build only with the
-    platform's `Bluestep-Build-Of: <pushed sha>` trailer, one parent and an output-and-manifest-only diff (a rebuild
-    chain too); the subject never counts. An unclean build's manifest deletion reaches the folder.
+    platform's `Bluestep-Build-Of: <pushed sha>` trailer (exact case, one space, a 40- or 64-hex id, the only such
+    line of the last paragraph, CRLF read as LF), one parent, and every changed path under the output folder `F` of
+    the parent's root `tsconfig.json` / `jsconfig.json` (none when `F` is empty), as web's rule; a rebuild chain too.
+    The subject never counts. Commit ids may be 64 hex throughout. An unclean build's manifest deletion reaches the folder.
   - Removed: `ScriptTranspiler` (`TranspileOutcome`, `ProjectBuildReport`, `buildUncleanReasons`), `TsLibResolver`,
     `checkEmittedEntrypoint` / `EmittedEntrypointCheck` (the platform refuses a missing entrypoint,
     `ENTRYPOINT_MISSING`), the stale client bundle warning, `B6PProviders.typescriptLibDirs` and its `ScriptContext`
@@ -54,9 +56,9 @@ Target release: **1.0.0** (breaking).
     replaced by `build` (and `sleep`); `DraftPushOutcome` gains `build` (`DraftBuildOutcome`).
 - **`@bluestep-systems/b6p-core-bsjs-git` 0.3.0**: `ScriptRepo.compileDraft()` asks the platform to build the pushed
   draft and moves the local draft to the build commit (`{ compile, buildCommitSha, vouched, head, fastForward }`;
-  `fastForwardToBuild`, `isBuildCommitOf`, `isBuildOutputPath`, `buildSourceOf`, `BUILD_OF_TRAILER`,
+  `fastForwardToBuild`, `isBuildCommitOf`, `changesOnlyBuildOutput`, `buildSourceOf`, `BUILD_OF_TRAILER`,
   `BUILD_COMMIT_SUBJECT`, `GitBuildFastForwardBlockedError`,
-  the types `BuildFastForward`, `BuildFastForwardState`, `BuildProjectConfig`), with the
+  the types `BuildFastForward`, `BuildFastForwardState`), with the
   `COMPILE_RETRY` policy, `DraftBuildFailedError` and `DraftBuildMovedError` (`DRAFT_MOVED`). New exports
   `parseDraftCompileOutcome`, `parseDraftBuildCommit`, `compileAllowsPublish`, `KNOWN_DRAFT_COMPILE_STATUSES`,
   `PUBLISHABLE_COMPILE_STATUSES`, and the types `DraftBuildResult`, `CompileDraftOptions`, `DraftCompileOutcome`,

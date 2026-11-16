@@ -88,7 +88,10 @@ build (a local edit, an untracked or ignored file) stops it before anything is t
 outcome is `fastForward: { state, blockedPaths, error }` (`fast-forwarded`, `unchanged`, `blocked`, `failed`), never a
 build failure. `isBuildCommitOf(candidate, base)` says whether a commit is the platform's build of exactly the source `base`, or a
 rebuild chain of it: each commit carries the trailer `Bluestep-Build-Of: <base>` (`buildSourceOf`, `BUILD_OF_TRAILER`),
-has one parent and changes only output and manifests (`isBuildOutputPath`); the subject never counts. It is for taking
+has one parent and changes only paths under the output folder `F` of the parent's root `tsconfig.json`, else
+`jsconfig.json` (`changesOnlyBuildOutput`; no commit is a build when `F` is empty); the subject never counts. This is
+web's rule (`docs/bsjs-git-snapshot-design.md`, "Build commits"), the trailer parsed as there: CRLF as LF, trailing
+whitespace dropped, the last paragraph (or the whole message), exactly one line `Bluestep-Build-Of: <40/64 hex>`. It is for taking
 in a build whose answer was lost. An unclean build deletes the manifest, and the fast-forward deletes it here too.
 
 It resolves to `{ compile, buildCommitSha, vouched, head, fastForward }`: `buildCommitSha` is `null` when the build made no commit

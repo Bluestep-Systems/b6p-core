@@ -182,40 +182,24 @@ export function hasNoTsconfig(paths: Iterable<string>): boolean {
 }
 
 /**
- * One build project of a tree: the folder its `tsconfig.json` (or `jsconfig.json`) sits in (`""` at the root) and
- * that file's text.
+ * Rule 3 of the platform's build-commit rule (web `UserCodeScriptHelper.isBuild`), exactly: the output folder `F` is
+ * read from the parent's root `tsconfig.json`, else its root `jsconfig.json` ({@link buildOutputFolder}, `.build` by
+ * default), and every path the commit adds, changes or removes must start with `F/` (the manifest, at
+ * `F/.b6p-build.json`, is covered). When `F` is empty (output in place, or a folder leaving the tree) no commit is a
+ * build. Nested projects do not count.
+ * @param changedPaths Every path the commit changes relative to its parent
+ * @param rootConfigText The parent's root `tsconfig.json` text, else its root `jsconfig.json`, else `undefined`
  * @lastreviewed null
  */
-export interface BuildProjectConfig {
-  readonly dir: string;
-  readonly text: string;
-}
-
-const EMITTED_IN_PLACE = /\.(?:[cm]?js|[cm]?js\.map|d\.[cm]?ts|d\.[cm]?ts\.map)$/i;
-
-/**
- * Whether a path is something a build writes, never an author's source: under a project's output folder
- * ({@link buildOutputFolder}, relative to the project's folder), the manifest, or, for a project with in-place output,
- * an emitted file (`.js`, `.mjs`, `.cjs`, a declaration, or a map of one) under the project's folder. Used to tell the
- * platform's build commit from an edit: a commit that changes any other path is not a build.
- * @param path A tree path (`/`-separated)
- * @param projects Every build project of the tree the build ran on
- * @lastreviewed null
- */
-export function isBuildOutputPath(path: string, projects: readonly BuildProjectConfig[]): boolean {
-  for (const project of projects) {
-    const base = project.dir === "" ? "" : `${project.dir}/`;
-    if (base !== "" && !path.startsWith(base)) {
-      continue;
-    }
-    const relative = path.slice(base.length);
-    const folder = buildOutputFolder(project.text);
-    if (relative === buildManifestPath(folder)) {
-      return true;
-    }
-    if (folder === "" ? EMITTED_IN_PLACE.test(relative) : relative.startsWith(`${folder}/`)) {
-      return true;
+export function changesOnlyBuildOutput(changedPaths: Iterable<string>, rootConfigText: string | undefined): boolean {
+  const folder = buildOutputFolder(rootConfigText);
+  if (folder === "") {
+    return false;
+  }
+  for (const path of changedPaths) {
+    if (!path.startsWith(`${folder}/`)) {
+      return false;
     }
   }
-  return false;
+  return true;
 }
