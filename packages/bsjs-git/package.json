@@ -25,7 +25,7 @@
     "compile": "tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
     "check-types": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "format": "prettier --write \"src/**/*.ts\"",
     "format-check": "prettier --check \"src/**/*.ts\"",
     "test": "npm run compile && node test/NoNodeBuiltins.test.js && node test/BrowserBundle.test.js && node test/LegacyHistory.test.js && node test/BuildManifest.test.js && node test/GitRoundTrip.test.js",
