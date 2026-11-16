@@ -82,6 +82,22 @@ jobs:
       - name: Test
         run: npm test
 
+      # The browser-safe git package is a dependency of the one below, so it goes first. A version that is
+      # already on npm is skipped, so a release that did not change it does not fail here.
+      - name: Publish bsjs-git (provenance, public)
+        run: |
+          set -euo pipefail
+          NAME="$(node -p "require('./packages/bsjs-git/package.json').name")"
+          VERSION="$(node -p "require('./packages/bsjs-git/package.json').version")"
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "::notice::$NAME@$VERSION is already on npm; skipping."
+            exit 0
+          fi
+          npm publish -w "$NAME" --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+
       # prepublishOnly re-runs clean+format-check+check-types+compile to build dist/.
       - name: Publish (provenance, public)
         run: npm publish --provenance --access public

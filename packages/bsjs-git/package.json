@@ -1,0 +1,44 @@
+{
+  "name": "@bluestep-systems/b6p-core-bsjs-git",
+  "version": "0.1.0",
+  "description": "Browser- and Node-safe git client for BlueStep BSJS scripts: draft-branch editing through the platform git proxy, publish, git history and the legacy history archive",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Bluestep-Systems/b6p-core.git",
+    "directory": "packages/bsjs-git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "compile": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "check-types": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format-check": "prettier --check \"src/**/*.ts\"",
+    "test": "npm run compile && node test/NoNodeBuiltins.test.js && node test/BrowserBundle.test.js && node test/LegacyHistory.test.js && node test/GitRoundTrip.test.js",
+    "prepublishOnly": "npm run clean && npm run format-check && npm run check-types && npm run compile"
+  },
+  "dependencies": {
+    "buffer": "6.0.3",
+    "isomorphic-git": "1.44.13"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "esbuild": "0.28.2",
+    "prettier": "^3.0.0",
+    "typescript": "5.9.2"
+  }
+}
