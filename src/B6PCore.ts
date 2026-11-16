@@ -1,3 +1,5 @@
+import * as nodeFs from "node:fs";
+import { AuthTypes } from "./constants";
 import { BearerAuthProvider } from "./auth/BearerAuthProvider";
 import { SessionManager } from "./session/SessionManager";
 import type { AuthProvider, B6PProviders, FileSystem, Logger, Persistence, Progress, Prompt } from "./providers";
@@ -141,6 +143,13 @@ export class B6PCore {
       scriptMetadataStore: this.scriptMetadataStore,
       orgCache: this.orgCache,
       typescriptLibDirs: providers.typescriptLibDirs,
+      gitFs: providers.gitFs ?? nodeFs,
+      gitToken: async () => {
+        const header = await this.auth.authHeaderValue();
+        return header.startsWith(AuthTypes.BEARER_PREFIX) ? header.slice(AuthTypes.BEARER_PREFIX.length) : header;
+      },
+      gitFetch: providers.fetchFn,
+      gitEnv: providers.gitEnv,
     });
 
     // The gateway is a second origin that takes the same stored `b6pt_` token, but per request: it

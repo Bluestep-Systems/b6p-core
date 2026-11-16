@@ -18,22 +18,6 @@ export class ScriptFolder extends ScriptNode {
     return new ScriptFolder(downstairsUri, this.scriptRoot);
   }
 
-  public override async upload(_arg?: {
-    upstairsUrlOverrideString?: string;
-    isSnapshot?: boolean;
-    overwriteConfirmed?: boolean;
-  }): Promise<Response | void> {
-    this.ctx.logger.info(`ScriptFolder.upload() called on ${this.path()}; no action taken.`);
-    return;
-  }
-
-  public override async getReasonToNotPush(_arg?: {
-    upstairsOverride?: URL;
-    isSnapshot?: boolean;
-  }): Promise<string | null> {
-    return `Node (${this.path()}) is a folder`;
-  }
-
   public override async download(): Promise<Response> {
     return new Response(null, { status: ResponseCodes.TEAPOT, statusText: "No Content" });
   }
@@ -118,6 +102,10 @@ export class ScriptFolder extends ScriptNode {
 
     result.push(dirUri.asDirectory()); // include the directory itself, marked as a folder
     for (const [name, type] of items) {
+      // The draft folder is the git working tree: its repository is not part of the script.
+      if (name === ".git") {
+        continue;
+      }
       const fullPath = dirUri.joinPath(name);
       if (type === "directory") {
         const subFolder = this.factory.createFolder(fullPath, this.scriptRoot);

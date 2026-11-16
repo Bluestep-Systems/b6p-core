@@ -2,7 +2,12 @@ import * as path from "path";
 import { B6PUri } from "../B6PUri";
 import { DownstairsPathParser } from "../data/DownstairsPathParser";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
-import { executePush, type PushResult } from "./push";
+import type { GitIdentity } from "@bluestep-systems/b6p-core-bsjs-git";
+import { FolderNames } from "../constants";
+import type { PublishRefusal } from "./GitSync";
+import type { TypeCheckError } from "./ScriptTranspiler";
+import { auditDraft, draftFolderOf, GitSwitchDeclinedError, pullDraft, type DraftTarget } from "./GitSync";
+import { executePush, legacySyncRecords, type PushResult } from "./push";
 import type { ScriptContext } from "./ScriptContext";
 import { ScriptFactory } from "./ScriptFactory";
 
@@ -31,6 +36,12 @@ export interface PullResult {
    * @lastreviewed null
    */
   keptLocalPaths: string[];
+  /**
+   * True when this pull switched the script from WebDAV to git publishing, which cannot be undone: its draft and
+   * snapshot no longer accept WebDAV writes.
+   * @lastreviewed null
+   */
+  switchedToGit: boolean;
 }
 
 /**
@@ -45,6 +56,56 @@ export interface DeployConfig {
     url: string;
     snapshot?: boolean;
   }>;
+  /**
+   * Who the deploy's commits are by; default: the git config of the source draft folder, then the environment.
+   * @lastreviewed null
+   */
+  author?: GitIdentity;
+  /**
+   * The commit message of each target's commit.
+   * @lastreviewed null
+   */
+  message?: string;
+  /**
+   * The caller already confirmed switching WebDAV targets to git (one-way), so do not ask.
+   * @lastreviewed null
+   */
+  enableGit?: boolean;
+  /**
+   * The targets are built by a bundler outside this tool: no build manifest is written for them.
+   * @lastreviewed null
+   */
+  externallyBuilt?: boolean;
+}
+
+/**
+ * What {@link ScriptService.deploy} did for one target. `error` carries the typed error (for example a
+ * `GitIdentityError`) when the target failed before or during the push; the other fields are then empty.
+ * @lastreviewed null
+ */
+export interface DeployTargetResult {
+  target: string;
+  pushed: boolean;
+  commitSha: string | null;
+  publishedSha: string | null;
+  publishError: string | null;
+  /**
+   * The platform's structured refusal of the publish, when it refused.
+   * @lastreviewed null
+   */
+  publishRefusal: PublishRefusal | null;
+  /**
+   * The type-check count of the push (the script's own sources only, never a `.d.ts`); `null` when none ran.
+   * @lastreviewed null
+   */
+  typeCheckDiagnostics: number | null;
+  /**
+   * The diagnostics counted in `typeCheckDiagnostics`, located (`file` relative to the draft folder).
+   * @lastreviewed null
+   */
+  typeCheckErrors: TypeCheckError[];
+  switchedToGit: boolean;
+  error?: unknown;
 }
 
 /**
@@ -132,6 +193,10 @@ export class ScriptService {
     snapshot?: boolean;
     message?: string;
     overwrite?: string[];
+    author?: GitIdentity;
+    adoptUnbound?: boolean;
+    enableGit?: boolean;
+    externallyBuilt?: boolean;
   }): Promise<PushResult | null> {
     const targetUrl = opts.targetUrl ?? (await this.ctx.prompt.inputBox({ prompt: "Paste in the target formula URI" }));
     if (targetUrl === undefined) {
@@ -146,6 +211,10 @@ export class ScriptService {
       snapshot: opts.snapshot ?? false,
       message: opts.message,
       overwrite: opts.overwrite,
+      author: opts.author,
+      adoptUnbound: opts.adoptUnbound,
+      enableGit: opts.enableGit,
+      externallyBuilt: opts.externallyBuilt,
     });
   }
 
@@ -154,6 +223,9 @@ export class ScriptService {
     snapshot?: boolean;
     message?: string;
     overwrite?: string[];
+    author?: GitIdentity;
+    enableGit?: boolean;
+    externallyBuilt?: boolean;
   }): Promise<PushResult | null> {
     this.ctx.logger.info(`Push current for file: ${opts.filePath}`);
     const baseUrl = await this.deriveBaseUrl(opts.filePath);
@@ -172,6 +244,9 @@ export class ScriptService {
         snapshot: opts.snapshot,
         message: opts.message,
         overwrite: opts.overwrite,
+        author: opts.author,
+        enableGit: opts.enableGit,
+        externallyBuilt: opts.externallyBuilt,
       });
     }
     const parser = new DownstairsPathParser(opts.filePath);
@@ -181,25 +256,32 @@ export class ScriptService {
       snapshot: opts.snapshot,
       message: opts.message,
       overwrite: opts.overwrite,
+      author: opts.author,
+      enableGit: opts.enableGit,
+      externallyBuilt: opts.externallyBuilt,
     });
   }
 
   /**
-   * Pull a script tree from the platform into the workspace.
+   * Pull a script from the platform into the workspace.
    *
-   * @param opts.overwriteLocalPaths `downstairsPath` entries (as returned by the
-   *   fetch walk and listed by {@link audit}) for which the platform copy may
-   *   overwrite even a locally-edited file. Scoped per file — never the whole
-   *   tree — so a confirmation shown to the user covers exactly the files that
-   *   can be force-overwritten and nothing more.
+   * The draft is the script's git draft branch: a first pull clones it into `<U>/<script>/draft` (a script still
+   * publishing over WebDAV is switched to git first, which cannot be undone, after a confirmation), a later one
+   * fetches and fast-forwards it. The generated `declarations/` folder is still read over WebDAV.
+   *
+   * @param opts.overwriteLocalPaths `downstairsPath` entries (as returned by {@link audit}) for which the platform
+   *   copy may overwrite even a locally-edited file. Scoped per file — never the whole tree — so a confirmation shown
+   *   to the user covers exactly the files that can be force-overwritten and nothing more.
+   * @param opts.enableGit The caller already confirmed switching a WebDAV script to git; don't ask.
    * @returns The kept-files outcome, or `null` when the pull aborted before
-   *   fetching (no URL, unreadable listing, or the wrong-directory guard).
+   *   fetching (no URL, unreadable listing, the wrong-directory guard, or a declined switch to git).
    * @lastreviewed null
    */
   async pull(opts: {
     formulaUrl?: string;
     workspacePath: string;
     overwriteLocalPaths?: string[];
+    enableGit?: boolean;
   }): Promise<PullResult | null> {
     const formulaUrl =
       opts.formulaUrl ?? (await this.ctx.prompt.inputBox({ prompt: "Paste in the desired formula URL" }));
@@ -239,9 +321,48 @@ export class ScriptService {
     }
 
     const factory = this.getFactory();
+    const rootPath = path.join(opts.workspacePath, U, scriptName);
+    const draftPath = draftFolderOf(rootPath);
+    const draftPrefix = `${scriptName}/${FolderNames.DRAFT}/`;
+    const draftOverwrite = (opts.overwriteLocalPaths ?? [])
+      .filter((p) => p.startsWith(draftPrefix))
+      .map((p) => p.slice(draftPrefix.length));
     // Locally-edited files the divergence guard kept instead of overwriting;
     // reported as one summary after the loop rather than one warning per file.
     const keptLocalPaths: string[] = [];
+    let switchedToGit = false;
+
+    // The script's metadata (what `push`, `audit` and `getSetupUrl` resolve a script by) is written here, since the git
+    // pull no longer touches it file by file.
+    const scriptRoot = factory.createScriptRoot(B6PUri.fromFsPath(rootPath).asDirectory());
+    scriptRoot.withParser(parser);
+    const target: DraftTarget = {
+      ctx: this.ctx,
+      script: await parser.getScriptBaseKey(),
+      baseUrl: `${parser.url.origin}/`,
+      draftPath,
+    };
+    try {
+      const drafted = await pullDraft(target, {
+        enableGit: opts.enableGit,
+        overwrite: draftOverwrite,
+        lastSynced: await legacySyncRecords(scriptRoot, draftPath),
+      });
+      keptLocalPaths.push(...drafted.keptLocalPaths);
+      switchedToGit = drafted.switchedToGit;
+    } catch (error) {
+      if (error instanceof GitSwitchDeclinedError) {
+        this.ctx.prompt.error(`Pull aborted: ${error.message}.`);
+        return null;
+      }
+      throw error;
+    }
+    if (switchedToGit) {
+      this.ctx.prompt.warn(
+        "This script now publishes through git. The switch cannot be undone: its draft and snapshot no longer " +
+          "accept WebDAV writes, and its history is the git history from here on."
+      );
+    }
 
     const pullTasks = fetchedScriptObject.map((entry) => ({
       execute: async () => {
@@ -258,9 +379,9 @@ export class ScriptService {
           // integrity verification, and `lastPulled` metadata tracking — all the
           // behaviour the previous inline fetch+writeFile loop was missing.
           const fileUri = B6PUri.fromFsPath(ultimatePath);
-          const scriptRoot = factory.createScriptRoot(fileUri);
-          scriptRoot.withParser(parser);
-          const file = factory.createFile(fileUri, scriptRoot);
+          const fileRoot = factory.createScriptRoot(fileUri);
+          fileRoot.withParser(parser);
+          const file = factory.createFile(fileUri, fileRoot);
           // Make sure the parent directory exists before download writes the file.
           const parentUri = fileUri.dirname;
           if (!(await this.ctx.fs.exists(parentUri))) {
@@ -285,6 +406,7 @@ export class ScriptService {
     await this.ctx.scriptMetadataStore.beginBatch();
     let pullSucceeded = false;
     try {
+      await scriptRoot.modifyMetaData();
       await this.ctx.progress.withProgress(pullTasks, {
         title: "Pulling Script...",
         cleanupMessage: "Cleaning up the downstairs folder...",
@@ -320,19 +442,23 @@ export class ScriptService {
     }
 
     this.ctx.prompt.info("Pull complete!");
-    return { keptLocalPaths };
+    return { keptLocalPaths, switchedToGit };
   }
 
-  async pullCurrent(opts: { filePath: string; workspacePath: string }): Promise<PullResult | null> {
+  async pullCurrent(opts: {
+    filePath: string;
+    workspacePath: string;
+    enableGit?: boolean;
+  }): Promise<PullResult | null> {
     const baseUrl = await this.deriveBaseUrl(opts.filePath);
     if (!baseUrl) {
       const url = await this.ctx.prompt.inputBox({ prompt: "Could not determine script URL. Paste the formula URL:" });
       if (!url) {
         return null;
       }
-      return await this.pull({ formulaUrl: url, workspacePath: opts.workspacePath });
+      return await this.pull({ formulaUrl: url, workspacePath: opts.workspacePath, enableGit: opts.enableGit });
     }
-    return await this.pull({ formulaUrl: baseUrl, workspacePath: opts.workspacePath });
+    return await this.pull({ formulaUrl: baseUrl, workspacePath: opts.workspacePath, enableGit: opts.enableGit });
   }
 
   // ── Audit ─────────────────────────────────────────────────────────
@@ -353,43 +479,27 @@ export class ScriptService {
 
   private async auditWithUrl(baseUrl: string, workspacePath: string): Promise<AuditResult | null> {
     const parser = this.createParser(baseUrl);
-    const fetchedScriptObject = await parser.getScript();
-    if (!fetchedScriptObject) {
-      this.ctx.logger.warn("fetchedScriptObject is null during audit");
+    const U = await parser.getU();
+    const scriptName = await parser.getScriptName();
+    const audit = await auditDraft({
+      ctx: this.ctx,
+      script: await parser.getScriptBaseKey(),
+      baseUrl: `${parser.url.origin}/`,
+      draftPath: draftFolderOf(path.join(workspacePath, U, scriptName)),
+    });
+    if (!audit) {
+      this.ctx.prompt.error(
+        `The draft of "${scriptName}" is not a git working copy yet, so there is nothing to compare it against. ` +
+          `Pull the script first.`
+      );
       return null;
     }
 
-    const U = await parser.getU();
-    const changedFiles: string[] = [];
-    const factory = this.getFactory();
-
-    for (const entry of fetchedScriptObject) {
-      const ultimatePath = path.join(workspacePath, U, entry.downstairsPath);
-      if (ultimatePath.endsWith("/") || entry.downstairsPath.endsWith("/")) {
-        continue; // skip directories
-      }
-      const fileUri = B6PUri.fromFsPath(ultimatePath);
-      if (!(await this.ctx.fs.exists(fileUri))) {
-        changedFiles.push(entry.downstairsPath + " (new)");
-        continue;
-      }
-      // Use ScriptFile.currentIntegrityStatus() so that we get the same robust ETag handling
-      // (standard / weak / numeric / complex) used by download(). Files served with numeric or
-      // complex ETags (declaration/library files) expose no content hash, so their status is
-      // "indeterminate" — we cannot assert a difference and must not report them as changed,
-      // exactly as download() skips their integrity verification. Only a genuine "mismatch",
-      // where both hashes are known and differ, counts as a changed file.
-      const scriptRoot = factory.createScriptRoot(fileUri);
-      scriptRoot.withParser(parser);
-      const file = factory.createFile(fileUri, scriptRoot);
-      const upstairsOverride = new URL(entry.upstairsPath);
-      const status = await file.currentIntegrityStatus({ upstairsOverride });
-      if (status === "mismatch") {
-        changedFiles.push(entry.downstairsPath);
-      } else if (status === "indeterminate") {
-        this.ctx.logger.debug(`Skipping ${entry.downstairsPath}: server exposes no content hash to compare against`);
-      }
-    }
+    const draftPrefix = `${scriptName}/${FolderNames.DRAFT}/`;
+    const changedFiles = [
+      ...audit.changed.map((p) => draftPrefix + p),
+      ...audit.missingLocally.map((p) => `${draftPrefix}${p} (new)`),
+    ];
 
     if (changedFiles.length === 0) {
       this.ctx.prompt.info("No differences detected. Local script is in sync with the server.");
@@ -444,14 +554,14 @@ export class ScriptService {
 
   // ── Deploy ────────────────────────────────────────────────────────
 
-  async deploy(opts: { configPath: string }): Promise<void> {
+  async deploy(opts: { configPath: string }): Promise<DeployTargetResult[] | null> {
     this.ctx.logger.info(`Quick deploy from config: ${opts.configPath}`);
 
     // Read config file
     const configUri = B6PUri.fromFsPath(opts.configPath);
     if (!(await this.ctx.fs.exists(configUri))) {
       this.ctx.prompt.error(`Config file not found: ${opts.configPath}`);
-      return;
+      return null;
     }
 
     const configContent = await this.ctx.fs.readFile(configUri);
@@ -462,30 +572,70 @@ export class ScriptService {
       config = JSON.parse(configText) as DeployConfig;
     } catch (error) {
       this.ctx.prompt.error(`Failed to parse config file: ${error instanceof Error ? error.message : error}`);
-      return;
+      return null;
     }
 
     if (!config.sourceRootPath || !config.targets || config.targets.length === 0) {
       this.ctx.prompt.error("Invalid config file. Required fields: sourceRootPath, targets[]");
-      return;
+      return null;
     }
 
     this.ctx.logger.info(`Deploying to ${config.targets.length} target(s)`);
 
+    const results: DeployTargetResult[] = [];
     for (const target of config.targets) {
       this.ctx.logger.info(`Deploying to: ${target.url}`);
       try {
-        await this.push({
+        const pushed = await this.push({
           targetUrl: target.url,
           rootPath: config.sourceRootPath,
           snapshot: target.snapshot ?? false,
+          message: config.message,
+          author: config.author,
+          adoptUnbound: false,
+          enableGit: config.enableGit,
+          externallyBuilt: config.externallyBuilt,
+        });
+        results.push({
+          target: target.url,
+          pushed: pushed?.pushed ?? false,
+          commitSha: pushed?.commitSha ?? null,
+          publishedSha: pushed?.publishedSha ?? null,
+          publishError: pushed?.publishError ?? null,
+          publishRefusal: pushed?.publishRefusal ?? null,
+          typeCheckDiagnostics: pushed?.typeCheckDiagnostics ?? null,
+          typeCheckErrors: pushed?.typeCheckErrors ?? [],
+          switchedToGit: pushed?.switchedToGit ?? false,
         });
       } catch (error) {
         this.ctx.logger.error(`Failed to deploy to ${target.url}: ${error instanceof Error ? error.message : error}`);
+        results.push({
+          target: target.url,
+          pushed: false,
+          commitSha: null,
+          publishedSha: null,
+          publishError: null,
+          publishRefusal: null,
+          typeCheckDiagnostics: null,
+          typeCheckErrors: [],
+          switchedToGit: (error as { switchedToGit?: boolean } | null)?.switchedToGit === true,
+          error,
+        });
       }
     }
 
-    this.ctx.prompt.info("Deploy complete!");
+    const failed = results.filter((r) => r.error !== undefined || !r.pushed || r.publishError !== null);
+    if (failed.length === 0) {
+      this.ctx.prompt.info("Deploy complete!");
+    } else {
+      this.ctx.prompt.error(
+        `Deploy finished with ${failed.length} of ${results.length} target(s) failed:\n\n` +
+          failed
+            .map((r) => `${r.target}: ${r.error instanceof Error ? r.error.message : (r.publishError ?? "not pushed")}`)
+            .join("\n")
+      );
+    }
+    return results;
   }
 
   // ── Setup URL ─────────────────────────────────────────────────────
