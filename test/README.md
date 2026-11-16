@@ -29,3 +29,9 @@ is how a POSIX runner still covers `file:///C:/…` drive-letter hrefs.
 
 `DownstairsPathParser.test.js` shows the other half of the technique — swapping the ambient `path`
 members for `path.win32` to drive the Windows branch from a Linux host.
+
+## The bsjs-git package's tests
+
+`packages/bsjs-git/test/` follows the same rules (node scripts over compiled `dist/`, listed by hand in that package's
+`test` script) and the root `npm test` runs them first. Its round-trip spec needs `git` on the PATH: it serves a real
+bare repo over loopback HTTP with `git http-backend`.

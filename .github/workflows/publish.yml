@@ -6,9 +6,13 @@
 #          provenance, then create the tag's GitHub Release from its
 #          CHANGELOG.md block.
 #
-# Requires: an NPM_TOKEN repo secret (npm automation token with publish
-#           rights to the @bluestep-systems scope). Provenance additionally
-#           needs id-token: write, granted in-workflow below.
+# Requires: npm trusted publishing. Each package (@bluestep-systems/b6p-core
+#           and @bluestep-systems/b6p-core-bsjs-git) lists this repo and
+#           publish.yml as its GitHub Actions trusted publisher on npmjs.com.
+#           npm authenticates the run by its OIDC token (id-token: write,
+#           below), so there is no NPM_TOKEN secret. A brand-new package must
+#           first be published by hand before a trusted publisher can be
+#           attached to it.
 # ============================================================================
 
 name: Publish
@@ -18,7 +22,7 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+*'  # v0.1.0, v1.2.3, v1.2.3-rc.1, ...
 
-# Least privilege: read the repo + mint an OIDC token for npm provenance.
+# Least privilege: read the repo + mint the OIDC token npm trusted publishing and provenance use.
 permissions:
   contents: read
   id-token: write
@@ -45,6 +49,10 @@ jobs:
           cache: 'npm'
           cache-dependency-path: package-lock.json
           registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing needs npm 11.5.1 or later; Node 22 bundles npm 10.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@11.21.2
 
       - name: Install dependencies
         run: |
@@ -84,11 +92,23 @@ jobs:
       - name: Test
         run: npm test
 
+      # The browser-safe git package is a dependency of the one below, so it goes first. A version that is
+      # already on npm is skipped, so a release that did not change it does not fail here.
+      - name: Publish bsjs-git (provenance, public)
+        run: |
+          set -euo pipefail
+          NAME="$(node -p "require('./packages/bsjs-git/package.json').name")"
+          VERSION="$(node -p "require('./packages/bsjs-git/package.json').version")"
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "::notice::$NAME@$VERSION is already on npm; skipping."
+            exit 0
+          fi
+          npm publish -w "$NAME" --provenance --access public
+        shell: bash
+
       # prepublishOnly re-runs clean+format-check+check-types+compile to build dist/.
       - name: Publish (provenance, public)
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # Up to v0.5.0 each Release was made by hand, which also created the tag. Later tags were pushed
   # straight from git: npm got 0.6.0-0.7.0 while the Releases page stayed at v0.5.0 as "Latest".

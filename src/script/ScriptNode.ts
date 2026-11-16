@@ -264,12 +264,6 @@ export abstract class ScriptNode implements ScriptPathElement {
     return path.relative(closestTsConfigFolderUri.fsPath, this.uri().fsPath);
   }
 
-  abstract upload(arg?: {
-    upstairsUrlOverrideString?: string;
-    isSnapshot?: boolean;
-    overwriteConfirmed?: boolean;
-  }): Promise<Response | void>;
-
   abstract download(): Promise<Response>;
 
   public async isFolder() {
@@ -280,8 +274,6 @@ export abstract class ScriptNode implements ScriptPathElement {
   public async isFile() {
     return !(await this.isFolder());
   }
-
-  abstract getReasonToNotPush(arg?: { upstairsOverride?: URL; isSnapshot?: boolean }): Promise<string | null>;
 
   public async copyDraftFileToBuild() {
     if (await this.isInItsRespectiveBuildFolder()) {
