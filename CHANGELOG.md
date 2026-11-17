@@ -5,6 +5,21 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`core.schema`: schema apply against one org** (ClickUp CU-1k5g91bqb7p). `SchemaService` over the org's GraphQL
+  `generateSchema`, `schemaRecipe`, `testSchema` and `applySchema`, which are reserved to super users:
+  `generate(org, topIds, { closure?, portable? })`, `recipe(org, name)`, `test(org, manifest, { verbose? })`,
+  `apply(org, manifest, key)` and `testThenApply(org, manifest, confirm, { verbose? })`, which tests, asks
+  `confirm` with the plan, and applies the same manifest string with the key the test minted. Typed results
+  (`SchemaTestResult`, `SchemaPlannedAction`, `SchemaApplyResult`, `SchemaRecipeResult`, and the rest, mirroring the
+  server's schema) and string-literal unions for its enums are exported. `verbose` is sent only when asked for. A
+  `FORBIDDEN` answer is `Err.SchemaForbiddenError`; a server that rejects a schema operation or `verbose` is
+  `Err.SchemaServerTooOldError`; other failures are `Err.GraphQLError` / `Err.GraphQLFetchError`. `apply` is never
+  retried (a retry after a lost answer would find the key spent).
+
 ## [1.0.0] - 2026-11-17
 
 ### BREAKING
