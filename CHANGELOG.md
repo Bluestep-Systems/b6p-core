@@ -16,6 +16,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Idempotent token rotation.** `core.gateway.tokens.rotate()` sends an `Idempotency-Key` (a fresh UUID per call)
+  on the rotate request. When that request goes unanswered (dropped connection, timeout, `502`/`503`/`504`) it is
+  retried once, at once, with the same key and presenting token; the gateway replays the first attempt's result and
+  never rotates twice, so a replayed replacement of the stored token is stored as usual. An unanswered retry, or a
+  `401`/`404` retry for the stored token (the first attempt most likely rotated and so revoked it), is
+  `GatewayOutcomeUnknownError` with the new `retried: true`; the store is left untouched. Other retry errors pass
+  through. A rotated token keeps its absolute end date, and an expired target is `400 invalid-request`
+  (`GatewayInvalidRequestError`). `GatewayRequestOptions.headers` carries extra request headers; `Authorization`,
+  `Cookie`, `Proxy-Authorization`, `Accept` and `Content-Type` are refused unsent. `Gateway.Headers.IDEMPOTENCY_KEY`.
+  `FakeGateway` replays a rotation per presenting token and key for 10 minutes, refuses a malformed or reused key
+  (`400`), counts `rotations`, can lose the next rotation's answer after acting (`loseNextRotateAnswer`), and with
+  `selfRotationRetryRefused` simulates the gateway's pre-fix `401` on a self-rotation retry.
+- **`Err.GatewayRewriteNotPermittedError { scope }`**: a `403 not-permitted` with reason `rewrite-not-permitted` on a token
+  mint or rotate (this account may not hold `kb:rewrite`). `FakeGateway.rewriteNotPermitted` switches the refusal on.
+  A reason web-global does not know, or an off-contract refusal, arrives as `503 registry-unavailable` (already
+  `GatewayUnavailableError`), never as `400`; nothing here assumes otherwise.
 - **`GatewayKnowledgeBase.id` and `.status`**: the listing's rows now carry the tenant record's `id` (`string | null`)
   and a `status` (`ok`, `branch-mismatch`, `repo-only`, `row-only`, `unconfirmed`, `undescribed`; any other value reads
   as `"unknown"` with `rawStatus`). A row without a `status` or with a malformed `id` is an invalid listing. Pulling a
@@ -54,6 +70,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   component (any case, and the NTFS/HFS+ aliases: trailing dots or spaces, Unicode-ignorable
   characters) is refused before any request (`GatewayWorkingCopyError`, reason
   `unsafe-target`).
+- **`core.gateway.marketplace`: list and pull marketplace repos** (ClickUp 86bczx3r8).
+  `list()` reads `GET /api/v1/registry/repos` (name, description, default branch, tags, `gitUrl`;
+  a body of the wrong shape is `GatewayUnexpectedResponseError`), `get(name)` throws
+  `GatewayNotFoundError` for an absent repo, and `pull(name, { cwd, dir?, ref? })` (core never reads `process.cwd()`) makes a plain working
+  clone of a branch or tag (default branch, `./<name>`), or fast-forwards an existing clone of the
+  same repo. A malformed listing entry is skipped, and a name is checked as a folder name (no separators, drive or reserved characters, device names) only when `dir` is omitted. A clone of another repo, on another ref, or on a tag that moved on the gateway is `GatewayCloneMismatchError` and is left
+  untouched; a refused tag is `tag-moved` or `tag-gone`. A listing name with a leading dot (`.git`), `git~N`, control characters a Windows device name (`CONIN$`, `COM0`, `CON .txt`) or an invisible Unicode character is never used as a folder, and such characters make a listing entry malformed. A relative folder without an absolute `cwd` is `GatewayConfigError`. `ref` accepts `refs/heads/x` / `refs/tags/x`. It never reads or changes script sources or pins, and there is no push. `GatewayGit` gained `inspect(dir, tag?)` and `remoteTagCommit(gitUrl, tag)` for it.
 - **`core.gateway.kb`: knowledge bases** (ClickUp 86bczx3r4). `GatewayKb.list({ scope?, tenant? })` returns
   the typed entries of `GET /api/v1/knowledge-bases` (a malformed body is
   `GatewayUnexpectedResponseError`); `resolve(ref)` takes `<name>` (global) or `<U…>/<name>` (tenant)
@@ -75,8 +98,54 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   body (`GatewayErrorBody` gained both), so a consumer can tell why.
 - **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
   reads instead of `authHeaderValue()`.
+- **`core.gateway.tokens`: self-service management of the caller's own gateway tokens**
+  (ClickUp 86bczx1wj): `list()`, `create({ alias, scopes, expiresAt? })` (the secret is returned
+  once; `expiresAt: null` never expires, reported as `neverExpires`), `revoke(idOrAlias)` and
+  `rotate(idOrAlias)`. An id or alias is trimmed and resolved through `list()` first; no match is
+  `GatewayNotFoundError`, an id/alias clash is `GatewayTokenAmbiguousError`, and a value containing
+  `b6pt_` is refused unsent; nothing is revoked, and the value is never quoted. Rotating the stored
+  token stores its replacement in place (still one stored token), with list, rotate and store as
+  one queue entry over one token read; if that store fails after the gateway rotated,
+  `GatewayTokenStoreError` carries the new token so it is not lost. An answer that carries the
+  secret but is otherwise off-contract throws `GatewayOffContractTokenError` carrying it (and the
+  stored token's replacement is still stored); the store reads the token back and reports another
+  writer's overwrite as `GatewayTokenStoreError`. A dropped connection, timeout or `502`/`503`/`504`
+  on the create or rotate request is `GatewayOutcomeUnknownError` (the token may have been minted
+  or rotated). `expiresAt` must be a strict ISO 8601 date-time with a time zone. Revoking the stored token is allowed, reported as `revokedCurrent: true`, and leaves
+  the stored token in place. Needs the `tokens:self` scope (`Gateway.Scopes.TOKENS_SELF`). New
+  errors `GatewayScopeEscalationError` (`403 scope-escalation`), `GatewayAliasTakenError`
+  (`409 alias-taken`), `GatewayInvalidArgumentError`, `GatewayTokenAmbiguousError`,
+  `GatewayTokenStoreError`, `GatewayOffContractTokenError` and `GatewayOutcomeUnknownError`. `GatewayClient.sequence((seq) => …)`
+  is the client's one queue primitive (the git layer's whole-operation hold uses it too); `seq`
+  sends requests over one token read. No secret is logged or put in an error message.
+- **Token expiry follows the gateway's contract delta (2026-11-10)**: `create` with no `expiresAt`
+  sends none; the gateway mints for the sooner of 90 days and the stored token's own expiry, and the
+  result's `expiryCapped: { cappedTo, requested: "90d" } | null` (new `GatewayCreatedToken`) is derived
+  from the returned `expiresAt`, set only when the cut exceeds 24 hours. An explicit expiry or `null` is
+  sent as given. A `403 not-permitted` on a mint or rotate is typed by its `reason`:
+  `Err.GatewayTokenExpiryRefusedError` (`expiry-exceeds-presenting`, `presentingExpiresAt` from the
+  body) or `Err.GatewayRestrictedMintsDisabledError` (`restricted-mints-disabled`); any other reason
+  stays `GatewayNotPermittedError`. Listed tokens carry `expired` (derived) and a nullable `createdAt`;
+  `lastUsedAt` is approximate. `kb:rewrite` can be minted and rotated. `FakeGateway` caps an absent
+  expiry, sends both reasons, enforces the 50-live-token limit and has a `restrictedMintsDisabled` switch.
+- **`BearerAuthProvider.replaceStoredToken(expected, next)`**: replaces the stored token only while
+  it is still `expected` (an in-process compare-then-write, not atomic across processes); the write
+  behind rotating it. Never prompts or logs either value.
 - **`FakeGateway`** (testing): an in-process gateway on `127.0.0.1` answering the contract's REST
-  shapes and error codes, with hooks for git routes.
+  shapes and error codes, with hooks for git routes, and the self-service token routes
+  (`grantToken` takes an optional id, alias, owner and expiry, and an expired token is refused;
+  `issuedTokens()` lists what it accepts; `issuedSecrets` every secret it ever accepted).
+
+### Fixed
+
+- **Overlapping persistence writes no longer drop each other** (ClickUp 86bczx1wj). Each
+  `SharedFilePersistence.setSecret` / `deleteSecret` / `clearSecrets` loads the whole `secrets.enc`,
+  changes one key and saves the whole file, and `set` / `delete` / `clearPublic` do the same with
+  `state.json`. Two that overlapped in one process each loaded the same file, and the later save
+  undid the earlier change: `SessionManager` re-saving `sessions` after a web response could write
+  back a stale `bearerAuth`, and concurrent public writes could lose a key. They now run one at a
+  time per file, each re-loading first. The file format and the atomic write-and-rename are unchanged. Across
+  processes (the CLI beside the extension) writes are still last-writer-wins.
 
 ## [0.9.0] - 2026-11-12
 

@@ -1,3 +1,5 @@
+import type { GatewayMintedToken } from "./types";
+
 /**
  * Centralized error namespace containing all custom error types used throughout the application.
  * All error classes extend {@link Error} and have descriptive names that indicate why the error was thrown.
@@ -933,6 +935,56 @@ export namespace Err {
   }
 
   /**
+   * `403 not-permitted` with reason `expiry-exceeds-presenting` on a token mint (`POST /api/v1/tokens`)
+   * or rotate: the token asked for would outlive the token making the request, whose expiry caps
+   * every new token's.
+   * @lastreviewed null
+   */
+  export class GatewayTokenExpiryRefusedError extends GatewayNotPermittedError {
+    /**
+     * The expiry asked for, ISO 8601; `null` for a token that never expires; `undefined` when the
+     * request named none (a rotate keeps the rotated token's own lifetime).
+     * @lastreviewed null
+     */
+    readonly requestedExpiresAt: string | null | undefined;
+    /**
+     * When the presenting token expires, ISO 8601, as the gateway reported it.
+     * @lastreviewed null
+     */
+    override readonly presentingExpiresAt: string;
+    constructor(message: string, requestedExpiresAt: string | null | undefined, presentingExpiresAt: string) {
+      super(message, "not-permitted", "expiry-exceeds-presenting", presentingExpiresAt);
+      this.name = "GatewayTokenExpiryRefusedError";
+      this.requestedExpiresAt = requestedExpiresAt;
+      this.presentingExpiresAt = presentingExpiresAt;
+    }
+  }
+
+  /**
+   * `403 not-permitted` with reason `restricted-mints-disabled` on a token mint or rotate: the gateway
+   * is not yet issuing tokens beyond the `mcp` scope (a rollout switch, not a property of the user).
+   * @lastreviewed null
+   */
+  export class GatewayRestrictedMintsDisabledError extends GatewayNotPermittedError {
+    constructor(message: string) {
+      super(message, "not-permitted", "restricted-mints-disabled");
+      this.name = "GatewayRestrictedMintsDisabledError";
+    }
+  }
+
+  /**
+   * `403 not-permitted` with reason `rewrite-not-permitted` on a token mint or rotate: this account may
+   * not hold the `kb:rewrite` scope, whatever the presenting token holds.
+   * @lastreviewed null
+   */
+  export class GatewayRewriteNotPermittedError extends GatewayNotPermittedError {
+    constructor(message: string, scope: string) {
+      super(message, "not-permitted", "rewrite-not-permitted", null, scope);
+      this.name = "GatewayRewriteNotPermittedError";
+    }
+  }
+
+  /**
    * `404`: the target does not exist, or exists but is not visible to this user. The gateway
    * deliberately does not say which.
    * @lastreviewed null
@@ -1109,6 +1161,200 @@ export namespace Err {
   }
 
   /**
+   * A request that mints or rotates a token (code `outcome-unknown`) failed in a way that does
+   * not say whether the gateway acted: the connection dropped, no answer came in time, or a
+   * `502`/`503`/`504` came back. The token may have been minted (create) or rotated (rotate, in
+   * which case the old one is revoked), and any new secret was never received. It extends
+   * {@link GatewayUnavailableError}, so a generic handler still sees "unavailable", but it is a
+   * distinct type so a consumer can tell it apart from a request that never reached the gateway.
+   *
+   * A rotation is retried once, with the same `Idempotency-Key` and the same presenting token,
+   * before this is thrown (`retried: true`): when the retry is also unanswered, or when it is a
+   * `401`/`404` for the stored token (the first attempt most likely rotated it, which revoked it).
+   * A create is never retried.
+   * @lastreviewed null
+   */
+  export class GatewayOutcomeUnknownError extends GatewayUnavailableError {
+    /**
+     * Which operation's outcome is unknown.
+     * @lastreviewed null
+     */
+    readonly operation: "create" | "rotate";
+    /**
+     * `true` when the request was retried once (with the same idempotency key) before giving up.
+     * @lastreviewed null
+     */
+    readonly retried: boolean;
+    constructor(message: string, operation: "create" | "rotate", status: number | null, retried: boolean = false) {
+      super(message, status, "outcome-unknown");
+      this.name = "GatewayOutcomeUnknownError";
+      this.operation = operation;
+      this.retried = retried;
+    }
+  }
+
+  /**
+   * `403 scope-escalation`: a token was asked for with a scope the presenting token does not
+   * hold. A new token's scopes never exceed the presenting token's.
+   * @lastreviewed null
+   */
+  export class GatewayScopeEscalationError extends GatewayError {
+    constructor(message: string) {
+      super(message, 403, "scope-escalation");
+      this.name = "GatewayScopeEscalationError";
+    }
+  }
+
+  /**
+   * `409 alias-taken`: another of this user's tokens already has the alias.
+   * @lastreviewed null
+   */
+  export class GatewayAliasTakenError extends GatewayError {
+    constructor(message: string) {
+      super(message, 409, "alias-taken");
+      this.name = "GatewayAliasTakenError";
+    }
+  }
+
+  /**
+   * An argument to a gateway operation was refused before anything was sent (code
+   * `invalid-argument`): an empty alias or scope list, an expiry that is not a date, or a value
+   * shaped like a token secret where an id or alias belongs, or a relative path with no absolute
+   * `cwd` to resolve it against (core never reads `process.cwd()`). The value is never quoted.
+   * @lastreviewed null
+   */
+  export class GatewayInvalidArgumentError extends GatewayError {
+    constructor(message: string) {
+      super(message, null, "invalid-argument");
+      this.name = "GatewayInvalidArgumentError";
+    }
+  }
+
+  /**
+   * An id-or-alias matched more than one of the caller's tokens (one by id, another by alias), so
+   * nothing was revoked or rotated (code `ambiguous`).
+   * @lastreviewed null
+   */
+  export class GatewayTokenAmbiguousError extends GatewayError {
+    /**
+     * The ids of the tokens it matched.
+     * @lastreviewed null
+     */
+    readonly ids: readonly string[];
+    constructor(message: string, ids: readonly string[]) {
+      super(message, null, "ambiguous");
+      this.name = "GatewayTokenAmbiguousError";
+      this.ids = ids;
+    }
+  }
+
+  /**
+   * The gateway rotated the stored token, so the old one is already revoked, but storing the
+   * replacement failed (code `store-failed`). The replacement's secret exists only here: it is
+   * carried in {@link replacement} so the consumer can show it and the user is not locked out.
+   *
+   * `replacement` is non-enumerable, so a generic error logger or `JSON.stringify` does not print
+   * the secret; read the property by name. The message never contains it.
+   * @lastreviewed null
+   */
+  export class GatewayTokenStoreError extends GatewayError {
+    /**
+     * The minted replacement, secret included.
+     * @lastreviewed null
+     */
+    declare readonly replacement: GatewayMintedToken;
+    constructor(message: string, replacement: GatewayMintedToken) {
+      super(message, null, "store-failed");
+      this.name = "GatewayTokenStoreError";
+      Object.defineProperty(this, "replacement", {
+        value: replacement,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
+  }
+
+  /**
+   * The gateway minted or rotated a token (code `off-contract`), but its `2xx` answer about the
+   * token was malformed (a field missing or of the wrong type). The answer did carry the secret,
+   * which exists nowhere else, so this error carries it in {@link secret} rather than dropping it.
+   *
+   * For a rotation of the stored token, the old token is already revoked, and the secret was
+   * still offered to the store; {@link stored} says whether that worked. `secret` is
+   * non-enumerable, so a generic error logger or `JSON.stringify` does not print it; read the
+   * property by name. The message never contains it.
+   * @lastreviewed null
+   */
+  export class GatewayOffContractTokenError extends GatewayError {
+    /**
+     * The minted `b6pt_…` secret.
+     * @lastreviewed null
+     */
+    declare readonly secret: string;
+    /**
+     * Which operation minted it.
+     * @lastreviewed null
+     */
+    readonly operation: "create" | "rotate";
+    /**
+     * Whether the secret is now the stored token (only ever `true` for a rotation of the stored token).
+     * @lastreviewed null
+     */
+    readonly stored: boolean;
+    constructor(message: string, operation: "create" | "rotate", secret: string, stored: boolean) {
+      super(message, null, "off-contract");
+      this.name = "GatewayOffContractTokenError";
+      this.operation = operation;
+      this.stored = stored;
+      Object.defineProperty(this, "secret", {
+        value: secret,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
+  }
+
+  /**
+   * A marketplace pull found a clone it must not update. `reason` is `different-repo` (the
+   * folder's `origin` is not this repo's `gitUrl`), `different-ref` (the clone is on another branch
+   * or tag than the one asked for, or its branch tracks something other than that ref), `tag-moved`
+   * (the tag checked out now points at another commit on the gateway) or `tag-gone` (the gateway
+   * no longer has the tag). Nothing was changed.
+   * @lastreviewed null
+   */
+  export class GatewayCloneMismatchError extends GatewayError {
+    /**
+     * Which of the four it was.
+     * @lastreviewed null
+     */
+    readonly reason: "different-repo" | "different-ref" | "tag-moved" | "tag-gone";
+    /**
+     * The local folder.
+     * @lastreviewed null
+     */
+    readonly dir: string;
+    /**
+     * The marketplace repo the pull was for.
+     * @lastreviewed null
+     */
+    readonly repo: string;
+    constructor(
+      message: string,
+      reason: "different-repo" | "different-ref" | "tag-moved" | "tag-gone",
+      dir: string,
+      repo: string
+    ) {
+      super(message, null, reason);
+      this.name = "GatewayCloneMismatchError";
+      this.reason = reason;
+      this.dir = dir;
+      this.repo = repo;
+    }
+  }
+
+  /**
    * A knowledge base could not be settled on. `reason` is `bad-ref` (the address is not `<name>` or
    * `<U…>/<name>`), `not-found` (no knowledge base the caller may read has that address; the
    * gateway does not say whether it exists), `ambiguous` (the listing holds more than one match;
@@ -1182,18 +1428,6 @@ export namespace Err {
       super(message, "not-permitted");
       this.name = "GatewayKnowledgeBasePushNotPermittedError";
       this.ref = ref;
-    }
-  }
-
-  /**
-   * A caller passed an argument core cannot act on, such as a relative path with no absolute
-   * `cwd` to resolve it against. Core never reads `process.cwd()`.
-   * @lastreviewed null
-   */
-  export class GatewayInvalidArgumentError extends GatewayError {
-    constructor(message: string) {
-      super(message, null, "invalid-argument");
-      this.name = "GatewayInvalidArgumentError";
     }
   }
 }

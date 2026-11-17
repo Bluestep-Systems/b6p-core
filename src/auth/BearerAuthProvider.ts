@@ -163,4 +163,41 @@ export class BearerAuthProvider implements AuthProvider<BearerAuthParams> {
   async storedToken(): Promise<string | undefined> {
     return (await this.readStored())?.token;
   }
+
+  /**
+   * Replace the stored token with `next`, but only while the stored token is still `expected`.
+   * Never prompts, and neither value is logged or put in an error message.
+   *
+   * This is the write behind rotating the stored token through the gateway: the gateway has
+   * already revoked `expected`, so `next` must take its place. It is the only write the gateway
+   * side has; it does not touch the web session, which still bootstraps through
+   * {@link authHeaderValue}.
+   *
+   * The check is an in-process compare-then-write, **not** atomic across processes: it reads, then
+   * writes, with awaits between, and the persistence layer holds no cross-process lock. It catches
+   * a token that something else (another b6p process, `auth update`) stored before the read; a
+   * write by another process that lands between this read and this write is overwritten. The
+   * value is read back after the write, so an overwrite that lands before that read-back is
+   * reported (thrown) rather than reported as stored.
+   *
+   * @throws {Error} when `next` is empty, the stored token is no longer `expected`, the write fails,
+   *   or the read-back finds something other than `next`
+   * @lastreviewed null
+   */
+  async replaceStoredToken(expected: string, next: string): Promise<void> {
+    if (next.length === 0) {
+      throw new Error("The replacement token is empty; the stored token was left as it was.");
+    }
+    const stored = await this.readStored();
+    if (stored?.token !== expected) {
+      throw new Error("The stored token is no longer the one that was rotated; it was left as it was.");
+    }
+    const creds: BearerAuthParams = { scheme: BEARER_SCHEME, token: next };
+    await this.persistence.setSecret(PERSISTENCE_KEY, JSON.stringify(creds));
+    // Read it back: another process sharing the store can write its stale copy over this one.
+    if ((await this.readStored())?.token !== next) {
+      throw new Error("The stored token was overwritten right after the replacement was written; it is not stored.");
+    }
+    this.logger.info("Token replaced");
+  }
 }

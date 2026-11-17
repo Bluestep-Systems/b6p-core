@@ -56,12 +56,30 @@ are load-bearing rather than stylistic — each records something this repo undi
   session: `GatewayClient` reads it through `BearerAuthProvider.storedToken()` (never prompts), not
   `authHeaderValue()`, and never through `SessionManager`. The gateway sends it only to its
   configured origin (https, or http on loopback), and it never appears in a message or log line.
+  The gateway side has exactly one write to it: `core.gateway.tokens.rotate()` of the stored token
+  puts the replacement in place through `GatewayTokenStore` →
+  `BearerAuthProvider.replaceStoredToken(expected, next)`, which refuses unless the stored token is
+  still `expected` (an in-process compare-then-write, not atomic across processes; do not claim
+  more). There is never a second stored token. Rotation runs list + rotate + store as ONE
+  `GatewayClient.sequence()` unit with one token read, so `current`, the token presented and
+  `expected` agree and no queued request presents the revoked token. A minted secret that
+  *reaches* core is never dropped: a store failure (including a read-back that finds another
+  writer's value) throws `GatewayTokenStoreError` (`replacement`), an off-contract answer
+  `GatewayOffContractTokenError` (`secret`, still stored for the stored token), both
+  non-enumerable. A secret whose answer never arrives (dropped connection, timeout, 502/503/504 on
+  the mint or rotate POST) is lost; core says so with `GatewayOutcomeUnknownError` (outcome
+  unknown, the old token may be revoked) and must not report it as a plain unavailable error.
+  `SharedFilePersistence` serializes each file's mutations in-process (one queue per file, secrets and state);
+  across processes it is still last-writer-wins, which is why the store reads back.
+  Never quote a user-supplied id-or-alias in a message; it may be a pasted secret.
 - **`core.gateway` is the second subsystem** (`GatewayService`, `src/gateway/`). `GatewayContext`
-  extends `PlatformContext` with `gatewayToken` (a `GatewayTokenSource`), `gatewayUrl()` (core
-  config `settings.gatewayUrl`, default `https://gateway.bluestep.net`) and `fetchFn`. Knowledge-base
-  and marketplace operations go beside `client` on `GatewayService`, over that one client, so all
-  REST requests made through the client share its sequential queue, and so does every git operation (`GatewayClient.sequence`);
-  `authHeadersFor` itself is not queued.
+  extends `PlatformContext` with `gatewayToken` (a `GatewayTokenSource`), `gatewayTokenStore` (a
+  `GatewayTokenStore`, read only by token rotation), `gatewayUrl()` (core config
+  `settings.gatewayUrl`, default `https://gateway.bluestep.net`) and `fetchFn`. `tokens`
+  (`GatewayTokenService`, the caller's own tokens) sits beside `client` and `git`, and knowledge-base
+  and marketplace operations go there too, over that one client, so all REST requests made through
+  the client share its sequential queue, and so does every git operation and token rotation
+  (`GatewayClient.sequence`, the one queue primitive); `authHeadersFor` itself is not queued.
   The client never follows a redirect (a 3xx is `redirect-refused`) and refuses a path that resolves
   off the gateway origin. Errors are `Err.Gateway*`; a git layer maps statuses
   with `gatewayErrorFor` rather than its own table.
@@ -76,6 +94,11 @@ are load-bearing rather than stylistic — each records something this repo undi
   provider, which has no `lstat`/symlink/mode surface for isomorphic-git. Each operation runs
   inside `GatewayClient.sequence`. Its specs mount `git http-backend` on `FakeGateway`
   (`test/support/GitHttpBackend.js`), so they need `git` on PATH.
+- **`core.gateway.marketplace` (`GatewayMarketplace`) is a plain working clone, never a push.** It
+  is independent of script sources and pins, takes every `gitUrl` from the listing, and refuses a
+  clone of another repo or ref (`GatewayCloneMismatchError`) rather than prompting, and takes the consumer's `cwd` (never
+  `process.cwd()`). A repo name becomes a folder name only when `dir` is omitted, and is then
+  checked as one plain segment; a malformed listing entry is skipped, not fatal.
 - **`core.gateway.kb` (`GatewayKb`) decides nothing for the user.** It never prompts: a pull that
   would overwrite throws `GatewayDirtyWorkingTreeError`, and a push the listing says the user cannot
   make (`canPush: false`, from a fresh listing, not a cached one) throws before any git request. It
@@ -102,8 +125,9 @@ are load-bearing rather than stylistic — each records something this repo undi
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
-`GitSync` push/pull/audit of the draft as a git working tree, `GitIdentity` commit authors), `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit`, `GatewayKb` — web-global's gateway over
-the `b6pt_` token, and pure-JS git through it), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`),
+`GitSync` push/pull/audit of the draft as a git working tree, `GitIdentity` commit authors), `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit`, `GatewayTokenService`, `GatewayMarketplace`, `GatewayKb` —
+web-global's gateway over the `b6pt_` token, pure-JS git through it, the caller's own token
+management, marketplace clones and knowledge bases), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`),
 `data/` (pure parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles, including `FakeGateway`).
 
 ## Scripts are git (since 0.9.0)
