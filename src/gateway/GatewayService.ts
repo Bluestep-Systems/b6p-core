@@ -1,6 +1,7 @@
 import { GatewayClient } from "./GatewayClient";
 import { GatewayGit } from "./GatewayGit";
 import type { GatewayGitOptions } from "./GatewayGit";
+import { GatewayMarketplace } from "./GatewayMarketplace";
 import type { GatewayContext } from "./GatewayContext";
 import { GatewayTokenService } from "./GatewayTokenService";
 
@@ -33,9 +34,16 @@ export class GatewayService {
    */
   readonly tokens: GatewayTokenService;
 
+  /**
+   * Marketplace repos: list and pull a plain working clone (no push).
+   * @lastreviewed null
+   */
+  readonly marketplace: GatewayMarketplace;
+
   constructor(ctx: GatewayContext, options: { git?: GatewayGitOptions } = {}) {
     this.client = new GatewayClient(ctx);
     this.git = new GatewayGit(ctx, this.client, options.git);
     this.tokens = new GatewayTokenService(this.client, ctx);
+    this.marketplace = new GatewayMarketplace(this.client, this.git);
   }
 }

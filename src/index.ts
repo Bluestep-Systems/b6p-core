@@ -83,12 +83,15 @@ export type {
   GatewayCloneOptions,
   GatewayCloneResult,
   GatewayGitOptions,
+  GatewayGitInspection,
   GatewayGitStatus,
   GatewayGitStatusOptions,
   GatewayPullResult,
   GatewayPushResult,
 } from "./gateway/GatewayGit";
 export { GatewayTokenService } from "./gateway/GatewayTokenService";
+export { GatewayMarketplace } from "./gateway/GatewayMarketplace";
+export type { GatewayMarketplacePullOptions, GatewayMarketplacePullResult } from "./gateway/GatewayMarketplace";
 export { GatewayClient, gatewayErrorFor, parseGatewayOrigin } from "./gateway/GatewayClient";
 export type { GatewayClientOptions, GatewayRequestOptions, GatewaySequence } from "./gateway/GatewayClient";
 export type { GatewayContext, GatewayFetch } from "./gateway/GatewayContext";

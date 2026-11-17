@@ -17,6 +17,12 @@ import { redactToken } from "./GatewayToken";
 const REMOTE = "origin";
 
 /**
+ * How many annotated tags deep a tag may point at another tag before peeling stops.
+ * @lastreviewed null
+ */
+const MAX_TAG_DEPTH = 10;
+
+/**
  * Tuning for a {@link GatewayGit}.
  * @lastreviewed null
  */
@@ -45,6 +51,38 @@ export interface GatewayCloneOptions {
    * @lastreviewed null
    */
   ref?: string;
+}
+
+/**
+ * What {@link GatewayGit.inspect} read from a clone.
+ * @lastreviewed null
+ */
+export interface GatewayGitInspection {
+  /**
+   * The `origin` remote's URL, or `null` when none is set.
+   * @lastreviewed null
+   */
+  origin: string | null;
+  /**
+   * The current branch, or `null` on a detached head.
+   * @lastreviewed null
+   */
+  branch: string | null;
+  /**
+   * The commit checked out.
+   * @lastreviewed null
+   */
+  head: string;
+  /**
+   * The remote branch the current branch tracks (`master`, not `origin/master`), or `null`.
+   * @lastreviewed null
+   */
+  upstream: string | null;
+  /**
+   * The commit the asked-for local tag names, fully peeled; `null` when no tag was asked for or it does not exist.
+   * @lastreviewed null
+   */
+  tagCommit: string | null;
 }
 
 /**
@@ -509,7 +547,78 @@ export class GatewayGit {
     });
   }
 
+  /**
+   * What a clone's own config and refs say, for a caller deciding whether it is the clone it wants:
+   * the `origin` URL, the current branch (`null` when detached), the head commit, the remote branch
+   * the current branch tracks, and, when `tag` is given, the commit that local tag names (peeled
+   * through any chain of annotated tags, to a depth of 10), or `null` when there is no such tag.
+   * @throws {Err.GatewayWorkingCopyError} `not-a-clone` when `dir` has no usable git repository
+   *   (no `.git`, a gitdir file, or a damaged one)
+   * @lastreviewed null
+   */
+  inspect(dir: string, tag?: string): Promise<GatewayGitInspection> {
+    return this.sequenced(async () => {
+      this.requireClone(dir);
+      try {
+        const origin: unknown = await git.getConfig({ fs: nodeFs, dir, path: `remote.${REMOTE}.url` });
+        const branch = (await git.currentBranch({ fs: nodeFs, dir })) ?? null;
+        const head = await git.resolveRef({ fs: nodeFs, dir, ref: "HEAD" });
+        const upstream = branch === null ? null : await this.upstreamOf(dir, branch);
+        const tagCommit = tag === undefined ? null : await this.localTagCommit(dir, tag);
+        return {
+          origin: typeof origin === "string" && origin.length > 0 ? origin : null,
+          branch,
+          head,
+          upstream,
+          tagCommit,
+        };
+      } catch {
+        throw new Err.GatewayWorkingCopyError(`${dir} does not hold a usable git repository.`, "not-a-clone");
+      }
+    });
+  }
+
+  /**
+   * The commit a tag points at on the gateway right now (an annotated tag is peeled to its commit),
+   * or `null` when the repo has no such tag. Nothing is written locally.
+   * @param gitUrl the `gitUrl` of a listing
+   * @throws {Err.GatewayError} a subclass for any gateway failure
+   * @lastreviewed null
+   */
+  remoteTagCommit(gitUrl: string, tag: string): Promise<string | null> {
+    return this.sequenced(async () => {
+      await this.client.authHeadersFor(gitUrl);
+      const refs = await git.listServerRefs({
+        http: this.http(),
+        url: gitUrl,
+        prefix: "refs/tags/",
+        peelTags: true,
+      });
+      const exact = refs.filter((r) => r.ref === `refs/tags/${tag}`);
+      const found = exact[0];
+      return found ? (found.peeled ?? found.oid) : null;
+    });
+  }
+
   // ── internals ──────────────────────────────────────────────────────
+
+  // The commit a local tag names, peeling annotated tags (a tag may point at another tag) up to a cap.
+  private async localTagCommit(dir: string, tag: string): Promise<string | null> {
+    let oid: string;
+    try {
+      oid = await git.resolveRef({ fs: nodeFs, dir, ref: `refs/tags/${tag}` });
+    } catch {
+      return null;
+    }
+    for (let depth = 0; depth < MAX_TAG_DEPTH; depth++) {
+      try {
+        oid = (await git.readTag({ fs: nodeFs, dir, oid })).tag.object;
+      } catch {
+        return oid;
+      }
+    }
+    return oid;
+  }
 
   // Run one operation in the client's queue. isomorphic-git can swallow an error thrown from a
   // response body (it treats it as the end of the stream), so a stall is remembered here and
