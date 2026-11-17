@@ -149,12 +149,16 @@ test("floor unset: push-only for every release tag, server only on dev", async (
   assert.strictEqual((await route({ body: "dev" }, null)).route.mode, "server-build");
   assert.strictEqual((await route({ status: 404 }, null)).route.reason, "unknown");
 });
-test("the real default floor (unset): every release tag is push-only, floor-unset; dev builds", async () => {
-  const tagged = await resolvePushRoute({
+test("the real default floor (26.11.16.00): older release lines are push-only, today's and later build; dev builds", async () => {
+  const older = await resolvePushRoute({
     origin: "https://org.bluestep.net",
-    fetchFn: fetcher({ body: "26.11.09.00" }).fn,
+    fetchFn: fetcher({ body: "26.11.09.02" }).fn,
   });
-  assert.deepStrictEqual(tagged, pushOnly("floor-unset", "26.11.09.00", null));
+  assert.deepStrictEqual(older, pushOnly("below-floor", "26.11.09.02", "26.11.16.00"));
+  for (const body of ["26.11.16.00", "26.11.17.00", "26.11.23.01"]) {
+    const r = await resolvePushRoute({ origin: "https://org.bluestep.net", fetchFn: fetcher({ body }).fn });
+    assert.strictEqual(r.mode, "server-build", body);
+  }
   const d = await resolvePushRoute({ origin: "https://org.bluestep.net", fetchFn: fetcher({ body: "dev" }).fn });
   assert.strictEqual(d.mode, "server-build");
 });

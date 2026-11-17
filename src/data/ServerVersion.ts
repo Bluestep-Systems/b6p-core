@@ -3,14 +3,13 @@ import { ApiEndpoints } from "../constants";
 /**
  * Earliest server release that builds a git-pushed draft: GraphQL `compileDraft` with `expectedDraftSha` compiles the
  * script's draft branch and commits the output (and, when it vouches for the build, the build manifest) as a build
- * commit (web CU-1k5g91bq6u2). A server at or above it (or a `dev` build) gets the build after every push; any other
- * gets the git push alone, and a snapshot push to it publishes nothing. `null` means unset: every server but a `dev`
- * build then gets the push alone.
+ * commit (web CU-1k5g91bq6u2, web#2022). A server at or above it (or a `dev` build) gets the build after every push; any
+ * other gets the git push alone, and a snapshot push to it publishes nothing. Set to the day web#2022 was readied
+ * (2026-11-16): web releases are dated, so every release cut from that day on carries it, and every earlier release
+ * line (backport patches included) sorts below it.
  * @lastreviewed null
  */
-// HUMAN-REVIEW-NEEDED: placeholder. Set this to the first web release tag containing the compileDraft git build
-// (CU-1k5g91bq6u2) once it is cut; 1.0.0 must not release while it is null.
-export const MIN_SERVER_VERSION: string | null = null;
+export const MIN_SERVER_VERSION: string | null = "26.11.16.00";
 
 /**
  * What a development build reports instead of a release tag, taken as current: `dev`, and `latest`

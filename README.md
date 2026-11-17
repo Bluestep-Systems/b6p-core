@@ -155,8 +155,8 @@ Nothing compiles in core or in `bsjsGit`; neither package has a runtime `typescr
 Before pushing, a push asks the org's server for its version (`/appinfo/version`) and picks the route; it never refuses
 a push for the version. A `dev` or `latest` server, or one at or above `MIN_SERVER_VERSION`, builds as above. Any other
 (below the floor, an unreadable version, the floor unset) gets the git push alone: no build, and a snapshot push takes
-no snapshot (`snapshotRefused`). `MIN_SERVER_VERSION` is unset (`null`) until the first web release with the git build
-is tagged.
+no snapshot (`snapshotRefused`). `MIN_SERVER_VERSION` is `26.11.16.00`, the day the git build
+(web#2022) was readied; every web release from that day on has it.
 
 ### Overwrites and destructive prompts
 

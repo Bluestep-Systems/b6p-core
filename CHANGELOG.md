@@ -25,8 +25,8 @@ Target release: **1.0.0** (breaking).
     `latest` build, or a release at or above `MIN_SERVER_VERSION`, builds. Anything else (below the floor, an
     unreadable version, the floor unset) gets the git push alone, and a snapshot push takes no snapshot:
     `PushResult.snapshotRefused` (`too-old` | `unknown` | `floor-unset`) says so, a result and not an error.
-    `MIN_SERVER_VERSION` is `null` (unset) until the first web tag with the git build exists; this release waits for
-    it. New exports: `resolvePushRoute`, `snapshotRefusalFor`, `meetsMinimumVersion`, `parseReleaseTag`,
+    `MIN_SERVER_VERSION` is `26.11.16.00`: web releases are dated, so every release cut from that day on has the
+    git build (web#2022), and every earlier release line, backports included, sorts below it. New exports: `resolvePushRoute`, `snapshotRefusalFor`, `meetsMinimumVersion`, `parseReleaseTag`,
     `MIN_SERVER_VERSION`, `PushRoute`, `SnapshotRefusal`.
   - `PushResult` gains `route`, `snapshotRefused`, `build` (the platform's `DraftCompileOutcome`), `buildCommitSha`,
     `buildVouched` and `buildError`; `DeployTargetResult` gains `buildCommitSha`, `buildVouched`, `buildError` and
