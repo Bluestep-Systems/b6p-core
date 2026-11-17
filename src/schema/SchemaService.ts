@@ -251,6 +251,14 @@ export class SchemaService {
     url.pathname = ApiEndpoints.GQL;
     url.search = "";
     url.hash = "";
+    if (retries === 0) {
+      // A request that must not be repeated cannot lean on csrfFetch's retry to recover a stale session: csrfFetch
+      // keeps an expired session object across its own login. Fetching the CSRF token first logs in when the session
+      // is expired, so csrfFetch then finds a live session and its one POST carries a matching token and cookie.
+      const warm = new URL(url);
+      warm.pathname = ApiEndpoints.CSRF_TOKEN;
+      await this.ctx.sessionManager.fetch(warm);
+    }
     const res = await this.ctx.sessionManager.csrfFetch(
       url,
       {
@@ -263,11 +271,15 @@ export class SchemaService {
     const text = await res.text();
     let body: GraphQlResponseBody<T>;
     try {
-      body = JSON.parse(text) as GraphQlResponseBody<T>;
+      const parsed: unknown = JSON.parse(text);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("not a GraphQL response object");
+      }
+      body = parsed as GraphQlResponseBody<T>;
     } catch {
       throw new Err.GraphQLFetchError(`${operation}: HTTP ${res.status} with no JSON body: ${text.substring(0, 500)}`);
     }
-    if (body.errors !== undefined && body.errors.length > 0) {
+    if (Array.isArray(body.errors) && body.errors.length > 0) {
       if (body.errors.some((e) => codeOf(e) === "FORBIDDEN")) {
         throw new Err.SchemaForbiddenError(operation);
       }
@@ -280,10 +292,17 @@ export class SchemaService {
       }
       throw new Err.GraphQLError(body.errors);
     }
-    if (!res.ok || body.data === undefined || body.data === null) {
-      throw new Err.GraphQLFetchError(`${operation}: HTTP ${res.status} ${res.statusText} with no data`);
+    const data = body.data;
+    if (
+      !res.ok ||
+      typeof data !== "object" ||
+      data === null ||
+      (data as Record<string, unknown>)[operation] === undefined ||
+      (data as Record<string, unknown>)[operation] === null
+    ) {
+      throw new Err.GraphQLFetchError(`${operation}: HTTP ${res.status} ${res.statusText} with no ${operation} answer`);
     }
-    return body.data;
+    return data;
   }
 }
 

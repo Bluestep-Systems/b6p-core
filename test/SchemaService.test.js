@@ -15,10 +15,18 @@ const ORG = "https://myorg.bluestep.net/shared/some/page.jsp?x=1#frag";
 /** A SchemaService over a stub session manager answering `answer(body, call)` with a GraphQL body. */
 function makeService(answer) {
   const calls = [];
+  const warms = [];
+  const order = [];
   const sessionManager = {
+    async fetch(url) {
+      warms.push(String(url));
+      order.push("warm");
+      return new Response("token");
+    },
     async csrfFetch(url, options, retries) {
       const call = { url: String(url), options, retries, body: JSON.parse(options.body) };
       calls.push(call);
+      order.push("post");
       const { status = 200, json } = answer(call.body, call);
       return new Response(typeof json === "string" ? json : JSON.stringify(json), { status });
     },
@@ -32,7 +40,7 @@ function makeService(answer) {
     progress: {},
     isDebugMode: () => false,
   });
-  return { service, calls };
+  return { service, calls, warms, order };
 }
 
 const PASSED = {
@@ -234,6 +242,13 @@ async function test(name, fn) {
     await assert.rejects(empty.service.test(ORG, "m"), Err.GraphQLFetchError);
   });
 
+  await test("an answer missing the operation's result is a GraphQLFetchError, never undefined or null", async () => {
+    for (const json of [{ data: {} }, { data: { applySchema: null } }, null, { errors: null }, []]) {
+      const { service } = makeService(() => ({ json }));
+      await assert.rejects(service.apply(ORG, "m", "k"), Err.GraphQLFetchError);
+    }
+  });
+
   await test("apply sends the manifest and key as given, decodes the result, and is never retried", async () => {
     const { service, calls } = makeService(() => ({ json: { data: { applySchema: APPLIED } } }));
     const manifest = "a: 1\r\n  b:  2\n\n";
@@ -243,6 +258,14 @@ async function test(name, fn) {
     assert.strictEqual(calls[0].body.variables.manifest, manifest);
     assert.strictEqual(calls[0].body.variables.key, "key-1");
     assert.strictEqual(calls[0].retries, 0);
+  });
+
+  await test("apply readies the session (one warm fetch) before its single, unretried POST", async () => {
+    const { service, calls, warms, order } = makeService(() => ({ json: { data: { applySchema: APPLIED } } }));
+    await service.apply(ORG, "m", "k");
+    assert.deepStrictEqual(warms, ["https://myorg.bluestep.net/csrf-token"]);
+    assert.deepStrictEqual(order, ["warm", "post"]);
+    assert.strictEqual(calls.length, 1, "the apply POST is sent once");
   });
 
   await test("apply decodes a refusal with null element and a null history commit", async () => {
