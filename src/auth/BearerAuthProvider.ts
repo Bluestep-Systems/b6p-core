@@ -149,4 +149,18 @@ export class BearerAuthProvider implements AuthProvider<BearerAuthParams> {
   async hasCredentials(): Promise<boolean> {
     return (await this.readStored()) !== undefined;
   }
+
+  /**
+   * The stored token, or `undefined` when none (or only a malformed one) is stored. Never prompts
+   * and never logs the value.
+   *
+   * This is the gateway's accessor: web-global's gateway takes the same `b6pt_` token, sent on
+   * every request (ruling 22). It exists so the gateway reads the token without becoming a caller
+   * of {@link authHeaderValue}, which stays reserved for `SessionManager.login()`'s bootstrap and
+   * would prompt when no token is stored.
+   * @lastreviewed null
+   */
+  async storedToken(): Promise<string | undefined> {
+    return (await this.readStored())?.token;
+  }
 }
