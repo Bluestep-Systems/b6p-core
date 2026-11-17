@@ -76,6 +76,10 @@ function assertSafeFirst(call, safeOption, destructiveOption) {
 
 const stub = createStub();
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "b6p-core-git-"));
+// An empty file to point GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM at. Not os.devNull: on Windows that is \\.\nul, which
+// Git for Windows cannot open as a config file, so every `git config` read failed there.
+const EMPTY_GIT_CONFIG = path.join(tmp, "empty.gitconfig");
+fs.writeFileSync(EMPTY_GIT_CONFIG, "");
 let baseUrl;
 let n = 0;
 
@@ -490,7 +494,7 @@ test("the default git config reader asks git itself (global config included)", a
   fs.writeFileSync(globalConfig, "[user]\n\tname = Global Person\n\temail = global@example.test\n");
   const saved = { global: process.env.GIT_CONFIG_GLOBAL, system: process.env.GIT_CONFIG_SYSTEM };
   process.env.GIT_CONFIG_GLOBAL = globalConfig;
-  process.env.GIT_CONFIG_SYSTEM = os.devNull;
+  process.env.GIT_CONFIG_SYSTEM = EMPTY_GIT_CONFIG;
   try {
     assert.deepStrictEqual(await resolveGitIdentity({ dir: tmp, env: {} }), {
       name: "Global Person",
@@ -609,9 +613,9 @@ test("executePush without any author fails before touching the platform or the f
   fs.writeFileSync(path.join(rootPath, "draft", "a.ts"), "x\n");
   const ctx = { ...pushContext(prompt, REPO), gitEnv: {} };
   const savedGlobal = process.env.GIT_CONFIG_GLOBAL;
-  process.env.GIT_CONFIG_GLOBAL = os.devNull;
+  process.env.GIT_CONFIG_GLOBAL = EMPTY_GIT_CONFIG;
   const savedSystem = process.env.GIT_CONFIG_SYSTEM;
-  process.env.GIT_CONFIG_SYSTEM = os.devNull;
+  process.env.GIT_CONFIG_SYSTEM = EMPTY_GIT_CONFIG;
   const gqlBefore = stub.state.gqlRequests;
   try {
     await rejects(executePush({ ctx, targetUrl: `${baseUrl}files/100001/`, rootPath, snapshot: false }), (e) =>

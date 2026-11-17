@@ -16,12 +16,16 @@ export type ScriptAuth = { readonly kind: "token"; readonly token: string } | { 
 /**
  * `fetch` for the platform's CSRF-protected endpoints, the way `b6p-core`'s `SessionManager.csrfFetch` does it: the
  * token is read from `/csrf-token`, sent as `B6P-CSRF-TOKEN`, a token the response refreshes is adopted, and a refused
- * request (403) is retried once with a fresh token when the token sent was a stale cached one or the response carried
- * a refreshed one.
+ * request (403) is retried once with a token fetched afresh.
  *
- * With a bearer token, the bearer opens the session on the first request. The CSRF token is bound to the session
- * cookie. Node has no cookie jar, so `Set-Cookie` values are kept here and sent back; a browser keeps its own (it hides
- * `Set-Cookie` from scripts and ignores a `Cookie` header), so every request also asks for `credentials: "include"`.
+ * The retry covers a token fetched moments before as well as a cached one. With a bearer token, `/csrf-token` answers
+ * in a session that is not yet signed in; the first bearer request signs it in, and the platform renews a session
+ * whose identity changes and drops its CSRF token. Releases that check the token after that renewal refuse the first
+ * request with a 403 that carries no refreshed token, and only a token read from the signed-in session passes.
+ *
+ * The CSRF token is bound to the session cookie. Node has no cookie jar, so `Set-Cookie` values are kept here and sent
+ * back; a browser keeps its own (it hides `Set-Cookie` from scripts and ignores a `Cookie` header), so every request
+ * also asks for `credentials: "include"`.
  * @lastreviewed null
  */
 export class CsrfFetch {
@@ -48,12 +52,12 @@ export class CsrfFetch {
 
   /**
    * Sends a request with the CSRF header (and, for a bearer, the bearer). The body must be replayable (a string or
-   * bytes), since a refused token is retried once.
+   * bytes), since a 403 is retried once with a token fetched afresh, whether the token sent was cached or new.
+   * @lastreviewed null
    */
   async request(url: string, init: RequestInit): Promise<Response> {
-    const cached = this.#csrf;
-    let response = await this.#send(url, init, cached ?? (await this.#token()));
-    if (response.status === 403 && (cached !== undefined || response.headers.has(CSRF_HEADER))) {
+    let response = await this.#send(url, init, this.#csrf ?? (await this.#token()));
+    if (response.status === 403) {
       response = await this.#send(url, init, await this.#token());
     }
     return response;
