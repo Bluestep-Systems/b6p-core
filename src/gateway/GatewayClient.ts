@@ -29,6 +29,78 @@ export interface GatewayRequestOptions {
    * @lastreviewed null
    */
   body?: JsonValue;
+  /**
+   * Extra request headers, e.g. `Idempotency-Key`. A name the client sets itself (`Authorization`,
+   * `Accept`, `Content-Type`) or a credential header (`Cookie`, `Proxy-Authorization`) is refused
+   * with {@link Err.GatewayConfigError} and nothing is sent, as is a name that is not an HTTP token
+   * or a value with control characters. No message quotes a value.
+   * @lastreviewed null
+   */
+  headers?: Readonly<Record<string, string>>;
+}
+
+/**
+ * Header names (lower case) a caller's {@link GatewayRequestOptions.headers} may not set: the ones
+ * the client sets itself, and every header that carries a credential.
+ * @lastreviewed null
+ */
+const RESERVED_HEADERS = new Set(["authorization", "proxy-authorization", "cookie", "accept", "content-type"]);
+
+/**
+ * An HTTP header name (RFC 9110 token).
+ * @lastreviewed null
+ */
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/**
+ * An HTTP header value: visible ASCII, spaces and tabs only.
+ * @lastreviewed null
+ */
+const HEADER_VALUE = /^[\t\x20-\x7e]*$/;
+
+/**
+ * Check a caller's extra headers before anything is sent. Messages name the header, never its value.
+ * @lastreviewed null
+ */
+function checkExtraHeaders(headers: Readonly<Record<string, string>>): void {
+  for (const [name, value] of Object.entries(headers)) {
+    if (!HEADER_NAME.test(name)) {
+      throw new Err.GatewayConfigError(
+        "A gateway request header name is not a valid HTTP header name; nothing was sent."
+      );
+    }
+    if (RESERVED_HEADERS.has(name.toLowerCase())) {
+      throw new Err.GatewayConfigError(
+        `A gateway request may not carry a caller-set ${name} header (the client owns it); nothing was sent.`
+      );
+    }
+    if (typeof value !== "string" || !HEADER_VALUE.test(value)) {
+      throw new Err.GatewayConfigError(
+        `The gateway request header ${name} has a value that is not valid; nothing was sent.`
+      );
+    }
+  }
+}
+
+/**
+ * The handle a {@link GatewayClient.sequence} unit sends its requests through. Every request it
+ * sends presents the one token read by its first {@link token} call.
+ * @lastreviewed null
+ */
+export interface GatewaySequence {
+  /**
+   * The stored token, read once on first call (a typed {@link Err.GatewayAuthError} when none is
+   * usable) and the same value on every later call and request of the unit. A secret: never log
+   * it or put it in a message.
+   * @lastreviewed null
+   */
+  token(): Promise<string>;
+  /**
+   * Send one request as part of the unit. Await each before sending the next: the unit holds the
+   * client's queue, so its own requests are not queued behind one another.
+   * @lastreviewed null
+   */
+  request(method: string, path: string, options?: GatewayRequestOptions): Promise<JsonValue | undefined>;
 }
 
 /**
@@ -154,6 +226,11 @@ export function gatewayErrorFor(status: number, bodyText: string, what: string, 
         const lacks = scope ? `the access token lacks the ${scope} scope` : "the access token lacks a required scope";
         return new Err.GatewayScopeError(msg(lacks), scope);
       }
+      if (code === "scope-escalation") {
+        return new Err.GatewayScopeEscalationError(
+          msg("a new token's scopes may not exceed those of the token making the request")
+        );
+      }
       return new Err.GatewayNotPermittedError(
         msg("this user is not permitted to do this"),
         code,
@@ -166,6 +243,9 @@ export function gatewayErrorFor(status: number, bodyText: string, what: string, 
     case 404:
       return new Err.GatewayNotFoundError(msg("not found, or not visible to this user"), code);
     case 409:
+      if (code === "alias-taken") {
+        return new Err.GatewayAliasTakenError(msg("another of this user's tokens already has that alias"));
+      }
       if (code === "token-limit") {
         const limit = body.limit ?? null;
         const full = limit
@@ -290,18 +370,44 @@ export class GatewayClient {
    * @lastreviewed null
    */
   request(method: string, path: string, options: GatewayRequestOptions = {}): Promise<JsonValue | undefined> {
-    return this.sequence(() => this.send(method, path, options));
+    return this.sequence((seq) => seq.request(method, path, options));
   }
 
   /**
-   * Run `task` in this client's one-at-a-time queue, behind any request or task already in
-   * flight. The git layer wraps a whole operation (several HTTP requests) in this so git traffic
-   * and REST calls never overlap. `task` must not itself call {@link request} or `sequence`, which
-   * would wait on the queue it is holding.
+   * Run `unit` as ONE entry in this client's one-at-a-time queue, behind any request or unit
+   * already in flight. Nothing else on this client runs until `unit` settles. The git layer wraps
+   * a whole operation (several HTTP requests) in this so git traffic and REST calls never overlap
+   * (it ignores `seq`); token rotation runs list + rotate + store in it, so nothing queued can
+   * present the just-revoked token.
+   *
+   * `seq.token()` reads the stored token once, on first use, and every later call and every
+   * `seq.request` of the unit presents that same value.
+   *
+   * Inside `unit`, send REST requests through `seq` only. Calling {@link request} or `sequence` on
+   * this client from inside it waits behind the unit itself and never runs.
    * @lastreviewed null
    */
-  sequence<T>(task: () => Promise<T>): Promise<T> {
-    const result = this.tail.then(task, task);
+  sequence<T>(unit: (seq: GatewaySequence) => Promise<T>): Promise<T> {
+    const run = async (): Promise<T> => {
+      let read: Promise<string> | undefined;
+      let open = true;
+      const token = (): Promise<string> => (read ??= this.requireToken());
+      const seq: GatewaySequence = {
+        token,
+        request: async (method, path, options = {}) => {
+          if (!open) {
+            throw new Err.GatewayConfigError("A gateway request was sent through a sequence that has ended.");
+          }
+          return this.send(method, path, options, token);
+        },
+      };
+      try {
+        return await unit(seq);
+      } finally {
+        open = false;
+      }
+    };
+    const result = this.tail.then(run, run);
     this.tail = result.catch(() => undefined);
     return result;
   }
@@ -318,7 +424,12 @@ export class GatewayClient {
     return token;
   }
 
-  private async send(method: string, path: string, options: GatewayRequestOptions): Promise<JsonValue | undefined> {
+  private async send(
+    method: string,
+    path: string,
+    options: GatewayRequestOptions,
+    readToken: () => Promise<string>
+  ): Promise<JsonValue | undefined> {
     const origin = await this.origin();
     // Neither message quotes the path: it may carry caller or server input.
     if (!path.startsWith("/") || path.startsWith("//")) {
@@ -336,9 +447,14 @@ export class GatewayClient {
       }
     }
     const what = `${method} ${url.pathname}${url.search}`;
-    const token = await this.requireToken();
+    if (options.headers) {
+      checkExtraHeaders(options.headers);
+    }
+    const token = await readToken();
 
+    // The caller's headers go first, so the client's own (already refused above) could never be overridden.
     const headers: Record<string, string> = {
+      ...options.headers,
       [Http.Headers.AUTHORIZATION]: `${AuthTypes.BEARER_PREFIX}${token}`,
       [Http.Headers.ACCEPT]: MimeTypes.APPLICATION_JSON,
     };

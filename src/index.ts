@@ -37,6 +37,7 @@ export type {
   FileStat,
   FileSystem,
   GatewayTokenSource,
+  GatewayTokenStore,
   LockDiagnoser,
   LockHolder,
   Logger,
@@ -88,10 +89,11 @@ export type {
   GatewayPullResult,
   GatewayPushResult,
 } from "./gateway/GatewayGit";
+export { GatewayTokenService } from "./gateway/GatewayTokenService";
 export { GatewayMarketplace } from "./gateway/GatewayMarketplace";
 export type { GatewayMarketplacePullOptions, GatewayMarketplacePullResult } from "./gateway/GatewayMarketplace";
 export { GatewayClient, gatewayErrorFor, parseGatewayOrigin } from "./gateway/GatewayClient";
-export type { GatewayClientOptions, GatewayRequestOptions } from "./gateway/GatewayClient";
+export type { GatewayClientOptions, GatewayRequestOptions, GatewaySequence } from "./gateway/GatewayClient";
 export type { GatewayContext, GatewayFetch } from "./gateway/GatewayContext";
 export { gatewayTokenProblem, redactToken } from "./gateway/GatewayToken";
 
@@ -144,7 +146,13 @@ export type { UpdateInfo, GithubRelease, ClientInfo, UpdateServiceConfig } from 
 // ─── Test utilities (still in core because they're vscode-free) ──────
 export { MockFileSystem } from "./testing/MockFileSystem";
 export { FakeGateway } from "./testing/FakeGateway";
-export type { FakeGatewayFailure, FakeGatewayRequest, FakeGatewayRoute } from "./testing/FakeGateway";
+export type {
+  FakeGatewayFailure,
+  FakeGatewayRequest,
+  FakeGatewayRoute,
+  FakeGatewayToken,
+  FakeGatewayTokenOptions,
+} from "./testing/FakeGateway";
 
 // ─── Shared ambient-style types (formerly types/index.d.ts) ──────────
 export type {
@@ -176,6 +184,16 @@ export type {
   GatewayKnowledgeBaseList,
   GatewayMarketplaceRepo,
   GatewayMarketplaceRepoList,
+  GatewayCreatedToken,
+  GatewayExpiryCap,
+  GatewayMintedToken,
+  GatewayMintedTokenBody,
+  GatewayTokenCreateRequest,
+  GatewayTokenList,
+  GatewayTokenRecord,
+  GatewayTokenRevokeResult,
+  GatewayTokenRotateResult,
+  GatewayTokenSummary,
 } from "./types";
 
 // ─── Browser-safe git client (separate package, re-exported for consumers of this one) ───
