@@ -49,9 +49,63 @@ are load-bearing rather than stylistic — each records something this repo undi
   base interface is the top object type, so `T extends AuthParams` would constrain nothing and
   `AuthProvider<string>` would type-check. Do not "simplify" it to an empty marker; if you change
   this or the rule above, re-check the other.
-- **The bearer token is a bootstrap, not a per-request credential.** `SessionManager.login()` is the
-  only caller of `AuthProvider.authHeaderValue()`: it sends the bearer once to `LOOKUP_TEST`, then
-  harvests the `JSESSIONID`/`INGRESSCOOKIE` cookies that carry every later request.
+- **One stored `b6pt_` token, two uses.** On the web origin it is a bootstrap, not a per-request
+  credential: `SessionManager.login()` is the only caller of `AuthProvider.authHeaderValue()`, sends
+  the bearer once to `LOOKUP_TEST`, then harvests the `JSESSIONID`/`INGRESSCOOKIE` cookies that carry
+  every later request. On web-global's gateway the same token *is* sent on every request, with no
+  session: `GatewayClient` reads it through `BearerAuthProvider.storedToken()` (never prompts), not
+  `authHeaderValue()`, and never through `SessionManager`. The gateway sends it only to its
+  configured origin (https, or http on loopback), and it never appears in a message or log line.
+  The gateway side has exactly one write to it: `core.gateway.tokens.rotate()` of the stored token
+  puts the replacement in place through `GatewayTokenStore` →
+  `BearerAuthProvider.replaceStoredToken(expected, next)`, which refuses unless the stored token is
+  still `expected` (an in-process compare-then-write, not atomic across processes; do not claim
+  more). There is never a second stored token. Rotation runs list + rotate + store as ONE
+  `GatewayClient.sequence()` unit with one token read, so `current`, the token presented and
+  `expected` agree and no queued request presents the revoked token. A minted secret that
+  *reaches* core is never dropped: a store failure (including a read-back that finds another
+  writer's value) throws `GatewayTokenStoreError` (`replacement`), an off-contract answer
+  `GatewayOffContractTokenError` (`secret`, still stored for the stored token), both
+  non-enumerable. A secret whose answer never arrives (dropped connection, timeout, 502/503/504 on
+  the mint or rotate POST) is lost; core says so with `GatewayOutcomeUnknownError` (outcome
+  unknown, the old token may be revoked) and must not report it as a plain unavailable error.
+  `SharedFilePersistence` serializes each file's mutations in-process (one queue per file, secrets and state);
+  across processes it is still last-writer-wins, which is why the store reads back.
+  Never quote a user-supplied id-or-alias in a message; it may be a pasted secret.
+- **`core.gateway` is the second subsystem** (`GatewayService`, `src/gateway/`). `GatewayContext`
+  extends `PlatformContext` with `gatewayToken` (a `GatewayTokenSource`), `gatewayTokenStore` (a
+  `GatewayTokenStore`, read only by token rotation), `gatewayUrl()` (core config
+  `settings.gatewayUrl`, default `https://gateway.bluestep.net`) and `fetchFn`. `tokens`
+  (`GatewayTokenService`, the caller's own tokens) sits beside `client` and `git`, and knowledge-base
+  and marketplace operations go there too, over that one client, so all REST requests made through
+  the client share its sequential queue, and so does every git operation and token rotation
+  (`GatewayClient.sequence`, the one queue primitive); `authHeadersFor` itself is not queued.
+  The client never follows a redirect (a 3xx is `redirect-refused`) and refuses a path that resolves
+  off the gateway origin. Errors are `Err.Gateway*`; a git layer maps statuses
+  with `gatewayErrorFor` rather than its own table.
+- **`core.gateway.git` (`GatewayGit`) is pure-JS git (isomorphic-git, exact-pinned) and keeps four
+  rules.** It runs only on gateway-supplied `gitUrl`s, with the bearer from `authHeadersFor(url)` on
+  every request (a foreign origin throws first; a 3xx is `redirect-refused`, never followed; a response whose URL is off
+  the origin is discarded). It pushes only
+  fast-forwards: no `force`, no `delete`, no tags, and a branch behind its upstream is refused
+  before the wire. A pull never overwrites: it throws `GatewayDirtyWorkingTreeError` with the
+  paths instead of prompting (anything staged refuses, since the checkout rebuilds the index), and puts the branch back if a checkout refuses. And it never
+  rewrites file contents (no autocrlf). Its clones go through Node's `fs`, not the `FileSystem`
+  provider, which has no `lstat`/symlink/mode surface for isomorphic-git. Each operation runs
+  inside `GatewayClient.sequence`. Its specs mount `git http-backend` on `FakeGateway`
+  (`test/support/GitHttpBackend.js`), so they need `git` on PATH.
+- **`core.gateway.marketplace` (`GatewayMarketplace`) is a plain working clone, never a push.** It
+  is independent of script sources and pins, takes every `gitUrl` from the listing, and refuses a
+  clone of another repo or ref (`GatewayCloneMismatchError`) rather than prompting, and takes the consumer's `cwd` (never
+  `process.cwd()`). A repo name becomes a folder name only when `dir` is omitted, and is then
+  checked as one plain segment; a malformed listing entry is skipped, not fatal.
+- **`core.gateway.kb` (`GatewayKb`) decides nothing for the user.** It never prompts: a pull that
+  would overwrite throws `GatewayDirtyWorkingTreeError`, and a push the listing says the user cannot
+  make (`canPush: false`, from a fresh listing, not a cached one) throws before any git request. It
+  has no "discard local changes" path; if one is ever added it is an explicit option behind a
+  `{ destructive: true, safeOption }` prompt, safe option first. A listed `name` or tenant used as a
+  default folder must be one plain path segment: no leading or trailing `.` (so never `.git`), no
+  `GIT~1`, control characters or Windows device names.
 - **A prompt that overwrites or deletes puts its safe option first and passes
   `{ destructive: true, safeOption }`.** Prompt implementations answer `options[0]` on an empty
   answer and under auto-confirm (the CLI's `--yes`); with the destructive option first, `--yes`
@@ -72,8 +126,11 @@ are load-bearing rather than stylistic — each records something this repo undi
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, `GitSync` push/pull/audit of the draft
 as a git working tree, `GitIdentity` commit authors, `ServerCompile` reading the platform's build diagnostics),
-`persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`), `data/` (pure parsers and utilities, `ServerVersion`),
-`constants/`, `update/`, `testing/` (vscode-free doubles).
+`gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit`, `GatewayTokenService`, `GatewayMarketplace`, `GatewayKb` —
+web-global's gateway over the `b6pt_` token, pure-JS git through it, the caller's own token
+management, marketplace clones and knowledge bases), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`),
+`data/` (pure parsers and utilities, `ServerVersion`), `constants/`, `update/`, `testing/` (vscode-free doubles,
+including `FakeGateway`).
 
 ## Scripts are git (since 0.9.0), and the platform builds them (since 1.0.0)
 
@@ -194,7 +251,7 @@ number to make the check pass** — tag the JSDoc instead.
 - **Commits** are conventional (`fix(scope):`, `feat:`, `docs:`, `release: vX.Y.Z — summary`) and
   reference the task as `(CU-<taskid>)`. AI-authored commits carry their `Co-Authored-By` trailer.
 - **PRs** target `master`. CI must pass — type-check, format-check, compile and the full suite on Node
-  20 and 22, and again on windows-latest (Node 24). Address automated review rounds as follow-up commits on the same branch.
+  24 and 26, and again on windows-latest (Node 24). Address automated review rounds as follow-up commits on the same branch.
 - **Releases**: a `release: vX.Y.Z — summary` commit bumps `package.json` / `package-lock.json` and
   dates the CHANGELOG block. After it merges, push an annotated tag
   (`git tag -a vX.Y.Z -m "vX.Y.Z — summary" && git push origin vX.Y.Z`). `publish.yml` publishes to

@@ -691,3 +691,371 @@ export type GqlParentNameResp = {
     }[];
   };
 };
+
+// ── Gateway (web-global, gateway.bluestep.net) ──────────────────────────
+
+/**
+ * The `error` codes the gateway puts in an error body, per the b6p gateway contract. A body may
+ * carry a code outside this list; {@link Err.GatewayError.code} keeps whatever arrived.
+ * @lastreviewed null
+ */
+export type GatewayErrorCode =
+  | "token-missing"
+  | "token-invalid"
+  | "scope-missing"
+  | "not-permitted"
+  | "not-found"
+  | "non-fast-forward"
+  | "too-large"
+  | "forge-unavailable"
+  | "scope-escalation"
+  | "alias-taken"
+  | "invalid-request"
+  | "token-limit"
+  | "registry-unavailable";
+
+/**
+ * The JSON body of a gateway error response. On git routes the body is best-effort, so every
+ * member may be absent.
+ * @lastreviewed null
+ */
+export interface GatewayErrorBody {
+  /**
+   * One of {@link GatewayErrorCode}, or an unknown code.
+   * @lastreviewed null
+   */
+  error?: string;
+  /**
+   * What happened, in the gateway's words.
+   * @lastreviewed null
+   */
+  message?: string;
+  /**
+   * The scope the token lacks, present with `scope-missing`; or the scope refused, present with the
+   * `403 not-permitted` reason `rewrite-not-permitted` (`kb:rewrite`).
+   * @lastreviewed null
+   */
+  scope?: string;
+  /**
+   * The cap the request ran into, when the gateway states it (`token-limit` carries the maximum
+   * number of live tokens). Absent otherwise.
+   * @lastreviewed null
+   */
+  limit?: number;
+  /**
+   * Why a `403 not-permitted` was refused, when the gateway says: `expiry-exceeds-presenting` (a
+   * mint would outlive the presenting token; see {@link presentingExpiresAt}) or
+   * `restricted-mints-disabled` (tokens beyond `mcp` cannot be minted yet) or `rewrite-not-permitted`
+   * (this account may not hold `kb:rewrite`; see {@link scope}). More values may come. An unknown reason
+   * or an off-contract refusal from web-global arrives as `503 registry-unavailable`, never as `400`.
+   * @lastreviewed null
+   */
+  reason?: string;
+  /**
+   * With reason `expiry-exceeds-presenting`: when the presenting token expires, ISO 8601.
+   * @lastreviewed null
+   */
+  presentingExpiresAt?: string;
+}
+
+/**
+ * How one listed knowledge base was matched against web's record.
+ * - `ok`: the forge repository and web's record agree (every global row is `ok`).
+ * - `branch-mismatch`: `liveBranch` is the forge's default branch, which differs from the tenant's setting.
+ * - `repo-only`: a forge repository with no web record; the title is the name.
+ * - `row-only`: a web record whose forge repository does not exist yet. `gitUrl` is given but a clone answers
+ *   404, and `canPush` is false.
+ * - `unconfirmed`: the tenant was asked and did not answer; details may be stale.
+ * - `undescribed`: no tenant was selected, so web was not asked; the title is the name.
+ * - `unknown`: a status newer than this version of core; the server's value is in `rawStatus`.
+ * @lastreviewed null
+ */
+export type GatewayKnowledgeBaseStatus =
+  | "ok"
+  | "branch-mismatch"
+  | "repo-only"
+  | "row-only"
+  | "unconfirmed"
+  | "undescribed"
+  | "unknown";
+
+/**
+ * One knowledge base the caller may read, as `GET /api/v1/knowledge-bases` lists it.
+ * @lastreviewed null
+ */
+export interface GatewayKnowledgeBase {
+  /**
+   * The tenant's record id (a uuid) when web knows the knowledge base; `null` when there is no record
+   * (`repo-only`, `unconfirmed`, `undescribed`). A global row carries web-global's id.
+   * @lastreviewed null
+   */
+  id: string | null;
+  /**
+   * How the gateway matched the forge repository with web's record. Every other field of the row keeps
+   * its guarantee under every status. See {@link GatewayKnowledgeBaseStatus}.
+   * @lastreviewed null
+   */
+  status: GatewayKnowledgeBaseStatus;
+  /**
+   * The status exactly as the server sent it, present only when `status` is `"unknown"` (a value this
+   * version of core does not know).
+   * @lastreviewed null
+   */
+  rawStatus?: string;
+  /**
+   * The CLI address: `global/<name>` or `tenant/<U…>/<name>`.
+   * @lastreviewed null
+   */
+  ref: string;
+  scope: "global" | "tenant";
+  /**
+   * The tenant key (`U<seqnum>`) for a tenant KB, `null` for a global one.
+   * @lastreviewed null
+   */
+  tenant: string | null;
+  name: string;
+  /**
+   * Falls back to the name when the tenant side has no title.
+   * @lastreviewed null
+   */
+  title: string;
+  liveBranch: string;
+  /**
+   * Whether the caller may push to this knowledge base.
+   * @lastreviewed null
+   */
+  canPush: boolean;
+  /**
+   * Absolute smart-HTTP URL. The server owns the layout; the client never builds one.
+   * @lastreviewed null
+   */
+  gitUrl: string;
+}
+
+/**
+ * Body of `GET /api/v1/knowledge-bases`.
+ * @lastreviewed null
+ */
+export interface GatewayKnowledgeBaseList {
+  knowledgeBases: GatewayKnowledgeBase[];
+}
+
+/**
+ * One marketplace repo, as `GET /api/v1/registry/repos` lists it.
+ * @lastreviewed null
+ */
+export interface GatewayMarketplaceRepo {
+  name: string;
+  description: string;
+  defaultBranch: string;
+  /**
+   * The repo's tags in the server's order, which is SemVer 2.0 precedence. The server keeps only the
+   * newest 1_000 when a repo has more. The client passes the list through as received: it does not
+   * re-sort or truncate it.
+   * @lastreviewed null
+   */
+  tags: string[];
+  /**
+   * Absolute smart-HTTP URL. The server owns the layout; the client never builds one.
+   * @lastreviewed null
+   */
+  gitUrl: string;
+}
+
+/**
+ * Body of `GET /api/v1/registry/repos`.
+ * @lastreviewed null
+ */
+export interface GatewayMarketplaceRepoList {
+  repos: GatewayMarketplaceRepo[];
+}
+
+/**
+ * One of the caller's own access tokens, as `GET /api/v1/tokens` lists it. The secret is never
+ * listed.
+ * @lastreviewed null
+ */
+export interface GatewayTokenRecord {
+  id: string;
+  /**
+   * Unique among this user's tokens.
+   * @lastreviewed null
+   */
+  alias: string;
+  scopes: string[];
+  /**
+   * ISO 8601, or `null` for a token minted before the gateway recorded creation times.
+   * @lastreviewed null
+   */
+  createdAt: string | null;
+  /**
+   * ISO 8601, or `null` for a token that never expires.
+   * @lastreviewed null
+   */
+  expiresAt: string | null;
+  /**
+   * ISO 8601, or `null` when the token has not been used. Approximate: the gateway stamps it at
+   * most every 12 hours, so it can trail the real last use by that long.
+   * @lastreviewed null
+   */
+  lastUsedAt: string | null;
+  /**
+   * Whether this is the token that made the request (the one b6p has stored).
+   * @lastreviewed null
+   */
+  current: boolean;
+}
+
+/**
+ * Body of `GET /api/v1/tokens`.
+ * @lastreviewed null
+ */
+export interface GatewayTokenList {
+  tokens: GatewayTokenRecord[];
+}
+
+/**
+ * A listed token, as `core.gateway.tokens.list()` returns it. The gateway lists expired tokens too;
+ * {@link expired} tells them apart.
+ * @lastreviewed null
+ */
+export interface GatewayTokenSummary extends GatewayTokenRecord {
+  /**
+   * `true` when {@link GatewayTokenRecord.expiresAt} is in the past by this machine's clock at the
+   * time of the listing. Derived here, not sent by the gateway.
+   * @lastreviewed null
+   */
+  expired: boolean;
+  /**
+   * `true` when {@link GatewayTokenRecord.expiresAt} is `null`.
+   * @lastreviewed null
+   */
+  neverExpires: boolean;
+}
+
+/**
+ * What `core.gateway.tokens.create()` mints.
+ * @lastreviewed null
+ */
+export interface GatewayTokenCreateRequest {
+  /**
+   * Unique among this user's tokens.
+   * @lastreviewed null
+   */
+  alias: string;
+  /**
+   * Must be a subset of the presenting token's scopes, or the gateway refuses with `scope-escalation`.
+   * @lastreviewed null
+   */
+  scopes: readonly string[];
+  /**
+   * ISO 8601 expiry, sent as given. `null` mints a token that never expires. Left out, the token is
+   * minted for 90 days, or until the presenting token expires if that comes first
+   * ({@link GatewayCreatedToken.expiryCapped} says when it did): the gateway refuses a token that
+   * would outlive the one making the request.
+   * @lastreviewed null
+   */
+  expiresAt?: string | null;
+}
+
+/**
+ * Set on a {@link GatewayCreatedToken} when no expiry was asked for and the default 90 days would
+ * have outlived the presenting token.
+ * @lastreviewed null
+ */
+export interface GatewayExpiryCap {
+  /**
+   * The expiry the token was minted with: the presenting token's own, ISO 8601.
+   * @lastreviewed null
+   */
+  cappedTo: string;
+  /**
+   * What would have applied without the cap.
+   * @lastreviewed null
+   */
+  requested: "90d";
+}
+
+/**
+ * What `core.gateway.tokens.create()` returns: the minted token and whether its default expiry was
+ * shortened.
+ * @lastreviewed null
+ */
+export interface GatewayCreatedToken extends GatewayMintedToken {
+  /**
+   * Non-null only when the caller gave no expiry and it was capped at the presenting token's.
+   * @lastreviewed null
+   */
+  expiryCapped: GatewayExpiryCap | null;
+}
+
+/**
+ * Body of `201` from `POST /api/v1/tokens` and `POST /api/v1/tokens/{id}/rotate`. It carries the
+ * secret, which the gateway shows only this once.
+ * @lastreviewed null
+ */
+export interface GatewayMintedTokenBody {
+  id: string;
+  /**
+   * The `b6pt_…` secret. Not retrievable again.
+   * @lastreviewed null
+   */
+  token: string;
+  alias: string;
+  scopes: string[];
+  /**
+   * ISO 8601, or `null` for a token that never expires.
+   * @lastreviewed null
+   */
+  expiresAt: string | null;
+}
+
+/**
+ * A freshly minted token, secret included. Core never logs it; showing it is the consumer's job.
+ * @lastreviewed null
+ */
+export interface GatewayMintedToken extends GatewayMintedTokenBody {
+  /**
+   * `true` when {@link GatewayMintedTokenBody.expiresAt} is `null`.
+   * @lastreviewed null
+   */
+  neverExpires: boolean;
+}
+
+/**
+ * Result of `core.gateway.tokens.revoke()`.
+ * @lastreviewed null
+ */
+export interface GatewayTokenRevokeResult {
+  id: string;
+  alias: string;
+  /**
+   * `true` when the revoked token was the one b6p has stored. Core leaves the stored (now dead)
+   * token in place; the consumer decides what to do about it.
+   * @lastreviewed null
+   */
+  revokedCurrent: boolean;
+}
+
+/**
+ * Result of `core.gateway.tokens.rotate()`.
+ * @lastreviewed null
+ */
+export interface GatewayTokenRotateResult {
+  /**
+   * The token that was rotated, now revoked.
+   * @lastreviewed null
+   */
+  replaced: { id: string; alias: string };
+  /**
+   * Its replacement: same alias, scopes and absolute end date (`expiresAt`), with a new secret.
+   * @lastreviewed null
+   */
+  token: GatewayMintedToken;
+  /**
+   * `true` when the rotated token was the one b6p has stored; the replacement is then stored in
+   * its place. (When storing fails, `rotate()` throws `Err.GatewayTokenStoreError` instead.)
+   * @lastreviewed null
+   */
+  rotatedCurrent: boolean;
+}

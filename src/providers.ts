@@ -143,6 +143,46 @@ export interface AuthProvider<T extends AuthParams> {
   hasCredentials(): Promise<boolean>;
 }
 
+// ── Gateway token ──────────────────────────────────────────────────
+
+/**
+ * Where the gateway client gets the global user's `b6pt_` access token. The client asks on every
+ * request and sends what it gets as `Authorization: Bearer <token>`, with no session bootstrap.
+ *
+ * `B6PCore` backs it with the token the bearer auth provider already stores (the same token that
+ * bootstraps the web session). It is an interface so the client and its specs depend only on
+ * "something that yields the token", not on where it is kept.
+ * @lastreviewed null
+ */
+export interface GatewayTokenSource {
+  /**
+   * The token, or `undefined` when there is none. Never prompts: a missing token surfaces as a
+   * typed error from the client, and the consumer decides how to ask for one.
+   * @lastreviewed null
+   */
+  token(): Promise<string | undefined>;
+}
+
+/**
+ * Where a rotated replacement of the stored `b6pt_` token is written. There is still ONE stored
+ * token: this replaces it in place and never adds a second.
+ *
+ * `B6PCore` backs it with {@link BearerAuthProvider.replaceStoredToken}. It is the narrowest write
+ * the token-management service needs, and the only one: it cannot clear, prompt, or store a token
+ * that is not replacing the one it was rotated from.
+ * @lastreviewed null
+ */
+export interface GatewayTokenStore {
+  /**
+   * Store `next` in place of `expected`. Rejects, leaving the stored token as it was, when the
+   * stored token is no longer `expected` (something else replaced it meanwhile) or cannot be
+   * written. The check is a compare-then-write, not atomic across processes. Neither value is
+   * ever logged or put in an error message.
+   * @lastreviewed null
+   */
+  replace(expected: string, next: string): Promise<void>;
+}
+
 // ── Logging ─────────────────────────────────────────────────────────
 
 export interface Logger {

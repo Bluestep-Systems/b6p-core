@@ -9,6 +9,10 @@ This package contains the headless orchestration logic shared by the
 anywhere Node does. You supply the platform adapters (file system, prompts, logging, progress,
 persistence) through provider interfaces.
 
+## Requirements
+
+Node.js **24 or newer** (`engines.node` is `>=24`).
+
 ## Packages
 
 This repo holds two npm packages: `@bluestep-systems/b6p-core` (this one, Node) and
@@ -63,6 +67,11 @@ between the local filesystem and the platform (the draft over git, `declarations
 | `getSetupUrl` | Resolve a pulled script's web-UI setup page |
 | `deriveWorkspacePath` | Recover the workspace folder from a path inside a script root |
 | `getFactory` | The `ScriptFactory` for entering the script tree from a bare path |
+
+`core.gateway` ([`GatewayService`](src/gateway/GatewayService.ts)) — web-global's gateway
+(`https://gateway.bluestep.net`), the origin for knowledge bases and marketplace repos. It
+holds the HTTP client, the git layer, `core.gateway.kb` (knowledge bases), `core.gateway.marketplace`
+and `core.gateway.tokens` for managing the caller's own access tokens; see [Gateway](#gateway) below.
 
 `core` itself — cross-cutting state that is not specific to any one subsystem:
 
@@ -186,6 +195,202 @@ confirm(message: string, options: string[], opts?: ConfirmOptions): Promise<stri
 So a `Prompt` that answers `options[0]` without asking (an empty answer, an auto-confirm mode)
 declines. Core's messages say what was kept and why. How to confirm (a flag, a button, piped
 input) is the consumer's to explain.
+
+### Gateway
+
+`core.gateway.client` ([`GatewayClient`](src/gateway/GatewayClient.ts)) talks to web-global's gateway
+with the same `b6pt_` access token `BearerAuthProvider` already stores: it reads the stored token on
+every request (never prompting) and sends it as `Authorization: Bearer <token>`. There is no session
+or login on this origin. REST requests through the client run one at a time; redirects are never
+followed, and a request path that resolves off the gateway's origin is refused before sending.
+
+```typescript
+await core.setConfig("gatewayUrl", "https://gateway.bluestep.net"); // the default; https only, except loopback
+const list = await core.gateway.client.getJson("/api/v1/knowledge-bases", { scope: "global" });
+const headers = await core.gateway.client.authHeadersFor(gitUrl); // for a git client; gateway origin only
+```
+
+Failures are typed, all extending `Err.GatewayError` (`status`, `code`):
+
+| Error | When |
+| --- | --- |
+| `GatewayAuthError` (`reason`) | `token-missing` (none stored; thrown before sending), `token-invalid` (401), `token-malformed` (not a `b6pt_` token; nothing sent) |
+| `GatewayScopeError` (`scope`) | `403 scope-missing` |
+| `GatewayNotPermittedError` | `403 not-permitted` |
+| `GatewayNotFoundError` | `404` (also for something that exists but is not visible) |
+| `GatewayScopeEscalationError` | `403 scope-escalation` (a new token asked for a scope the presenting one lacks) |
+| `GatewayConflictError` | `409 non-fast-forward` |
+| `GatewayAliasTakenError` | `409 alias-taken` |
+| `GatewayTooLargeError` | `413 too-large` |
+| `GatewayUnavailableError` | `502`/`503`/`504`, a network failure or a timeout |
+| `GatewayUnexpectedResponseError` | any other status, a redirect (`code: "redirect-refused"`, not followed), or a 2xx body that is not JSON |
+| `GatewayConfigError` | an unusable `gatewayUrl`, or a URL or request path that resolves off the gateway's origin |
+| `GatewayDirtyWorkingTreeError` (`paths`) | a pull would overwrite local changes (git layer) |
+| `GatewayCloneMismatchError` (`reason`, `dir`, `repo`) | a marketplace pull found a clone it must not update: `different-repo`, `different-ref`, `tag-moved` (the tag now names another commit) or `tag-gone` (the gateway no longer has it) |
+| `GatewayKnowledgeBaseError` (`reason`, `ref`, `candidates`) | a knowledge base address is `bad-ref`, `not-found`, `ambiguous`, `unsafe-name`, `wrong-branch` (a pull or push from a clone that is detached, off the live branch, or not tracking it; fields `branch`, `liveBranch`, `upstream`), or a clone is `not-a-kb` |
+| `GatewayKnowledgeBasePushNotPermittedError` (`ref`) | a push to a KB whose listing says `canPush: false` (a `GatewayNotPermittedError`) |
+| `GatewayInvalidArgumentError` | refused before sending: an empty alias or scope list, an expiry that is not a date, a pasted `b6pt_` secret where an id or alias belongs (token operations), or a relative path with no absolute `cwd` to resolve it against (core never reads `process.cwd()`) |
+| `GatewayWorkingCopyError` (`reason`) | the local folder cannot be used: `not-empty`, `not-a-clone`, `detached`, `no-upstream`, `diverged`, `ref-not-found`, `unsafe-target` (git layer), `wrong-repository` (knowledge-base pull) |
+
+`core.gateway.client.sequence((seq) => …)` runs a unit as one queue entry: nothing else on the
+client runs until it settles. `seq.token()` reads the token once, and `seq.request` presents that
+read. The git layer holds the queue for a whole operation with it, and token rotation uses it so
+nothing runs between the revoke and the store.
+
+`gatewayErrorFor(status, body, what)` applies the same mapping to a status seen elsewhere (the git
+layer). The token never appears in a message or a log line, including when the server echoes it.
+
+#### Git
+
+`core.gateway.git` ([`GatewayGit`](src/gateway/GatewayGit.ts)) clones and updates the repositories behind
+a knowledge base or marketplace listing, in pure JS ([isomorphic-git](https://isomorphic-git.org), MIT;
+no git install needed) over the gateway's smart HTTP endpoints. It takes the `gitUrl` from a listing
+and never builds one; a URL off the gateway's origin is refused before any request, and a redirect is
+not followed (`redirect-refused`). The folders are real local paths, read and written through Node's `fs`, and file
+contents are never rewritten (no autocrlf).
+
+```typescript
+await core.gateway.git.clone(kb.gitUrl, dir, { ref: "master" }); // dir missing or empty
+const status = await core.gateway.git.status(dir, { fetch: true }); // branch, dirty, ahead, behind
+await core.gateway.git.pull(dir); // fetch + fast-forward only
+await core.gateway.git.push(dir); // current branch to its upstream, fast-forward only
+await core.gateway.git.inspect(dir, "v1"); // origin url, branch, head, upstream, local tag commit (typed `not-a-clone` if damaged)
+await core.gateway.git.remoteTagCommit(kb.gitUrl, "v1"); // the commit a tag names on the gateway now, or null
+```
+
+- `pull` never merges or rebases. A clean tree just proceeds, and unstaged edits and untracked files
+  on paths the incoming commits do not touch are kept. Anything staged refuses the pull (the checkout
+  would drop it), naming the paths. A pull interrupted after its checkout is finished on the next call. If they do touch them, it throws `GatewayDirtyWorkingTreeError` with the
+  `paths` and changes nothing. If both sides have moved on it throws `GatewayWorkingCopyError`
+  (`diverged`).
+- `push` is never forced, never deletes a ref and never sends tags. An upstream that has moved on
+  (found locally, or reported by the gateway as `409`) is `GatewayConflictError`; a token without
+  `kb:push` is `GatewayScopeError`.
+- Gateway failures map through `gatewayErrorFor`, as for REST. Operations share the client's
+  one-at-a-time queue.
+
+#### Access tokens
+
+`core.gateway.tokens` ([`GatewayTokenService`](src/gateway/GatewayTokenService.ts)) manages the
+caller's **own** tokens. Every call needs the `tokens:self` scope on the stored token
+(`GatewayScopeError` with `scope: "tokens:self"` otherwise); nothing addresses another user.
+
+```typescript
+const tokens = await core.gateway.tokens.list(); // [{ id, alias, scopes, createdAt (null for old tokens), expiresAt, lastUsedAt (approximate), current, neverExpires, expired }] - expired tokens are listed too
+const minted = await core.gateway.tokens.create({ alias: "ci", scopes: ["kb:read"] }); // 90 days by default
+minted.expiryCapped; // null, or { cappedTo, requested: "90d" } when the 90-day default was cut to the stored token's own expiry
+minted.token; // the b6pt_ secret, shown this once; expiresAt: null mints one that never expires (neverExpires: true)
+await core.gateway.tokens.revoke("ci"); // id or alias → { id, alias, revokedCurrent }
+await core.gateway.tokens.rotate("laptop"); // → { replaced, token, rotatedCurrent }
+```
+
+- An id or alias is trimmed and resolved through `list()` first: no match is `GatewayNotFoundError`,
+  a value that is one token's id and another's alias is `GatewayTokenAmbiguousError`, and a value
+  containing `b6pt_` anywhere (a pasted secret) is refused (`GatewayInvalidArgumentError`) without
+  being sent. Nothing is revoked or rotated in any of these cases, and no message quotes the value.
+- `create` refuses an empty or whitespace alias, an empty scope list or an expiry that is not a
+  strict ISO 8601 date-time with a time zone (`2027-02-01T00:00:00Z`, `…+05:30`; a plain date,
+  `March 7` or `1` is refused) before sending (`GatewayInvalidArgumentError`). A new token's scopes must be a subset of the
+  stored token's.
+- **Expiry.** The gateway caps a new token's expiry at the presenting token's. With no `expiresAt`,
+  `create` sends none and the gateway mints for the sooner of 90 days and the stored token's expiry;
+  `expiryCapped` (`{ cappedTo, requested: "90d" }`, `cappedTo` = the returned `expiresAt`) is set only
+  when that cut more than 24 hours off the 90 days. An explicit expiry, or `null`, is sent as given. A
+  `403 not-permitted` on a mint or rotate is typed by the body's `reason`:
+  `expiry-exceeds-presenting` (with `presentingExpiresAt`) is `GatewayTokenExpiryRefusedError`,
+  `restricted-mints-disabled` is `GatewayRestrictedMintsDisabledError`, `rewrite-not-permitted` (with
+  `scope: "kb:rewrite"`) is `GatewayRewriteNotPermittedError`, and any other or missing
+  reason stays `GatewayNotPermittedError` (`reason` says what arrived). Other mint failures:
+  `GatewayTokenLimitError` (`409 token-limit`, `limit`), `GatewayInvalidRequestError` (`400`). Scopes
+  (including `kb:rewrite`) are not checked client-side.
+- **Rotating the stored token** (`current`) stores the replacement in its place: there is still one
+  stored token. If storing fails after the gateway has rotated (so the old token is already
+  revoked), `rotate` throws `GatewayTokenStoreError`, whose non-enumerable `replacement` property
+  carries the new token, secret included, so it can be shown and the user is not locked out. The
+  store also refuses, the same way, when the stored token is no longer the one that was rotated
+  (an in-process compare-then-write, not atomic across processes). The list, the rotate and the
+  store run as one entry in the client's queue with one read of the stored token, so a request
+  queued behind a rotation presents the replacement, never the revoked token.
+- **A minted secret that reaches core is never dropped.** When a create or rotate answer carries
+  the secret but is otherwise off-contract, the call throws `GatewayOffContractTokenError`, whose
+  non-enumerable `secret` holds it; for a rotation of the stored token it is still offered to the
+  store, and `stored` says whether that worked. The store reads the token back after writing, so
+  another writer's overwrite (for example a second b6p process) is `GatewayTokenStoreError`, not
+  success.
+- **An answer that never arrives** (a dropped connection, a timeout, or `502`/`503`/`504` on the
+  create or rotate request) is `GatewayOutcomeUnknownError` (a `GatewayUnavailableError`,
+  `operation` `create` or `rotate`): the token may have been minted or rotated, and for a rotation
+  the old one may already be revoked. Any new secret is lost; the error says the outcome is unknown.
+- **Rotation is retried once.** `rotate` sends an `Idempotency-Key` (a fresh UUID per call). When the
+  rotate request goes unanswered, it is retried once with the same key and presenting token, and the
+  gateway answers the retry with the first attempt's result without rotating again; a successful
+  retry is the normal path. `GatewayOutcomeUnknownError` (`retried: true`) follows only when the
+  retry is unanswered too, or is refused `401`/`404` while rotating the stored token (the first
+  attempt most likely rotated and so revoked it); the store is then left untouched. A create is
+  never retried. A rotated token keeps its absolute end date; an expired one cannot be rotated
+  (`GatewayInvalidRequestError`).
+- **Revoking the stored token** is allowed. The result says `revokedCurrent: true` and the stored
+  (now dead) token is left in place; what to do next is the consumer's call.
+- Core never logs a secret or puts one in an error message. Warning about a token that never
+  expires is the consumer's job; results carry `neverExpires`.
+
+#### Marketplace
+
+`core.gateway.marketplace` ([`GatewayMarketplace`](src/gateway/GatewayMarketplace.ts)) lists the
+marketplace repos (name, description, default branch, tags, `gitUrl`; the body is validated) and
+pulls a plain working clone of one. It is unrelated to any script's sources or pins, and there is
+no push (the gateway refuses it for the marketplace).
+
+```typescript
+const repos = await core.gateway.marketplace.list();
+const repo = await core.gateway.marketplace.get("core"); // GatewayNotFoundError if absent
+await core.gateway.marketplace.pull("core", { cwd }); // <cwd>/core at the default branch
+await core.gateway.marketplace.pull("core", { cwd, dir, ref: "v1.1.0" }); // a tag (detached head) or branch
+```
+
+`cwd` is the consumer's own working directory (core never reads `process.cwd()`); `dir` is relative to it.
+`list` leaves out a malformed entry rather than failing for every repo (`get` of that name is
+`GatewayUnexpectedResponseError`), and a name is checked as a folder name only when `dir` is omitted.
+`ref` may be a short name or `refs/heads/x` / `refs/tags/x` (normalised to `x`). A folder name from the listing must be a plain segment: no leading dot (so never `.git`), `git~N`, control or reserved characters, or Windows device names (`CON`, `CONIN$`, `COM0`..., also `CON .txt`), and no Unicode control, format or invisible characters (those make the whole listing entry malformed, in any text field). `cwd` must be absolute and is required unless `dir` is absolute: a relative folder without it is `GatewayConfigError`.
+`pull` clones into a missing or empty folder. A folder that already holds a clone of the same
+`gitUrl` on a branch is fast-forwarded (`action`: `fast-forwarded`, `up-to-date` or `ahead`); a tag
+checkout is `up-to-date` when the gateway's tag still points at the checked-out commit, else
+`GatewayCloneMismatchError` (`tag-moved`, or `tag-gone` when the gateway no longer has the tag). A clone of another repo, or on another ref than asked for, is
+`GatewayCloneMismatchError` (`reason`: `different-repo` / `different-ref` / `tag-moved` / `tag-gone`, plus `dir` and `repo`) and is
+left untouched; local changes the incoming commits would overwrite are `GatewayDirtyWorkingTreeError`;
+a folder with files but no clone is `GatewayWorkingCopyError` (`not-empty`).
+
+#### Knowledge bases
+
+`core.gateway.kb` ([`GatewayKb`](src/gateway/GatewayKb.ts)) lists the knowledge bases the token's user
+may read, global and tenant, and pulls and pushes them over `core.gateway.git`. A KB is addressed as
+`<name>` (global) or `<U…>/<name>` (tenant); the listing's own `global/<name>` and
+`tenant/<U…>/<name>` forms work too.
+
+```typescript
+const kbs = await core.gateway.kb.list({ scope: "tenant", tenant: "U142133" }); // ref, scope, tenant, name, title, liveBranch, canPush, gitUrl
+const kb = await core.gateway.kb.resolve("onboarding");
+const pulled = await core.gateway.kb.pull("U142133/handbook", { cwd: process.cwd() }); // clones into <cwd>/U142133-handbook
+const pushed = await core.gateway.kb.push(pulled.dir); // { pushed, commit, ref }; a relative dir needs { cwd }
+```
+
+- `list` checks the body's shape and throws `GatewayUnexpectedResponseError` for a bad one.
+- `resolve` throws `GatewayKnowledgeBaseError` (`reason`: `bad-ref`, `not-found`, `ambiguous` with
+  `candidates`).
+- `pull` clones the live branch into a missing or empty folder (`dir`, relative to the `cwd` you pass;
+  default `<name>`, or `<tenant>-<name>`), and fast-forwards an existing clone of the same repository.
+  An existing clone that is not on the KB's live branch, does not track it, or is detached is refused before any fetch with `GatewayKnowledgeBaseError` (`wrong-branch`, `branch`, `liveBranch`). A clone of a different repository is `GatewayWorkingCopyError` (`wrong-repository`); incoming commits
+  that touch locally changed files are `GatewayDirtyWorkingTreeError` (`paths`). It never prompts and
+  has no way to discard local changes.
+- `push` finds the KB from the clone's remote in a fresh listing and refuses a KB with
+  `canPush: false` before sending anything, with `GatewayKnowledgeBasePushNotPermittedError` (`ref`).
+  A clone not on the KB's live branch, not tracking it, or detached is refused the same way with `GatewayKnowledgeBaseError` (`wrong-branch`, `branch`, `liveBranch`). A gateway branch that moved on is `GatewayConflictError`.
+
+For specs, [`FakeGateway`](src/testing/FakeGateway.ts) is an in-process gateway on `127.0.0.1` that
+answers the contract's REST routes (the token routes included) and error codes, with `grantToken`
+(scopes, plus optional id, alias, owner and expiry; an expired token is `401 token-invalid`),
+`issuedTokens`, `issuedSecrets` (every secret ever accepted, revoked ones included, for leak
+checks), `failNext` and `route` (for mounting git smart-HTTP handlers).
 
 ## Development
 

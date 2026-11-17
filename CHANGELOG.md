@@ -9,6 +9,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Target release: **1.0.0** (breaking).
 
+### BREAKING
+
+- **Node 18 through 22 are no longer supported; `engines.node` is now `>=24`.** CI runs on Node 24 and
+  26, and `@types/node` is `^24`. (ClickUp 86bczx7f0)
+
 ### Changed
 
 - **BREAKING: nothing compiles in core or in `bsjs-git`; the platform builds every git push** (ClickUp CU-86bczwj62,
@@ -80,9 +85,132 @@ Target release: **1.0.0** (breaking).
   `gitBlobSha1`, `BUILD_MANIFEST_BUILDER`, `BuildManifestPlan`): the platform writes the manifest. The layout readers
   (`buildOutputFolder`, `buildManifestPath`, `isBuildSource`, `isTypeScriptSource`, `hasNoTsconfig`, `parseJsonc`)
   stay. `bluestepBuild` shas may be 40 or 64 hex.
+- **`core.gateway.kb.resolve` (and so `pull` / `push`) match names and tenants ASCII case-insensitively**: the gateway lists a
+  forge repo in any case under its canonical name, so `u5/KB-Notes` finds `U5/kb-notes`. A tenant typed `u<digits>` is
+  queried as `U<digits>`; the result and the default local folder keep the canonical spelling. Rows differing only by
+  case stay `ambiguous`.
 
 ### Added
 
+- **Idempotent token rotation.** `core.gateway.tokens.rotate()` sends an `Idempotency-Key` (a fresh UUID per call)
+  on the rotate request. When that request goes unanswered (dropped connection, timeout, `502`/`503`/`504`) it is
+  retried once, at once, with the same key and presenting token; the gateway replays the first attempt's result and
+  never rotates twice, so a replayed replacement of the stored token is stored as usual. An unanswered retry, or a
+  `401`/`404` retry for the stored token (the first attempt most likely rotated and so revoked it), is
+  `GatewayOutcomeUnknownError` with the new `retried: true`; the store is left untouched. Other retry errors pass
+  through. A rotated token keeps its absolute end date, and an expired target is `400 invalid-request`
+  (`GatewayInvalidRequestError`). `GatewayRequestOptions.headers` carries extra request headers; `Authorization`,
+  `Cookie`, `Proxy-Authorization`, `Accept` and `Content-Type` are refused unsent. `Gateway.Headers.IDEMPOTENCY_KEY`.
+  `FakeGateway` replays a rotation per presenting token and key for 10 minutes, refuses a malformed or reused key
+  (`400`), counts `rotations`, can lose the next rotation's answer after acting (`loseNextRotateAnswer`), and with
+  `selfRotationRetryRefused` simulates the gateway's pre-fix `401` on a self-rotation retry.
+- **`Err.GatewayRewriteNotPermittedError { scope }`**: a `403 not-permitted` with reason `rewrite-not-permitted` on a token
+  mint or rotate (this account may not hold `kb:rewrite`). `FakeGateway.rewriteNotPermitted` switches the refusal on.
+  A reason web-global does not know, or an off-contract refusal, arrives as `503 registry-unavailable` (already
+  `GatewayUnavailableError`), never as `400`; nothing here assumes otherwise.
+- **`GatewayKnowledgeBase.id` and `.status`**: the listing's rows now carry the tenant record's `id` (`string | null`)
+  and a `status` (`ok`, `branch-mismatch`, `repo-only`, `row-only`, `unconfirmed`, `undescribed`; any other value reads
+  as `"unknown"` with `rawStatus`). A row without a `status` or with a malformed `id` is an invalid listing. Pulling a
+  `row-only` knowledge base stays a `GatewayNotFoundError` (its repository does not exist yet).
+- **`Err.GatewayLiveBranchUnprotectedError`** (extends `GatewayConflictError`): `409 live-branch-unprotected`, a push to a
+  knowledge base's live branch refused because its forge protection rule is missing or drifted; nothing was pushed.
+- **`GatewayNotPermittedError.scope`**: the `scope` a `403 not-permitted` body names (kept only when it is a short
+  scope-shaped value), used with the reason `rewrite-not-permitted`; `reason` documents the full list.
+- **`core.gateway`: a client for web-global's gateway** (`gateway.bluestep.net`), the origin for
+  knowledge bases and marketplace repos (ClickUp 86bczwmwa). `GatewayService` holds a
+  `GatewayClient` that sends the `b6pt_` token `BearerAuthProvider` already stores as
+  `Authorization: Bearer` on every request, with no session bootstrap, one request at a time. The
+  origin comes from the `gatewayUrl` config value (default `https://gateway.bluestep.net`; plain
+  http only on loopback). Failures are typed `Err.Gateway*` errors (auth, scope, not permitted, not
+  found, non-fast-forward, too large, unavailable, unexpected, config), also available to a git
+  layer through `gatewayErrorFor`. `authHeadersFor(url)` hands the header to a git client, for
+  gateway URLs only. A request path that resolves off the gateway origin is refused unsent, and a
+  redirect is never followed (`redirect-refused`). The token never appears in an error message or a log
+  line.
+- **`core.gateway.git`: pure-JS git over the gateway** (ClickUp 86bczx1wd). `GatewayGit` clones a
+  knowledge base or marketplace repo from its listing's `gitUrl` (optionally at a branch or tag),
+  reports `status` (dirty paths, ahead/behind), fast-forwards with `pull`, and `push`es the
+  current branch to its upstream. It uses isomorphic-git (MIT, exact-pinned; no git install needed,
+  bundles into single-file builds) and the stored `b6pt_` token on every request. Pushes are
+  fast-forward only: never forced, never a ref deletion, never tags; a non-fast-forward is
+  `GatewayConflictError`. A pull that would overwrite local changes throws
+  `GatewayDirtyWorkingTreeError` (with the `paths`) and changes nothing; other unusable folders
+  are `GatewayWorkingCopyError` (`reason`). File contents are never rewritten. A git request
+  that stalls (no response headers in 30 s, or a body silent for 60 s) fails as
+  `GatewayUnavailableError` and releases the queue; a pull checks the files out before it moves
+  the branch, so an interrupted pull never leaves HEAD ahead of the tree, and the next pull
+  finishes it. A pull refuses when anything is staged (`GatewayDirtyWorkingTreeError`, with the
+  staged paths), because the checkout would drop it. Server push-rejection text is redacted,
+  isomorphic-git's protocol errors surface as `GatewayUnexpectedResponseError` (no body quoted), and a
+  failed clone removes every folder it created. A clone target with a `.git` or `git~N` path
+  component (any case, and the NTFS/HFS+ aliases: trailing dots or spaces, Unicode-ignorable
+  characters) is refused before any request (`GatewayWorkingCopyError`, reason
+  `unsafe-target`).
+- **`core.gateway.marketplace`: list and pull marketplace repos** (ClickUp 86bczx3r8).
+  `list()` reads `GET /api/v1/registry/repos` (name, description, default branch, tags, `gitUrl`;
+  a body of the wrong shape is `GatewayUnexpectedResponseError`), `get(name)` throws
+  `GatewayNotFoundError` for an absent repo, and `pull(name, { cwd, dir?, ref? })` (core never reads `process.cwd()`) makes a plain working
+  clone of a branch or tag (default branch, `./<name>`), or fast-forwards an existing clone of the
+  same repo. A malformed listing entry is skipped, and a name is checked as a folder name (no separators, drive or reserved characters, device names) only when `dir` is omitted. A clone of another repo, on another ref, or on a tag that moved on the gateway is `GatewayCloneMismatchError` and is left
+  untouched; a refused tag is `tag-moved` or `tag-gone`. A listing name with a leading dot (`.git`), `git~N`, control characters a Windows device name (`CONIN$`, `COM0`, `CON .txt`) or an invisible Unicode character is never used as a folder, and such characters make a listing entry malformed. A relative folder without an absolute `cwd` is `GatewayConfigError`. `ref` accepts `refs/heads/x` / `refs/tags/x`. It never reads or changes script sources or pins, and there is no push. `GatewayGit` gained `inspect(dir, tag?)` and `remoteTagCommit(gitUrl, tag)` for it.
+- **`core.gateway.kb`: knowledge bases** (ClickUp 86bczx3r4). `GatewayKb.list({ scope?, tenant? })` returns
+  the typed entries of `GET /api/v1/knowledge-bases` (a malformed body is
+  `GatewayUnexpectedResponseError`); `resolve(ref)` takes `<name>` (global) or `<U…>/<name>` (tenant)
+  and throws `GatewayKnowledgeBaseError` for a bad, unknown or ambiguous address; `pull(ref, { cwd,
+  dir? })` clones the live branch or fast-forwards an existing clone of the same repository (a clone
+  not on the live branch, not tracking it, or detached, is `GatewayKnowledgeBaseError` `wrong-branch` before any fetch; a clone
+  of another repository is `GatewayWorkingCopyError` `wrong-repository`; local changes in the way are
+  `GatewayDirtyWorkingTreeError`; it never prompts and never discards local changes; a listed name or tenant that is not a safe folder name, such as `.git`, `GIT~1` or a Windows device name, is `unsafe-name` before any clone request; control and format characters in a listing's text fields make it an invalid listing); `push(dir, { cwd? })`
+  (a relative `dir` needs an absolute `cwd`, else `GatewayInvalidArgumentError`; core never reads `process.cwd()`)
+  requires `canPush` from a fresh listing (else `GatewayKnowledgeBasePushNotPermittedError` with the
+  `ref`, before anything is sent; a clone off the live branch or detached is `GatewayKnowledgeBaseError`
+  `wrong-branch` with `branch` and `liveBranch`) and returns `{ pushed, commit, ref }`. `GatewayGit.originUrl(dir)`
+  is added for finding a clone's remote.
+- **Gateway contract delta (2026-11-10)**: `400 invalid-request` → `Err.GatewayInvalidRequestError`;
+  `409 token-limit` → `Err.GatewayTokenLimitError` (`limit`, 50 when the body says so, else `null`);
+  `503 registry-unavailable` is a `GatewayUnavailableError` naming web-global as the one that could
+  not answer. A `409` other than `non-fast-forward` no longer claims the update misses the branch head.
+- **`Err.GatewayNotPermittedError` carries `reason` and `presentingExpiresAt`** from a `403 not-permitted`
+  body (`GatewayErrorBody` gained both), so a consumer can tell why.
+- **`BearerAuthProvider.storedToken()`**: the stored token without prompting, which the gateway
+  reads instead of `authHeaderValue()`.
+- **`core.gateway.tokens`: self-service management of the caller's own gateway tokens**
+  (ClickUp 86bczx1wj): `list()`, `create({ alias, scopes, expiresAt? })` (the secret is returned
+  once; `expiresAt: null` never expires, reported as `neverExpires`), `revoke(idOrAlias)` and
+  `rotate(idOrAlias)`. An id or alias is trimmed and resolved through `list()` first; no match is
+  `GatewayNotFoundError`, an id/alias clash is `GatewayTokenAmbiguousError`, and a value containing
+  `b6pt_` is refused unsent; nothing is revoked, and the value is never quoted. Rotating the stored
+  token stores its replacement in place (still one stored token), with list, rotate and store as
+  one queue entry over one token read; if that store fails after the gateway rotated,
+  `GatewayTokenStoreError` carries the new token so it is not lost. An answer that carries the
+  secret but is otherwise off-contract throws `GatewayOffContractTokenError` carrying it (and the
+  stored token's replacement is still stored); the store reads the token back and reports another
+  writer's overwrite as `GatewayTokenStoreError`. A dropped connection, timeout or `502`/`503`/`504`
+  on the create or rotate request is `GatewayOutcomeUnknownError` (the token may have been minted
+  or rotated). `expiresAt` must be a strict ISO 8601 date-time with a time zone. Revoking the stored token is allowed, reported as `revokedCurrent: true`, and leaves
+  the stored token in place. Needs the `tokens:self` scope (`Gateway.Scopes.TOKENS_SELF`). New
+  errors `GatewayScopeEscalationError` (`403 scope-escalation`), `GatewayAliasTakenError`
+  (`409 alias-taken`), `GatewayInvalidArgumentError`, `GatewayTokenAmbiguousError`,
+  `GatewayTokenStoreError`, `GatewayOffContractTokenError` and `GatewayOutcomeUnknownError`. `GatewayClient.sequence((seq) => …)`
+  is the client's one queue primitive (the git layer's whole-operation hold uses it too); `seq`
+  sends requests over one token read. No secret is logged or put in an error message.
+- **Token expiry follows the gateway's contract delta (2026-11-10)**: `create` with no `expiresAt`
+  sends none; the gateway mints for the sooner of 90 days and the stored token's own expiry, and the
+  result's `expiryCapped: { cappedTo, requested: "90d" } | null` (new `GatewayCreatedToken`) is derived
+  from the returned `expiresAt`, set only when the cut exceeds 24 hours. An explicit expiry or `null` is
+  sent as given. A `403 not-permitted` on a mint or rotate is typed by its `reason`:
+  `Err.GatewayTokenExpiryRefusedError` (`expiry-exceeds-presenting`, `presentingExpiresAt` from the
+  body) or `Err.GatewayRestrictedMintsDisabledError` (`restricted-mints-disabled`); any other reason
+  stays `GatewayNotPermittedError`. Listed tokens carry `expired` (derived) and a nullable `createdAt`;
+  `lastUsedAt` is approximate. `kb:rewrite` can be minted and rotated. `FakeGateway` caps an absent
+  expiry, sends both reasons, enforces the 50-live-token limit and has a `restrictedMintsDisabled` switch.
+- **`BearerAuthProvider.replaceStoredToken(expected, next)`**: replaces the stored token only while
+  it is still `expected` (an in-process compare-then-write, not atomic across processes); the write
+  behind rotating it. Never prompts or logs either value.
+- **`FakeGateway`** (testing): an in-process gateway on `127.0.0.1` answering the contract's REST
+  shapes and error codes, with hooks for git routes, and the self-service token routes
+  (`grantToken` takes an optional id, alias, owner and expiry, and an expired token is refused;
+  `issuedTokens()` lists what it accepts; `issuedSecrets` every secret it ever accepted).
 - CI runs the suite on `windows-latest` (Node 24) as well.
 
 ### Fixed
@@ -94,6 +222,15 @@ Target release: **1.0.0** (breaking).
   token or a 403 that carried a new one. So b6p 0.9.0 could not pull or publish: a pull stopped at "Could not switch the
   script to git publishing: HTTP 403". `CsrfFetch` now retries any 403 once, with a token read afresh from the
   signed-in session.
+
+- **Overlapping persistence writes no longer drop each other** (ClickUp 86bczx1wj). Each
+  `SharedFilePersistence.setSecret` / `deleteSecret` / `clearSecrets` loads the whole `secrets.enc`,
+  changes one key and saves the whole file, and `set` / `delete` / `clearPublic` do the same with
+  `state.json`. Two that overlapped in one process each loaded the same file, and the later save
+  undid the earlier change: `SessionManager` re-saving `sessions` after a web response could write
+  back a stale `bearerAuth`, and concurrent public writes could lose a key. They now run one at a
+  time per file, each re-loading first. The file format and the atomic write-and-rename are unchanged. Across
+  processes (the CLI beside the extension) writes are still last-writer-wins.
 
 ## [0.9.0] - 2026-11-12
 
