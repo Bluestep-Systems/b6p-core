@@ -18,6 +18,10 @@ const { spawn, execFileSync } = require("node:child_process");
 const SESSION = "JSESSIONID=stub-session";
 const CSRF = "csrf-abc";
 const TOKEN = "b6pt_good-token";
+// An empty file for GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM, so no user or system config leaks in. Not os.devNull:
+// on Windows that is \\.\nul, which Git for Windows cannot open as a config file ("unable to access '//./nul'").
+const EMPTY_GIT_CONFIG = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "bsjs-git-config-")), "empty.gitconfig");
+fs.writeFileSync(EMPTY_GIT_CONFIG, "");
 
 function git(cwd, ...args) {
   return gitEnv(cwd, {}, ...args);
@@ -28,7 +32,7 @@ function gitEnv(cwd, extraEnv, ...args) {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, ...extraEnv, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_SYSTEM: os.devNull },
+    env: { ...process.env, ...extraEnv, GIT_CONFIG_GLOBAL: EMPTY_GIT_CONFIG, GIT_CONFIG_SYSTEM: EMPTY_GIT_CONFIG },
   }).trim();
 }
 
@@ -369,8 +373,8 @@ function createStub() {
           GIT_PROTOCOL: req.headers["git-protocol"] || "",
           REMOTE_USER: "tester",
           REMOTE_ADDR: "127.0.0.1",
-          GIT_CONFIG_GLOBAL: os.devNull,
-          GIT_CONFIG_SYSTEM: os.devNull,
+          GIT_CONFIG_GLOBAL: EMPTY_GIT_CONFIG,
+          GIT_CONFIG_SYSTEM: EMPTY_GIT_CONFIG,
         },
       });
       // git-http-backend may exit before it reads the body (an early refusal); its response still
