@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### BREAKING
+
+- **Node 18 through 22 are no longer supported; `engines.node` is now `>=24`.** CI runs on Node 24 and
+  26, and `@types/node` is `^24`. (ClickUp 86bczx7f0)
+
 ### Changed
 
 - **`core.gateway.kb.resolve` (and so `pull` / `push`) match names and tenants ASCII case-insensitively**: the gateway lists a

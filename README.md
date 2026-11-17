@@ -9,6 +9,10 @@ This package contains the headless orchestration logic shared by the
 anywhere Node does. You supply the platform adapters (file system, prompts, logging, progress,
 persistence) through provider interfaces.
 
+## Requirements
+
+Node.js **24 or newer** (`engines.node` is `>=24`).
+
 ## Packages
 
 This repo holds two npm packages: `@bluestep-systems/b6p-core` (this one, Node) and
