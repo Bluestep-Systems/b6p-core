@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`core.gateway.kb.resolve` (and so `pull` / `push`) match names and tenants ASCII case-insensitively**: the gateway lists a
+  forge repo in any case under its canonical name, so `u5/KB-Notes` finds `U5/kb-notes`. A tenant typed `u<digits>` is
+  queried as `U<digits>`; the result and the default local folder keep the canonical spelling. Rows differing only by
+  case stay `ambiguous`.
+
 ### Added
 
 - **Idempotent token rotation.** `core.gateway.tokens.rotate()` sends an `Idempotency-Key` (a fresh UUID per call)
@@ -25,6 +32,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mint or rotate (this account may not hold `kb:rewrite`). `FakeGateway.rewriteNotPermitted` switches the refusal on.
   A reason web-global does not know, or an off-contract refusal, arrives as `503 registry-unavailable` (already
   `GatewayUnavailableError`), never as `400`; nothing here assumes otherwise.
+- **`GatewayKnowledgeBase.id` and `.status`**: the listing's rows now carry the tenant record's `id` (`string | null`)
+  and a `status` (`ok`, `branch-mismatch`, `repo-only`, `row-only`, `unconfirmed`, `undescribed`; any other value reads
+  as `"unknown"` with `rawStatus`). A row without a `status` or with a malformed `id` is an invalid listing. Pulling a
+  `row-only` knowledge base stays a `GatewayNotFoundError` (its repository does not exist yet).
 - **`Err.GatewayLiveBranchUnprotectedError`** (extends `GatewayConflictError`): `409 live-branch-unprotected`, a push to a
   knowledge base's live branch refused because its forge protection rule is missing or drifted; nothing was pushed.
 - **`GatewayNotPermittedError.scope`**: the `scope` a `403 not-permitted` body names (kept only when it is a short
@@ -66,6 +77,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clone of a branch or tag (default branch, `./<name>`), or fast-forwards an existing clone of the
   same repo. A malformed listing entry is skipped, and a name is checked as a folder name (no separators, drive or reserved characters, device names) only when `dir` is omitted. A clone of another repo, on another ref, or on a tag that moved on the gateway is `GatewayCloneMismatchError` and is left
   untouched; a refused tag is `tag-moved` or `tag-gone`. A listing name with a leading dot (`.git`), `git~N`, control characters a Windows device name (`CONIN$`, `COM0`, `CON .txt`) or an invisible Unicode character is never used as a folder, and such characters make a listing entry malformed. A relative folder without an absolute `cwd` is `GatewayConfigError`. `ref` accepts `refs/heads/x` / `refs/tags/x`. It never reads or changes script sources or pins, and there is no push. `GatewayGit` gained `inspect(dir, tag?)` and `remoteTagCommit(gitUrl, tag)` for it.
+- **`core.gateway.kb`: knowledge bases** (ClickUp 86bczx3r4). `GatewayKb.list({ scope?, tenant? })` returns
+  the typed entries of `GET /api/v1/knowledge-bases` (a malformed body is
+  `GatewayUnexpectedResponseError`); `resolve(ref)` takes `<name>` (global) or `<U…>/<name>` (tenant)
+  and throws `GatewayKnowledgeBaseError` for a bad, unknown or ambiguous address; `pull(ref, { cwd,
+  dir? })` clones the live branch or fast-forwards an existing clone of the same repository (a clone
+  not on the live branch, not tracking it, or detached, is `GatewayKnowledgeBaseError` `wrong-branch` before any fetch; a clone
+  of another repository is `GatewayWorkingCopyError` `wrong-repository`; local changes in the way are
+  `GatewayDirtyWorkingTreeError`; it never prompts and never discards local changes; a listed name or tenant that is not a safe folder name, such as `.git`, `GIT~1` or a Windows device name, is `unsafe-name` before any clone request; control and format characters in a listing's text fields make it an invalid listing); `push(dir, { cwd? })`
+  (a relative `dir` needs an absolute `cwd`, else `GatewayInvalidArgumentError`; core never reads `process.cwd()`)
+  requires `canPush` from a fresh listing (else `GatewayKnowledgeBasePushNotPermittedError` with the
+  `ref`, before anything is sent; a clone off the live branch or detached is `GatewayKnowledgeBaseError`
+  `wrong-branch` with `branch` and `liveBranch`) and returns `{ pushed, commit, ref }`. `GatewayGit.originUrl(dir)`
+  is added for finding a clone's remote.
 - **Gateway contract delta (2026-11-10)**: `400 invalid-request` → `Err.GatewayInvalidRequestError`;
   `409 token-limit` → `Err.GatewayTokenLimitError` (`limit`, 50 when the body says so, else `null`);
   `503 registry-unavailable` is a `GatewayUnavailableError` naming web-global as the one that could

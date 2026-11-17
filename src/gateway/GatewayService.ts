@@ -1,5 +1,6 @@
 import { GatewayClient } from "./GatewayClient";
 import { GatewayGit } from "./GatewayGit";
+import { GatewayKb } from "./GatewayKb";
 import type { GatewayGitOptions } from "./GatewayGit";
 import { GatewayMarketplace } from "./GatewayMarketplace";
 import type { GatewayContext } from "./GatewayContext";
@@ -40,10 +41,17 @@ export class GatewayService {
    */
   readonly marketplace: GatewayMarketplace;
 
+  /**
+   * Knowledge bases: list, pull into a local folder, push back.
+   * @lastreviewed null
+   */
+  readonly kb: GatewayKb;
+
   constructor(ctx: GatewayContext, options: { git?: GatewayGitOptions } = {}) {
     this.client = new GatewayClient(ctx);
     this.git = new GatewayGit(ctx, this.client, options.git);
     this.tokens = new GatewayTokenService(this.client, ctx);
     this.marketplace = new GatewayMarketplace(this.client, this.git);
+    this.kb = new GatewayKb(this.client, this.git);
   }
 }

@@ -92,6 +92,14 @@ export type {
 export { GatewayTokenService } from "./gateway/GatewayTokenService";
 export { GatewayMarketplace } from "./gateway/GatewayMarketplace";
 export type { GatewayMarketplacePullOptions, GatewayMarketplacePullResult } from "./gateway/GatewayMarketplace";
+export { GatewayKb } from "./gateway/GatewayKb";
+export type {
+  GatewayKbListOptions,
+  GatewayKbPullOptions,
+  GatewayKbPullResult,
+  GatewayKbPushOptions,
+  GatewayKbPushResult,
+} from "./gateway/GatewayKb";
 export { GatewayClient, gatewayErrorFor, parseGatewayOrigin } from "./gateway/GatewayClient";
 export type { GatewayClientOptions, GatewayRequestOptions, GatewaySequence } from "./gateway/GatewayClient";
 export type { GatewayContext, GatewayFetch } from "./gateway/GatewayContext";
@@ -181,6 +189,7 @@ export type {
   GatewayErrorCode,
   GatewayErrorBody,
   GatewayKnowledgeBase,
+  GatewayKnowledgeBaseStatus,
   GatewayKnowledgeBaseList,
   GatewayMarketplaceRepo,
   GatewayMarketplaceRepoList,

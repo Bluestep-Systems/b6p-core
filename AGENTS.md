@@ -99,6 +99,13 @@ are load-bearing rather than stylistic — each records something this repo undi
   clone of another repo or ref (`GatewayCloneMismatchError`) rather than prompting, and takes the consumer's `cwd` (never
   `process.cwd()`). A repo name becomes a folder name only when `dir` is omitted, and is then
   checked as one plain segment; a malformed listing entry is skipped, not fatal.
+- **`core.gateway.kb` (`GatewayKb`) decides nothing for the user.** It never prompts: a pull that
+  would overwrite throws `GatewayDirtyWorkingTreeError`, and a push the listing says the user cannot
+  make (`canPush: false`, from a fresh listing, not a cached one) throws before any git request. It
+  has no "discard local changes" path; if one is ever added it is an explicit option behind a
+  `{ destructive: true, safeOption }` prompt, safe option first. A listed `name` or tenant used as a
+  default folder must be one plain path segment: no leading or trailing `.` (so never `.git`), no
+  `GIT~1`, control characters or Windows device names.
 - **A prompt that overwrites or deletes puts its safe option first and passes
   `{ destructive: true, safeOption }`.** Prompt implementations answer `options[0]` on an empty
   answer and under auto-confirm (the CLI's `--yes`); with the destructive option first, `--yes`
@@ -118,9 +125,9 @@ are load-bearing rather than stylistic — each records something this repo undi
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
-`GitSync` push/pull/audit of the draft as a git working tree, `GitIdentity` commit authors), `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit`, `GatewayTokenService` —
-web-global's gateway over the `b6pt_` token, pure-JS git through it, and the caller's own token
-management), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`),
+`GitSync` push/pull/audit of the draft as a git working tree, `GitIdentity` commit authors), `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit`, `GatewayTokenService`, `GatewayMarketplace`, `GatewayKb` —
+web-global's gateway over the `b6pt_` token, pure-JS git through it, the caller's own token
+management, marketplace clones and knowledge bases), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`),
 `data/` (pure parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles, including `FakeGateway`).
 
 ## Scripts are git (since 0.9.0)
