@@ -10,7 +10,9 @@ import {
   PublishRefusedError,
   ScriptRepo,
   compileAllowsPublish,
+  DraftBuildFailedError,
   type BuildFastForward,
+  type DraftBuildRefusalReason,
   type DraftCompileOutcome,
   type GitIdentity,
 } from "@bluestep-systems/b6p-core-bsjs-git";
@@ -881,11 +883,17 @@ export interface DraftBuildOutcome {
   readonly error: string | null;
   /**
    * What `error` is: `not-requested` (no build was asked for: the platform's draft was no longer the pushed commit),
-   * `request-failed` (the build was asked for and refused, or the request failed; it may have run). `null` with no
-   * error.
+   * `refused` (the platform refused the build, `errorReason`; nothing was built), `request-failed` (any other failure;
+   * it may have run). `null` with no error.
    * @lastreviewed null
    */
-  readonly errorKind: "not-requested" | "request-failed" | null;
+  readonly errorKind: "not-requested" | "refused" | "request-failed" | null;
+  /**
+   * The platform's refusal reason when `errorKind` is `refused` (`DRAFT_MOVED`, `DRAFT_TOO_LARGE`, `REPO_MISSING`,
+   * `DRAFT_BRANCH_MISSING`); `null` otherwise.
+   * @lastreviewed null
+   */
+  readonly errorReason: DraftBuildRefusalReason | null;
 }
 
 /**
@@ -1263,7 +1271,7 @@ async function pushDraftInner(
 
     const outcome: DraftPushOutcome = { commitSha: head, switchedToGit, keptPlatformOnly };
     if (!options.build) {
-      return options.snapshot ? { ...outcome, publish: await publishAndVerify(repo) } : outcome;
+      return options.snapshot ? { ...outcome, publish: await publishAndVerify(repo, head) } : outcome;
     }
     const build = await buildPushed(repo, options.sleep);
     const moved = build.fastForward?.state;
@@ -1276,7 +1284,8 @@ async function pushDraftInner(
     ) {
       return { ...outcome, build };
     }
-    return { ...outcome, build, publish: await publishAndVerify(repo) };
+    // Pinned to what was built and checked: a later save cannot be published under this build's result.
+    return { ...outcome, build, publish: await publishAndVerify(repo, build.buildCommitSha ?? head) };
   } finally {
     if (scratch) {
       await files.remove(scratch);
@@ -1341,6 +1350,7 @@ async function buildPushed(repo: ScriptRepo, sleep?: (ms: number) => Promise<voi
       vouched: result.vouched,
       error: null,
       errorKind: null,
+      errorReason: null,
     };
   } catch (error) {
     return {
@@ -1350,7 +1360,13 @@ async function buildPushed(repo: ScriptRepo, sleep?: (ms: number) => Promise<voi
       outcomeUnknown: null,
       vouched: false,
       error: error instanceof Error ? error.message : String(error),
-      errorKind: error instanceof GitUnpushedChangesError ? "not-requested" : "request-failed",
+      errorKind:
+        error instanceof GitUnpushedChangesError
+          ? "not-requested"
+          : error instanceof DraftBuildFailedError && error.reason !== null
+            ? "refused"
+            : "request-failed",
+      errorReason: error instanceof DraftBuildFailedError ? error.reason : null,
     };
   }
 }
@@ -1362,11 +1378,11 @@ async function buildPushed(repo: ScriptRepo, sleep?: (ms: number) => Promise<voi
  * @lastreviewed null
  */
 
-async function publishAndVerify(repo: ScriptRepo): Promise<DraftPublishOutcome> {
+async function publishAndVerify(repo: ScriptRepo, at: string): Promise<DraftPublishOutcome> {
   let publishedSha: string;
   let refreshed: boolean;
   try {
-    const result = await repo.publish();
+    const result = await repo.publish({ at });
     publishedSha = result.publishedSha;
     refreshed = result.refreshed;
   } catch (error) {

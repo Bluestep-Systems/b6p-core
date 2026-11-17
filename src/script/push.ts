@@ -2,6 +2,7 @@ import * as path from "path";
 import {
   compileAllowsPublish,
   type BuildFastForward,
+  type DraftBuildRefusalReason,
   type DraftCompileOutcome,
   type DraftCompileStatus,
   type GitIdentity,
@@ -189,11 +190,17 @@ export interface PushResult {
   buildError: string | null;
   /**
    * What `buildError` is: `not-requested` (no build was asked for: the platform's draft was no longer the pushed
-   * commit) or `request-failed` (the build was asked for and refused, or the request failed; it may have run).
-   * `null` with no `buildError`.
+   * commit), `refused` (the platform refused the build, see `buildErrorReason`; nothing was built) or
+   * `request-failed` (any other failure; it may have run). `null` with no `buildError`.
    * @lastreviewed null
    */
-  buildErrorKind: "not-requested" | "request-failed" | null;
+  buildErrorKind: "not-requested" | "refused" | "request-failed" | null;
+  /**
+   * The platform's refusal reason when `buildErrorKind` is `refused`: `DRAFT_MOVED`, `DRAFT_TOO_LARGE` (the draft is
+   * over the build's size limit), `REPO_MISSING` or `DRAFT_BRANCH_MISSING`. `null` otherwise.
+   * @lastreviewed null
+   */
+  buildErrorReason: DraftBuildRefusalReason | null;
   /**
    * Set when the build answered with a status after which the draft does not publish (see {@link BuildIncomplete}):
    * a snapshot push then publishes nothing, and neither push reports itself complete. `null` otherwise.
@@ -263,6 +270,7 @@ function notPushed(route: PushRoute | null): PushResult {
     buildVouched: null,
     buildError: null,
     buildErrorKind: null,
+    buildErrorReason: null,
     buildIncomplete: null,
     buildFastForward: null,
     typeCheckDiagnostics: null,
@@ -409,7 +417,10 @@ export async function executePush(opts: {
     prompt.error(
       built.errorKind === "not-requested"
         ? `The draft was pushed (commit ${outcome.commitSha}), but no build was asked for: ${built.error}${nothingPublished}`
-        : `The draft was pushed (commit ${outcome.commitSha}), but the platform's build request failed: ${built.error}${nothingPublished}`
+        : built.errorKind === "refused"
+          ? `The draft was pushed (commit ${outcome.commitSha}), but the platform refused to build it ` +
+            `(${built.errorReason}): ${built.error}${nothingPublished}`
+          : `The draft was pushed (commit ${outcome.commitSha}), but the platform's build request failed: ${built.error}${nothingPublished}`
     );
   } else if (built?.compile) {
     if (buildIncomplete) {
@@ -495,6 +506,7 @@ export async function executePush(opts: {
     buildVouched: built && !built.error ? built.vouched : null,
     buildError: built?.error ?? null,
     buildErrorKind: built?.errorKind ?? null,
+    buildErrorReason: built?.errorReason ?? null,
     buildIncomplete,
     buildFastForward: fastForward,
     typeCheckDiagnostics: built?.compile ? built.compile.errors + built.compile.warnings : null,

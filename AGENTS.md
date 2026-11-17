@@ -102,7 +102,8 @@ the root `.gitignore` do). Rules that bind changes here:
   (`buildFastForward.state` `blocked`, the paths listed); it is never forced over. A build whose answer was lost is
   taken in by the next push when the platform's draft is exactly the build of the local head
   (`ScriptRepo.isBuildCommitOf`: every commit of the chain carries `Bluestep-Build-Of: <the pushed sha>`, has one
-  parent and changes only paths under the parent's root output folder, by complete tree entries, exactly web's rule;
+  parent and changes only paths under some build project's output folder at the parent (`buildOutputFolders`, shared
+  with web and the editor), by complete tree entries, exactly web's rule;
   the subject never counts), never a platform edit. A build whose outcome the platform cannot tell
   (`BUILD_OUTCOME_UNKNOWN`) is never retried: the draft is read back instead, and nothing is published.
 - `PushResult.typeCheckErrors` are the platform build's diagnostics in the script's own sources (no `.d.ts`, nothing

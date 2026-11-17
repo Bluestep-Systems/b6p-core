@@ -21,6 +21,7 @@ export type BsjsGitErrorCode =
   | "PUBLISH_FAILED"
   | "BUILD_FAILED"
   | "BUILD_FAST_FORWARD_BLOCKED"
+  | "PUBLISH_PIN_MISMATCH"
   | "GIT_MODE_FAILED"
   | "UNKNOWN_SCRIPT_TYPE"
   | "LEGACY_HISTORY"
@@ -207,19 +208,56 @@ export class PublishFailedError extends BsjsGitError {
 }
 
 /**
- * The platform's build of the draft (`compileDraft`) failed without an outcome to report: a GraphQL error (for example
- * the caller may not edit the script), an unreadable answer, or a request that failed twice (`networkFailure`: it may or
- * may not have run). The pushed draft is on the platform either way.
+ * Every `DraftBuildRefusalReason` the platform refuses a build with (`PRECONDITION`, `extensions.reason`; web
+ * `errors.graphqls`): the draft moved after the push, the build's outcome is unknown, the draft is over the build's
+ * size limit, the repo or its draft branch is missing. Nothing is retried on any of them.
+ * @lastreviewed null
+ */
+export const DRAFT_BUILD_REFUSAL_REASONS = [
+  "DRAFT_MOVED",
+  "BUILD_OUTCOME_UNKNOWN",
+  "DRAFT_TOO_LARGE",
+  "REPO_MISSING",
+  "DRAFT_BRANCH_MISSING",
+] as const;
+
+/**
+ * One of {@link DRAFT_BUILD_REFUSAL_REASONS}.
+ * @lastreviewed null
+ */
+export type DraftBuildRefusalReason = (typeof DRAFT_BUILD_REFUSAL_REASONS)[number];
+
+/**
+ * The reason text as a known {@link DraftBuildRefusalReason}, or `null`.
+ * @lastreviewed null
+ */
+export function draftBuildRefusalReasonOf(raw: unknown): DraftBuildRefusalReason | null {
+  return typeof raw === "string" && (DRAFT_BUILD_REFUSAL_REASONS as readonly string[]).includes(raw)
+    ? (raw as DraftBuildRefusalReason)
+    : null;
+}
+
+/**
+ * The platform's build of the draft (`compileDraft`) failed without an outcome to report: a refusal (`reason`, one of
+ * {@link DRAFT_BUILD_REFUSAL_REASONS}, with nothing built), another GraphQL error (for example the caller may not edit
+ * the script; `reason` null, `rawReason` whatever the error carried), an unreadable answer, or a request that failed
+ * twice (`networkFailure`: it may or may not have run). The pushed draft is on the platform either way.
  * @lastreviewed null
  */
 export class DraftBuildFailedError extends BsjsGitError {
+  /** The platform's refusal reason, when it is a known one. @lastreviewed null */
+  readonly reason: DraftBuildRefusalReason | null;
+  /** `extensions.reason` exactly as sent, `null` when none. @lastreviewed null */
+  readonly rawReason: string | null;
   constructor(
     message: string,
     readonly messages: readonly string[] = [],
     readonly networkFailure = false,
-    options?: { cause?: unknown }
+    options?: { cause?: unknown; reason?: string | null }
   ) {
     super("BUILD_FAILED", `Draft build failed: ${message}`, options);
+    this.rawReason = options?.reason ?? null;
+    this.reason = draftBuildRefusalReasonOf(this.rawReason);
   }
 }
 
@@ -233,15 +271,13 @@ export class DraftBuildMovedError extends DraftBuildFailedError {
     readonly details: unknown,
     message: string
   ) {
-    super(message, [message]);
+    super(message, [message], false, { reason: "DRAFT_MOVED" });
   }
 }
 
 /**
  * The platform's `DraftBuildRefusalReason` for a build whose push to the forge it could not confirm: the build commit
  * may or may not be on the draft branch.
- * HUMAN-REVIEW-NEEDED: provisional name (ruling 67); web is adding the code, and this must be its exact spelling from
- * WCD-ledger.md / web's errors.graphqls before release.
  * @lastreviewed null
  */
 export const BUILD_OUTCOME_UNKNOWN_REASON = "BUILD_OUTCOME_UNKNOWN";
@@ -257,7 +293,25 @@ export class DraftBuildOutcomeUnknownError extends DraftBuildFailedError {
     readonly details: unknown,
     message: string
   ) {
-    super(message, [message]);
+    super(message, [message], false, { reason: BUILD_OUTCOME_UNKNOWN_REASON });
+  }
+}
+
+/**
+ * A pinned publish ({@link ScriptRepo.publish} with `at`) was refused before asking the platform: the local draft is
+ * neither the commit asked for nor a build of it (for example a later save moved it), so publishing it would publish
+ * something other than what was built and checked. Nothing was sent.
+ * @lastreviewed null
+ */
+export class PublishPinMismatchError extends BsjsGitError {
+  constructor(
+    readonly at: string,
+    readonly local: string
+  ) {
+    super(
+      "PUBLISH_PIN_MISMATCH",
+      `The publish was pinned to ${at}, but the local draft is at ${local}, which is neither that commit nor a build of it`
+    );
   }
 }
 

@@ -88,15 +88,17 @@ build (a local edit, an untracked or ignored file) stops it before anything is t
 outcome is `fastForward: { state, blockedPaths, error }` (`fast-forwarded`, `unchanged`, `blocked`, `failed`), never a
 build failure. `isBuildCommitOf(candidate, base)` says whether a commit is the platform's build of exactly the source `base`, or a
 rebuild chain of it: each commit carries the trailer `Bluestep-Build-Of: <base>` (`buildSourceOf`, `BUILD_OF_TRAILER`),
-has one parent and changes only paths under the output folder `F` of the parent's root `tsconfig.json`, else
-`jsconfig.json` (`changesOnlyBuildOutput`; no commit is a build when `F` is empty); the subject never counts. This is
+has one parent and changes only paths under the output folder of some build project at the parent: each
+`tsconfig.json` at any depth gives `<its dir>/` + its `buildOutputFolder`, plus the root `jsconfig.json` when there is
+no root `tsconfig.json`; a project whose folder is empty or leaves the tree gives none, and with none at all nothing is
+a build (`buildConfigPaths`, `buildOutputFolders`, `changesOnlyBuildOutput`: the one resolver web and the BSJS editor
+use too). A chain is at most 16 build commits deep. The subject never counts. This is
 web's rule (`docs/bsjs-git-snapshot-design.md`, "Build commits"), the trailer parsed as there: CRLF as LF, trailing
 whitespace dropped, the last paragraph (after the last blank or whitespace-only line, or the whole message), exactly one
 line `Bluestep-Build-Of: <40/64 hex>`. Rule 3 compares complete tree entries (mode and id, gitlinks included), so a
 mode-only or submodule change outside `F/` is not a build.
 
-A refusal with reason `BUILD_OUTCOME_UNKNOWN` (the platform could not confirm its build push; the name is provisional
-until web's) is never retried, since a repeat could build twice: `compileDraft` reads the draft back and returns
+A refusal with reason `BUILD_OUTCOME_UNKNOWN` (the platform could not confirm its build push) is never retried, since a repeat could build twice: `compileDraft` reads the draft back and returns
 `outcomeUnknown: { buildFound }`, moving the local draft to the head when that is a build of the push. `compile` is
 then `UNKNOWN` and `vouched` false. It is for taking
 in a build whose answer was lost. An unclean build deletes the manifest, and the fast-forward deletes it here too.
@@ -110,6 +112,15 @@ A draft that moved since the push is `DraftBuildMovedError` (`DRAFT_MOVED`); any
 `DraftBuildFailedError` (`messages`, `networkFailure`).
 
 ## Publish
+
+`publish({ at })` pins the publish to the commit that was built and checked (the build commit, or the pushed commit
+when there was none): the local draft must be that commit or a build of it (`isBuildCommitOf`), else
+`PublishPinMismatchError` (`at`, `local`) is thrown with nothing sent, so a later save cannot be published under an
+earlier build's result. b6p-core always pins.
+
+Build refusals are `DraftBuildFailedError` with a typed `reason` (`DRAFT_BUILD_REFUSAL_REASONS`: `DRAFT_MOVED`,
+`BUILD_OUTCOME_UNKNOWN`, `DRAFT_TOO_LARGE`, `REPO_MISSING`, `DRAFT_BRANCH_MISSING`; `rawReason` keeps a newer one) and
+are never retried.
 
 The mutation carries `expectedDraftSha`: the local draft head `publish()` verified equals the platform's. If the platform's draft moved since (someone pushed in between), it refuses with reason `DRAFT_MOVED`, thrown as `PublishDraftMovedError` (a `PublishRefusedError`), and publishes nothing. `gitMode()` reads the mode without switching anything.
 

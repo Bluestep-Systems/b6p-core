@@ -10,6 +10,7 @@ import {
   DRAFT_MOVED_REASON,
   BUILD_OUTCOME_UNKNOWN_REASON,
   DraftBuildOutcomeUnknownError,
+  PublishPinMismatchError,
   DraftBuildFailedError,
   DraftBuildMovedError,
   PublishBuildManifestInvalidError,
@@ -20,7 +21,7 @@ import {
   PublishRefusedError,
 } from "./errors";
 import { CsrfFetch, type ScriptAuth } from "./csrf";
-import { changesOnlyBuildOutput } from "./buildManifest";
+import { buildConfigPaths, buildOutputFolders, changesOnlyBuildOutput } from "./buildManifest";
 import {
   buildSourceOf,
   COMPILE_RETRY,
@@ -300,10 +301,19 @@ export interface BuildFastForward {
   readonly error: string | null;
 }
 
-/** How many rebuilds deep {@link ScriptRepo.isBuildCommitOf} follows a chain. */
-const MAX_BUILD_CHAIN = 32;
+/** How many build commits deep {@link ScriptRepo.isBuildCommitOf} follows a chain, as web's rule (16). */
+const MAX_BUILD_CHAIN = 16;
 
 const UNCHANGED: BuildFastForward = { state: "unchanged", blockedPaths: [], error: null };
+
+/**
+ * Options of {@link ScriptRepo.publish}.
+ * @lastreviewed null
+ */
+export interface PublishOptions {
+  /** The commit the publish is pinned to; see {@link ScriptRepo.publish}. @lastreviewed null */
+  readonly at?: string;
+}
 
 /**
  * Options of {@link ScriptRepo.compileDraft}.
@@ -1075,13 +1085,11 @@ export class ScriptRepo {
         changed.push(path);
       }
     }
-    const configPath = before.has("tsconfig.json")
-      ? "tsconfig.json"
-      : before.has("jsconfig.json")
-        ? "jsconfig.json"
-        : null;
-    const config = configPath === null ? undefined : await this.readText(parent, configPath);
-    return changesOnlyBuildOutput(changed, config);
+    const configs: { path: string; text: string }[] = [];
+    for (const path of buildConfigPaths(before.keys())) {
+      configs.push({ path, text: await this.readText(parent, path) });
+    }
+    return changesOnlyBuildOutput(changed, buildOutputFolders(configs));
   }
 
   /** Every non-tree entry of a commit's tree (blobs, symlinks, gitlinks) as path to `<mode> <id>`. */
@@ -1157,7 +1165,9 @@ export class ScriptRepo {
     }
     if (errors.length > 0) {
       const messages = errors.map((e) => e.message);
-      throw new DraftBuildFailedError(messages.join("; "), messages);
+      // A refusal (DRAFT_TOO_LARGE, REPO_MISSING, DRAFT_BRANCH_MISSING, ...) carries its reason; none is retried.
+      const reason = errors.find((e) => typeof e.extensions?.reason === "string")?.extensions?.reason ?? null;
+      throw new DraftBuildFailedError(messages.join("; "), messages, false, { reason });
     }
     return body;
   }
@@ -1168,13 +1178,24 @@ export class ScriptRepo {
    *
    * @returns the published sha (`config.publishedSha`). The publish has happened once this resolves; `refreshed` says
    *          whether the follow-up fetch that brings `origin/master` up to date also succeeded (`refreshError` if not).
+   * @param options.at Pin the publish: the commit that was built and checked (the build commit from
+   *        {@link compileDraft}, or the pushed commit when there was none). The local draft must be that commit or a
+   *        build of it ({@link isBuildCommitOf}), else nothing is sent; the platform is then asked to publish exactly
+   *        the local draft (`expectedDraftSha`), so a later save cannot slip in under a build's result.
    * @throws {GitUnpushedChangesError} when the local draft is not what the platform holds.
+   * @throws {PublishPinMismatchError} when `at` is given and the local draft is neither it nor a build of it.
    * @throws {PublishRefusedError} when the platform refuses (nothing is written); `reason` says why.
    * @lastreviewed null
    */
-  async publish(): Promise<PublishResult> {
+  async publish(options: PublishOptions = {}): Promise<PublishResult> {
     await this.fetch();
     const local = await this.#resolve(DRAFT_BRANCH);
+    if (options.at !== undefined) {
+      const at = await this.#resolve(options.at);
+      if (local !== at && !(await this.isBuildCommitOf(local, at))) {
+        throw new PublishPinMismatchError(at, local);
+      }
+    }
     const remote = await this.#resolve(`refs/remotes/${REMOTE}/${DRAFT_BRANCH}`).catch(() => undefined);
     if (local !== remote) {
       throw new GitUnpushedChangesError(local, remote);

@@ -182,22 +182,55 @@ export function hasNoTsconfig(paths: Iterable<string>): boolean {
 }
 
 /**
- * Rule 3 of the platform's build-commit rule (web `UserCodeScriptHelper.isBuild`), exactly: the output folder `F` is
- * read from the parent's root `tsconfig.json`, else its root `jsconfig.json` ({@link buildOutputFolder}, `.build` by
- * default), and every path the commit adds, changes or removes must start with `F/` (the manifest, at
- * `F/.b6p-build.json`, is covered). When `F` is empty (output in place, or a folder leaving the tree) no commit is a
- * build. Nested projects do not count.
- * @param changedPaths Every path the commit changes relative to its parent
- * @param rootConfigText The parent's root `tsconfig.json` text, else its root `jsconfig.json`, else `undefined`
+ * The config files that make a tree's build projects, by the platform's rule: every `tsconfig.json` at any depth, plus
+ * the root `jsconfig.json` when there is no root `tsconfig.json`. Sorted.
+ * @param paths Every file path of the tree (`/`-separated)
  * @lastreviewed null
  */
-export function changesOnlyBuildOutput(changedPaths: Iterable<string>, rootConfigText: string | undefined): boolean {
-  const folder = buildOutputFolder(rootConfigText);
-  if (folder === "") {
+export function buildConfigPaths(paths: Iterable<string>): string[] {
+  const all = [...paths];
+  const configs = all.filter((p) => p === "tsconfig.json" || p.endsWith("/tsconfig.json"));
+  if (!all.includes("tsconfig.json") && all.includes("jsconfig.json")) {
+    configs.push("jsconfig.json");
+  }
+  return configs.sort();
+}
+
+/**
+ * The output folders of a tree's build projects, the one resolver the platform, core and the BSJS editor share: for
+ * each config ({@link buildConfigPaths}), `<config dir>/` + its {@link buildOutputFolder} (`.build` by default). A
+ * project whose folder is empty (output in place) or leaves the tree contributes nothing. Sorted, without repeats.
+ * @param configs Each config file's path and text
+ * @lastreviewed null
+ */
+export function buildOutputFolders(configs: Iterable<{ readonly path: string; readonly text: string }>): string[] {
+  const folders = new Set<string>();
+  for (const config of configs) {
+    const folder = buildOutputFolder(config.text);
+    if (folder === "") {
+      continue;
+    }
+    const slash = config.path.lastIndexOf("/");
+    folders.add(slash < 0 ? folder : `${config.path.slice(0, slash)}/${folder}`);
+  }
+  return [...folders].sort();
+}
+
+/**
+ * Rule 3 of the platform's build-commit rule (web `UserCodeScriptHelper`, `bsjs-git-snapshot-design.md`), exactly:
+ * every path the commit adds, changes or removes (complete tree entries) must be under the output folder of some build
+ * project at the parent ({@link buildOutputFolders}), i.e. start with `<folder>/`; a manifest in a folder is covered.
+ * With no folders at all, no commit is a build.
+ * @param changedPaths Every path whose tree entry differs between the commit and its parent
+ * @param folders The parent's output folders ({@link buildOutputFolders})
+ * @lastreviewed null
+ */
+export function changesOnlyBuildOutput(changedPaths: Iterable<string>, folders: readonly string[]): boolean {
+  if (folders.length === 0) {
     return false;
   }
   for (const path of changedPaths) {
-    if (!path.startsWith(`${folder}/`)) {
+    if (!folders.some((folder) => path.startsWith(`${folder}/`))) {
       return false;
     }
   }

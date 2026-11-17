@@ -493,6 +493,20 @@ function createStub() {
           );
           return;
         }
+        if (typeof queued === "string" && queued.startsWith("REFUSE:")) {
+          // A refusal before anything is built: DRAFT_TOO_LARGE, REPO_MISSING, DRAFT_BRANCH_MISSING, or a newer one.
+          res.end(
+            JSON.stringify({
+              errors: [
+                {
+                  message: `Build refused: ${queued.slice(7)}`,
+                  extensions: { code: "PRECONDITION", reason: queued.slice(7) },
+                },
+              ],
+            })
+          );
+          return;
+        }
         if (queued === "OUTCOME_UNKNOWN" || queued === "OUTCOME_UNKNOWN_BUILT") {
           // The platform could not confirm its build push: it may (BUILT) or may not have landed.
           if (queued === "OUTCOME_UNKNOWN_BUILT") {

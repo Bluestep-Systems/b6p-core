@@ -45,11 +45,18 @@ Target release: **1.0.0** (breaking).
     (`GitBuildFastForwardBlockedError`). A build whose answer was lost is taken in by the next push as a
     fast-forward instead of being asked about as a platform edit: a commit counts as a build only with the
     platform's `Bluestep-Build-Of: <pushed sha>` trailer (exact case, one space, a 40- or 64-hex id, the only such
-    line of the last paragraph, CRLF read as LF), one parent, and every changed path under the output folder `F` of
-    the parent's root `tsconfig.json` / `jsconfig.json` (none when `F` is empty), as web's rule; a rebuild chain too.
+    line of the last paragraph, CRLF read as LF), one parent, and every changed path under the output folder of some build
+    project at the parent (each `tsconfig.json` at any depth, plus the root `jsconfig.json` without a root
+    `tsconfig.json`; `buildConfigPaths`, `buildOutputFolders`), as web's rule; a rebuild chain of at most 16 too.
     The subject never counts. Commit ids may be 64 hex throughout. A whitespace-only line separates paragraphs, and the
     tree comparison covers mode and gitlinks (ruling 67).
-  - **An unknown build outcome** (the platform's `BUILD_OUTCOME_UNKNOWN` refusal, name provisional) is never retried:
+  - **A snapshot publishes exactly what was built**: `ScriptRepo.publish({ at })` refuses
+    (`PublishPinMismatchError`, nothing sent) unless the local draft is that commit or a build of it, and the push chain
+    pins every publish to its build commit (`PublishOptions`).
+  - **Build refusals are typed**: `DraftBuildFailedError.reason` (`DRAFT_BUILD_REFUSAL_REASONS`,
+    `DraftBuildRefusalReason`, `draftBuildRefusalReasonOf`; `rawReason`), none retried, including the new
+    `DRAFT_TOO_LARGE`. A push reports them as `buildErrorKind: "refused"` with `buildErrorReason`; deploy too.
+  - **An unknown build outcome** (the platform's `BUILD_OUTCOME_UNKNOWN` refusal) is never retried:
     the draft is read back, a build of the push found there is taken in, and the push reports `buildIncomplete`
     (`UNKNOWN`, raw status the code) and publishes nothing (`DraftBuildResult.outcomeUnknown`,
     `DraftBuildOutcomeUnknownError`, `BUILD_OUTCOME_UNKNOWN_REASON`). An unclean build's manifest deletion reaches the folder.

@@ -2,7 +2,7 @@ import * as path from "path";
 import { B6PUri } from "../B6PUri";
 import { DownstairsPathParser } from "../data/DownstairsPathParser";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
-import type { BuildFastForward, GitIdentity } from "@bluestep-systems/b6p-core-bsjs-git";
+import type { BuildFastForward, DraftBuildRefusalReason, GitIdentity } from "@bluestep-systems/b6p-core-bsjs-git";
 import { FolderNames } from "../constants";
 import type { PublishRefusal } from "./GitSync";
 import type { TypeCheckError } from "./ServerCompile";
@@ -109,7 +109,12 @@ export interface DeployTargetResult {
    * What the target's `buildError` is (see `PushResult.buildErrorKind`).
    * @lastreviewed null
    */
-  buildErrorKind: "not-requested" | "request-failed" | null;
+  buildErrorKind: "not-requested" | "refused" | "request-failed" | null;
+  /**
+   * The target's build refusal reason (see `PushResult.buildErrorReason`).
+   * @lastreviewed null
+   */
+  buildErrorReason: DraftBuildRefusalReason | null;
   /**
    * The target's build status after which it does not publish, when it had one (see `PushResult.buildIncomplete`).
    * @lastreviewed null
@@ -632,6 +637,7 @@ export class ScriptService {
           buildVouched: pushed?.buildVouched ?? null,
           buildError: pushed?.buildError ?? null,
           buildErrorKind: pushed?.buildErrorKind ?? null,
+          buildErrorReason: pushed?.buildErrorReason ?? null,
           buildIncomplete: pushed?.buildIncomplete ?? null,
           buildFastForward: pushed?.buildFastForward ?? null,
           snapshotRefused: pushed?.snapshotRefused ?? null,
@@ -652,6 +658,7 @@ export class ScriptService {
           buildVouched: null,
           buildError: null,
           buildErrorKind: null,
+          buildErrorReason: null,
           buildIncomplete: null,
           buildFastForward: null,
           snapshotRefused: null,

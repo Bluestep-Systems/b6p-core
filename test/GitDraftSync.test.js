@@ -577,6 +577,7 @@ test("executePush (plain): the result carries commitSha, no publishedSha, and no
     "buildCommitSha",
     "buildError",
     "buildErrorKind",
+    "buildErrorReason",
     "buildFastForward",
     "buildIncomplete",
     "buildVouched",
@@ -935,6 +936,7 @@ test("deploy returns a result per target: a target failing on identity does not 
     buildVouched: null,
     buildError: null,
     buildErrorKind: null,
+    buildErrorReason: null,
     buildIncomplete: null,
     buildFastForward: null,
     snapshotRefused: null,
@@ -1511,6 +1513,36 @@ test("executePush, an unknown build outcome: no retry; a build of the push found
       assert.strictEqual(head, result.commitSha, "no build was made by a retry");
     }
   }
+});
+
+test("executePush, a build refused DRAFT_TOO_LARGE: buildError with kind refused and the typed reason, nothing published", async () => {
+  const s = await builtScenario("9441", "dev", { buildQueue: ["REFUSE:DRAFT_TOO_LARGE"] });
+  const result = await executePush({
+    ctx: s.ctx,
+    targetUrl: `${baseUrl}files/100001/`,
+    rootPath: s.rootPath,
+    snapshot: true,
+    author: AUTHOR,
+    sleep: async () => {},
+  });
+  assert.strictEqual(result.pushed, true);
+  assert.deepStrictEqual([result.buildErrorKind, result.buildErrorReason], ["refused", "DRAFT_TOO_LARGE"]);
+  assert.strictEqual(result.publishedSha, null);
+  assert.ok(s.errors.some((m) => /refused to build it \(DRAFT_TOO_LARGE\)/.test(m)));
+  assert.ok(!s.infos.some((m) => /complete/i.test(m)));
+});
+
+test("a snapshot push publishes pinned to its build commit", async () => {
+  const s = await builtScenario("9442", "dev");
+  const result = await executePush({
+    ctx: s.ctx,
+    targetUrl: `${baseUrl}files/100001/`,
+    rootPath: s.rootPath,
+    snapshot: true,
+    author: AUTHOR,
+  });
+  assert.strictEqual(result.publishedSha, result.buildCommitSha);
+  assert.strictEqual(stub.state.publishInputs.at(-1).expectedDraftSha, result.buildCommitSha);
 });
 
 test("pull fast-forwards to the platform's build commit, output and manifest included", async () => {

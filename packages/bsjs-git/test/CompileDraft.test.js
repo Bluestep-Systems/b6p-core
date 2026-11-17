@@ -392,18 +392,81 @@ test("buildSourceOf: a whitespace-only line separates paragraphs, as git interpr
   assert.strictEqual(t(`Build draft\r\n\t \r\nBluestep-Build-Of: ${SHA}\r\n`), SHA, "CRLF and a tab-space line");
 });
 
-test("changesOnlyBuildOutput is web's rule 3: under F of the root config only; F empty means no build", () => {
+test("rule 3 over every project: each tsconfig.json at any depth gives <dir>/<folder>, the root jsconfig only without a root tsconfig", () => {
+  const cfg = (outDir) => (outDir === undefined ? "{}" : JSON.stringify({ compilerOptions: { outDir } }));
+  const folders = (configs) => lib.buildOutputFolders(configs.map(([path, text]) => ({ path, text })));
+  assert.deepStrictEqual(lib.buildConfigPaths(["a.ts", "tsconfig.json", "client/tsconfig.json", "jsconfig.json"]), [
+    "client/tsconfig.json",
+    "tsconfig.json",
+  ]);
+  assert.deepStrictEqual(
+    lib.buildConfigPaths(["jsconfig.json", "x/jsconfig.json", "a/b/tsconfig.json"]),
+    ["a/b/tsconfig.json", "jsconfig.json"],
+    "a root jsconfig without a root tsconfig counts; a nested jsconfig never does"
+  );
+  assert.deepStrictEqual(
+    folders([
+      ["tsconfig.json", cfg()],
+      ["client/tsconfig.json", cfg("./dist/")],
+    ]),
+    [".build", "client/dist"]
+  );
+  assert.deepStrictEqual(
+    folders([
+      ["tsconfig.json", cfg(".")],
+      ["lib/tsconfig.json", cfg("../out")],
+    ]),
+    [],
+    "empty, leaving"
+  );
   const r = lib.changesOnlyBuildOutput;
-  assert.strictEqual(r([".build/scripts/app.js", ".build/.b6p-build.json"], "{}"), true, "default F .build");
-  assert.strictEqual(r([".build/scripts/app.js"], undefined), true, "no config: .build");
-  assert.strictEqual(r(["dist/a.js"], JSON.stringify({ compilerOptions: { outDir: "./dist/" } })), true);
-  assert.strictEqual(r(["dist/a.js"], "{}"), false, "outside F");
-  assert.strictEqual(r([".buildx/a.js"], "{}"), false, "only the folder F itself");
-  assert.strictEqual(r(["scripts/app.js"], JSON.stringify({ compilerOptions: { outDir: "." } })), false, "F empty");
-  assert.strictEqual(r([".b6p-build.json"], JSON.stringify({ compilerOptions: { outDir: "./" } })), false, "F empty");
-  assert.strictEqual(r(["../x/a.js"], JSON.stringify({ compilerOptions: { outDir: "../x" } })), false, "F leaves");
-  assert.strictEqual(r(["client/.build/script.js"], "{}"), false, "a nested project's output is not under F");
-  assert.strictEqual(r([], "{}"), true, "no change is under F, as web's allMatch");
+  const two = folders([
+    ["tsconfig.json", cfg()],
+    ["client/tsconfig.json", cfg()],
+  ]);
+  assert.strictEqual(r([".build/scripts/app.js", ".build/.b6p-build.json"], two), true, "the root project");
+  assert.strictEqual(r(["client/.build/script.js"], two), true, "a nested project's output");
+  assert.strictEqual(r(["client/.build/script.js", ".build/a.js"], two), true, "both at once");
+  assert.strictEqual(r(["client/main.js"], two), false, "outside every project's folder");
+  assert.strictEqual(r([".buildx/a.js"], two), false, "only the folder itself");
+  assert.strictEqual(r(["scripts/app.js"], []), false, "no folders: nothing is a build");
+  assert.strictEqual(r([], two), true, "no change is under a folder, as web's allMatch");
+});
+
+test("a nested project's build is recognised; a change outside every project's folder is not", async () => {
+  const { repo, entry } = await pushed({ ...SEED, "client/tsconfig.json": "{}", "client/main.ts": "export {};\n" });
+  const base = await repo.sha("draft");
+  const forge = (file, text) => {
+    const work = fs.mkdtempSync(path.join(tmp, "nested-"));
+    stub.git(tmp, "clone", "-q", "-b", "draft", entry.bare, work);
+    fs.mkdirSync(path.dirname(path.join(work, file)), { recursive: true });
+    fs.writeFileSync(path.join(work, file), text);
+    stub.git(work, "add", "-A", "-f");
+    stub.git(
+      work,
+      "-c",
+      "user.name=P",
+      "-c",
+      "user.email=p@x",
+      "commit",
+      "-q",
+      "-m",
+      "Build draft",
+      "-m",
+      `Bluestep-Build-Of: ${base}`
+    );
+    const sha = stub.git(work, "rev-parse", "HEAD");
+    stub.git(work, "push", "-q", "-f", entry.bare, "HEAD:draft");
+    return sha;
+  };
+  const nested = forge("client/.build/main.js", "// built\n");
+  await repo.fetch();
+  assert.strictEqual(await repo.isBuildCommitOf(nested, base), true);
+  stub.git(entry.bare, "update-ref", "refs/heads/draft", base);
+  const outside = forge("client/main.js", "// not output\n");
+  await repo.fetch();
+  assert.strictEqual(await repo.isBuildCommitOf(outside, base), false);
+  stub.git(entry.bare, "update-ref", "refs/heads/draft", base);
 });
 
 test("a build commit is judged on complete tree entries: a mode change or a gitlink outside F is not a build", async () => {
@@ -466,6 +529,51 @@ test("an unknown build outcome is never retried: the draft is read back, and a b
   assert.deepStrictEqual(missing.outcomeUnknown, { buildFound: false });
   assert.deepStrictEqual([missing.buildCommitSha, missing.head], [null, head]);
   assert.strictEqual(stub.git(other.entry.bare, "rev-parse", "draft"), head, "nothing was built by a retry");
+});
+
+test("a refusal carries web's DraftBuildRefusalReason, typed; none is retried", async () => {
+  for (const reason of ["DRAFT_TOO_LARGE", "REPO_MISSING", "DRAFT_BRANCH_MISSING", "SOMETHING_NEWER"]) {
+    const { repo, entry } = await pushed();
+    entry.buildQueue = [`REFUSE:${reason}`];
+    const before = stub.state.buildInputs.length;
+    const { waits, sleep } = noSleep();
+    await rejects(repo.compileDraft({ sleep }), lib.DraftBuildFailedError, (e) => {
+      assert.strictEqual(e.rawReason, reason);
+      assert.strictEqual(e.reason, reason === "SOMETHING_NEWER" ? null : reason);
+      assert.strictEqual(e.networkFailure, false);
+    });
+    assert.strictEqual(stub.state.buildInputs.length, before + 1, `${reason}: one request`);
+    assert.deepStrictEqual(waits, []);
+  }
+  assert.deepStrictEqual([...lib.DRAFT_BUILD_REFUSAL_REASONS].sort(), [
+    "BUILD_OUTCOME_UNKNOWN",
+    "DRAFT_BRANCH_MISSING",
+    "DRAFT_MOVED",
+    "DRAFT_TOO_LARGE",
+    "REPO_MISSING",
+  ]);
+  assert.strictEqual(new lib.DraftBuildMovedError(null, "m").reason, "DRAFT_MOVED");
+  assert.strictEqual(new lib.DraftBuildOutcomeUnknownError(null, "m").reason, "BUILD_OUTCOME_UNKNOWN");
+});
+
+test("a pinned publish: the build commit, or the pushed commit the local draft is a build of; anything else is refused unsent", async () => {
+  const { repo, entry } = await pushed();
+  const pushedSha = await repo.sha("draft");
+  const build = await repo.compileDraft();
+  assert.strictEqual((await repo.publish({ at: build.buildCommitSha })).publishedSha, build.buildCommitSha);
+  assert.strictEqual((await repo.publish({ at: pushedSha })).publishedSha, build.buildCommitSha, "a build of it");
+
+  // A later save moves the draft to C: publishing it under B's build result is refused before any request.
+  await repo.writeFile("scripts/app.ts", "export const v = 8;\n");
+  await repo.commit("a concurrent save", AUTHOR);
+  await repo.push();
+  const sent = stub.state.publishInputs.length;
+  await rejects(repo.publish({ at: build.buildCommitSha }), lib.PublishPinMismatchError, (e) => {
+    assert.strictEqual(e.code, "PUBLISH_PIN_MISMATCH");
+    assert.strictEqual(e.at, build.buildCommitSha);
+    assert.strictEqual(e.local, stub.git(entry.bare, "rev-parse", "draft"));
+  });
+  assert.strictEqual(stub.state.publishInputs.length, sent, "nothing was sent");
 });
 
 test("parsers: an unknown status is UNKNOWN with the raw text; a build commit that is not a sha reads as null", () => {
