@@ -8,6 +8,8 @@ import {
   GitPushRejectedError,
   GitUnpushedChangesError,
   DRAFT_MOVED_REASON,
+  BUILD_OUTCOME_UNKNOWN_REASON,
+  DraftBuildOutcomeUnknownError,
   DraftBuildFailedError,
   DraftBuildMovedError,
   PublishBuildManifestInvalidError,
@@ -260,6 +262,15 @@ export interface DraftBuildResult {
    * @lastreviewed null
    */
   readonly fastForward: BuildFastForward;
+  /**
+   * Set when the platform could not tell whether its build landed ({@link BUILD_OUTCOME_UNKNOWN_REASON}): the draft
+   * was then read back, and `buildFound` says whether its head is a build of the pushed commit (by the build-commit
+   * rule, {@link ScriptRepo.isBuildCommitOf}). When it is, the local draft was moved to it as after any build. `compile`
+   * is then `UNKNOWN` (raw status the refusal code) and `vouched` false: nothing says how the build went. `null` when
+   * the platform answered.
+   * @lastreviewed null
+   */
+  readonly outcomeUnknown: { readonly buildFound: boolean } | null;
 }
 
 /**
@@ -844,6 +855,10 @@ export class ScriptRepo {
       try {
         body = await this.#buildRequest(local);
       } catch (error) {
+        if (error instanceof DraftBuildOutcomeUnknownError) {
+          // Never asked again: a repeat could build a second time. Read back what is there instead.
+          return this.#afterUnknownOutcome(local);
+        }
         if (
           error instanceof DraftBuildFailedError &&
           error.networkFailure &&
@@ -870,7 +885,14 @@ export class ScriptRepo {
       }
       const build = parseDraftBuildCommit(firstOf(body.extensions?.bluestepBuild));
       if (!build.commit || build.commit === local) {
-        return { compile, buildCommitSha: null, vouched: build.vouched, head: local, fastForward: UNCHANGED };
+        return {
+          compile,
+          buildCommitSha: null,
+          vouched: build.vouched,
+          head: local,
+          fastForward: UNCHANGED,
+          outcomeUnknown: null,
+        };
       }
       // The build exists on the platform from here on: a failure to take it in is not a build failure.
       let fastForward: BuildFastForward;
@@ -891,7 +913,48 @@ export class ScriptRepo {
         };
       }
       const head = fastForward.state === "fast-forwarded" ? build.commit : local;
-      return { compile, buildCommitSha: build.commit, vouched: build.vouched, head, fastForward };
+      return { compile, buildCommitSha: build.commit, vouched: build.vouched, head, fastForward, outcomeUnknown: null };
+    }
+  }
+
+  /** {@link compileDraft} after a {@link BUILD_OUTCOME_UNKNOWN_REASON}: read the draft back and take in a build of it. */
+  async #afterUnknownOutcome(local: string): Promise<DraftBuildResult> {
+    const compile = parseDraftCompileOutcome({ status: BUILD_OUTCOME_UNKNOWN_REASON });
+    try {
+      await this.fetch();
+      const remote = await this.#resolve(`refs/remotes/${REMOTE}/${DRAFT_BRANCH}`);
+      if (remote !== local && (await this.isBuildCommitOf(remote, local))) {
+        const fastForward = await this.fastForwardToBuild(remote);
+        return {
+          compile,
+          buildCommitSha: remote,
+          vouched: false,
+          head: fastForward.state === "fast-forwarded" ? remote : local,
+          fastForward,
+          outcomeUnknown: { buildFound: true },
+        };
+      }
+      return {
+        compile,
+        buildCommitSha: null,
+        vouched: false,
+        head: local,
+        fastForward: UNCHANGED,
+        outcomeUnknown: { buildFound: false },
+      };
+    } catch (error) {
+      return {
+        compile,
+        buildCommitSha: null,
+        vouched: false,
+        head: local,
+        fastForward: {
+          state: "failed",
+          blockedPaths: [],
+          error: error instanceof Error ? error.message : String(error),
+        },
+        outcomeUnknown: { buildFound: false },
+      };
     }
   }
 
@@ -995,16 +1058,52 @@ export class ScriptRepo {
     }
   }
 
-  /** Rule 3 of the build-commit rule for `oid` over `parent` ({@link changesOnlyBuildOutput}). */
+  /**
+   * Rule 3 of the build-commit rule for `oid` over `parent` ({@link changesOnlyBuildOutput}): the paths whose complete
+   * tree entry differs, mode and id included, gitlinks (submodules) too.
+   */
   async #changesOnlyOutput(parent: string, oid: string): Promise<boolean> {
-    const root = new Set((await this.listTree(parent)).map((f) => f.path));
-    const configPath = root.has("tsconfig.json") ? "tsconfig.json" : root.has("jsconfig.json") ? "jsconfig.json" : null;
+    const [before, after] = await Promise.all([this.#treeEntries(parent), this.#treeEntries(oid)]);
+    const changed: string[] = [];
+    for (const [path, entry] of before) {
+      if (after.get(path) !== entry) {
+        changed.push(path);
+      }
+    }
+    for (const path of after.keys()) {
+      if (!before.has(path)) {
+        changed.push(path);
+      }
+    }
+    const configPath = before.has("tsconfig.json")
+      ? "tsconfig.json"
+      : before.has("jsconfig.json")
+        ? "jsconfig.json"
+        : null;
     const config = configPath === null ? undefined : await this.readText(parent, configPath);
-    const changes = await this.diff(parent, oid);
-    return changesOnlyBuildOutput(
-      changes.map((c) => c.path),
-      config
-    );
+    return changesOnlyBuildOutput(changed, config);
+  }
+
+  /** Every non-tree entry of a commit's tree (blobs, symlinks, gitlinks) as path to `<mode> <id>`. */
+  async #treeEntries(rev: string): Promise<Map<string, string>> {
+    const ref = await this.#resolve(rev);
+    const entries = new Map<string, string>();
+    await git.walk({
+      fs: this.#fs,
+      dir: this.dir,
+      trees: [git.TREE({ ref })],
+      map: async (path, [entry]) => {
+        if (!entry || path === ".") {
+          return undefined;
+        }
+        const type = await entry.type();
+        if (type !== "tree") {
+          entries.set(path, `${(await entry.mode()).toString(8)} ${await entry.oid()}`);
+        }
+        return undefined;
+      },
+    });
+    return entries;
   }
 
   /** The git blob id of a working-tree file, `undefined` when there is none. */
@@ -1048,6 +1147,10 @@ export class ScriptRepo {
       throw new DraftBuildFailedError("the platform's answer was not readable JSON", [], false, { cause });
     }
     const errors = body.errors ?? [];
+    const unknown = errors.find((e) => e.extensions?.reason === BUILD_OUTCOME_UNKNOWN_REASON);
+    if (unknown) {
+      throw new DraftBuildOutcomeUnknownError(unknown.extensions?.publish, unknown.message);
+    }
     const moved = errors.find((e) => e.extensions?.reason === DRAFT_MOVED_REASON);
     if (moved) {
       throw new DraftBuildMovedError(moved.extensions?.publish, moved.message);

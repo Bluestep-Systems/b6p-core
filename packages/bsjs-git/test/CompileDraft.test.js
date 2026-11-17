@@ -382,6 +382,16 @@ test("buildSourceOf mirrors web's buildTrailer exactly (DraftBuildRefusalTest), 
   assert.strictEqual(t(`x\n\nBluestep-Build-Of: ${SHA}\nBluestep-Build-Of: ${BUILT}`), null, "two trailers");
 });
 
+test("buildSourceOf: a whitespace-only line separates paragraphs, as git interpret-trailers reads it (ruling 67)", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+  const OTHER = "89abcdef0123456789abcdef0123456789abcdef";
+  const t = lib.buildSourceOf;
+  assert.strictEqual(t(`Bluestep-Build-Of: ${SHA}\n \nordinary text`), null, "a space-only line ends its paragraph");
+  assert.strictEqual(t(`x\n\nBluestep-Build-Of: ${SHA}\n\t\nBluestep-Build-Of: ${OTHER}`), OTHER, "only the last");
+  assert.strictEqual(t(`Build draft\n \nBluestep-Build-Of: ${SHA}`), SHA);
+  assert.strictEqual(t(`Build draft\r\n\t \r\nBluestep-Build-Of: ${SHA}\r\n`), SHA, "CRLF and a tab-space line");
+});
+
 test("changesOnlyBuildOutput is web's rule 3: under F of the root config only; F empty means no build", () => {
   const r = lib.changesOnlyBuildOutput;
   assert.strictEqual(r([".build/scripts/app.js", ".build/.b6p-build.json"], "{}"), true, "default F .build");
@@ -394,6 +404,68 @@ test("changesOnlyBuildOutput is web's rule 3: under F of the root config only; F
   assert.strictEqual(r(["../x/a.js"], JSON.stringify({ compilerOptions: { outDir: "../x" } })), false, "F leaves");
   assert.strictEqual(r(["client/.build/script.js"], "{}"), false, "a nested project's output is not under F");
   assert.strictEqual(r([], "{}"), true, "no change is under F, as web's allMatch");
+});
+
+test("a build commit is judged on complete tree entries: a mode change or a gitlink outside F is not a build", async () => {
+  const { repo, entry } = await pushed();
+  const base = (await repo.compileDraft()).buildCommitSha;
+  const forge = (setup) => {
+    const work = fs.mkdtempSync(path.join(tmp, "entries-"));
+    stub.git(tmp, "clone", "-q", "-b", "draft", entry.bare, work);
+    setup(work);
+    stub.git(
+      work,
+      "-c",
+      "user.name=P",
+      "-c",
+      "user.email=p@x",
+      "commit",
+      "-q",
+      "-m",
+      "Build draft",
+      "-m",
+      `Bluestep-Build-Of: ${base}`
+    );
+    const sha = stub.git(work, "rev-parse", "HEAD");
+    stub.git(work, "push", "-q", "-f", entry.bare, "HEAD:draft");
+    return sha;
+  };
+  const modeOnly = forge((w) => stub.git(w, "update-index", "--chmod=+x", "scripts/app.ts"));
+  await repo.fetch();
+  assert.strictEqual(await repo.isBuildCommitOf(modeOnly, base), false, "a mode-only change outside F");
+  stub.git(entry.bare, "update-ref", "refs/heads/draft", base);
+  const gitlink = forge((w) => stub.git(w, "update-index", "--add", "--cacheinfo", `160000,${base},vendor/lib`));
+  await repo.fetch();
+  assert.strictEqual(await repo.isBuildCommitOf(gitlink, base), false, "a submodule outside F");
+  stub.git(entry.bare, "update-ref", "refs/heads/draft", base);
+  const insideMode = forge((w) => stub.git(w, "update-index", "--chmod=+x", ".build/scripts/app.js"));
+  await repo.fetch();
+  assert.strictEqual(await repo.isBuildCommitOf(insideMode, base), true, "a mode change under F is output");
+  stub.git(entry.bare, "update-ref", "refs/heads/draft", base);
+});
+
+test("an unknown build outcome is never retried: the draft is read back, and a build of the push is taken in", async () => {
+  const { repo, entry } = await pushed();
+  const pushedSha = await repo.sha("draft");
+  entry.buildQueue = ["OUTCOME_UNKNOWN_BUILT"];
+  const before = stub.state.buildInputs.length;
+  const found = await repo.compileDraft(noSleep());
+  assert.strictEqual(stub.state.buildInputs.length, before + 1, "one request, no retry");
+  assert.deepStrictEqual(found.outcomeUnknown, { buildFound: true });
+  assert.deepStrictEqual([found.compile.status, found.compile.rawStatus], ["UNKNOWN", "BUILD_OUTCOME_UNKNOWN"]);
+  assert.strictEqual(found.fastForward.state, "fast-forwarded");
+  assert.strictEqual(found.buildCommitSha, stub.git(entry.bare, "rev-parse", "draft"));
+  assert.notStrictEqual(found.buildCommitSha, pushedSha);
+  assert.strictEqual(await repo.sha("draft"), found.buildCommitSha);
+  assert.strictEqual(found.vouched, false, "how the build went is not known");
+
+  const other = await pushed();
+  other.entry.buildQueue = ["OUTCOME_UNKNOWN"];
+  const head = await other.repo.sha("draft");
+  const missing = await other.repo.compileDraft(noSleep());
+  assert.deepStrictEqual(missing.outcomeUnknown, { buildFound: false });
+  assert.deepStrictEqual([missing.buildCommitSha, missing.head], [null, head]);
+  assert.strictEqual(stub.git(other.entry.bare, "rev-parse", "draft"), head, "nothing was built by a retry");
 });
 
 test("parsers: an unknown status is UNKNOWN with the raw text; a build commit that is not a sha reads as null", () => {

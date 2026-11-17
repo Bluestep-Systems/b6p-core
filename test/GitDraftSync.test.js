@@ -1477,6 +1477,42 @@ test("a platform commit titled like a build but without the Bluestep-Build-Of tr
   );
 });
 
+test("executePush, an unknown build outcome: no retry; a build of the push found is taken in, never published; none found is incomplete", async () => {
+  for (const [id, queued, found] of [
+    ["9431", "OUTCOME_UNKNOWN_BUILT", true],
+    ["9432", "OUTCOME_UNKNOWN", false],
+  ]) {
+    const s = await builtScenario(id, "dev", { buildQueue: [queued] });
+    const before = stub.state.buildInputs.length;
+    const result = await executePush({
+      ctx: s.ctx,
+      targetUrl: `${baseUrl}files/100001/`,
+      rootPath: s.rootPath,
+      snapshot: true,
+      author: AUTHOR,
+      sleep: async () => {},
+    });
+    assert.strictEqual(stub.state.buildInputs.length, before + 1, `${id}: one build request`);
+    assert.strictEqual(result.pushed, true);
+    assert.deepStrictEqual(
+      [result.buildIncomplete.status, result.buildIncomplete.rawStatus],
+      ["UNKNOWN", "BUILD_OUTCOME_UNKNOWN"]
+    );
+    assert.ok(/could not tell whether its build landed/.test(result.buildIncomplete.description));
+    assert.strictEqual(result.publishedSha, null, `${id}: nothing published`);
+    assert.ok(!s.infos.some((m) => /complete/i.test(m)));
+    const head = stub.git(s.entry.bare, "rev-parse", "draft");
+    if (found) {
+      assert.strictEqual(result.buildCommitSha, head);
+      assert.strictEqual(result.buildFastForward.state, "fast-forwarded");
+      assert.strictEqual(stub.git(s.draftPath, "rev-parse", "draft"), head, "the folder holds the build");
+    } else {
+      assert.strictEqual(result.buildCommitSha, null);
+      assert.strictEqual(head, result.commitSha, "no build was made by a retry");
+    }
+  }
+});
+
 test("pull fast-forwards to the platform's build commit, output and manifest included", async () => {
   const s = await builtScenario("9424", "dev", { buildQueue: ["BUILD_THEN_NETWORK", "NETWORK"] });
   const pushed = await executePush({

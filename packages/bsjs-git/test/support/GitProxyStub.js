@@ -493,6 +493,23 @@ function createStub() {
           );
           return;
         }
+        if (queued === "OUTCOME_UNKNOWN" || queued === "OUTCOME_UNKNOWN_BUILT") {
+          // The platform could not confirm its build push: it may (BUILT) or may not have landed.
+          if (queued === "OUTCOME_UNKNOWN_BUILT") {
+            serverBuild(entry, root);
+          }
+          res.end(
+            JSON.stringify({
+              errors: [
+                {
+                  message: "The build's outcome is not known",
+                  extensions: { code: "PRECONDITION", reason: "BUILD_OUTCOME_UNKNOWN" },
+                },
+              ],
+            })
+          );
+          return;
+        }
         if (queued === "BUILD_THEN_NETWORK" || queued === "BUILD_THEN_BUSY") {
           // The platform built and committed, then the answer was lost (a 503 from the ingress) or said BUSY.
           serverBuild(entry, root);

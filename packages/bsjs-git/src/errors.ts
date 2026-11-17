@@ -238,6 +238,30 @@ export class DraftBuildMovedError extends DraftBuildFailedError {
 }
 
 /**
+ * The platform's `DraftBuildRefusalReason` for a build whose push to the forge it could not confirm: the build commit
+ * may or may not be on the draft branch.
+ * HUMAN-REVIEW-NEEDED: provisional name (ruling 67); web is adding the code, and this must be its exact spelling from
+ * WCD-ledger.md / web's errors.graphqls before release.
+ * @lastreviewed null
+ */
+export const BUILD_OUTCOME_UNKNOWN_REASON = "BUILD_OUTCOME_UNKNOWN";
+
+/**
+ * The platform could not tell whether its build commit landed ({@link BUILD_OUTCOME_UNKNOWN_REASON}). Not retried: a
+ * second request could build again. {@link ScriptRepo.compileDraft} turns it into `outcomeUnknown` after reading the
+ * draft back; it reaches a caller only from a lower-level request.
+ * @lastreviewed null
+ */
+export class DraftBuildOutcomeUnknownError extends DraftBuildFailedError {
+  constructor(
+    readonly details: unknown,
+    message: string
+  ) {
+    super(message, [message]);
+  }
+}
+
+/**
  * The platform built the draft, but the local draft could not be moved to its build commit because local files are in
  * the way: each path in `paths` is one the build changes whose local copy matches neither the pushed commit nor the
  * build (a local edit, or an untracked or ignored file). Nothing was changed here: the local draft branch, index and

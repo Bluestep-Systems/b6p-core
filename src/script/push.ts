@@ -396,7 +396,12 @@ export async function executePush(opts: {
       ? {
           status,
           rawStatus: built.compile.rawStatus,
-          description: describeBuildStatus(status, built.compile.rawStatus),
+          description: built.outcomeUnknown
+            ? built.outcomeUnknown.buildFound
+              ? "the platform could not tell whether its build landed; the draft it holds is a build of this push, " +
+                "taken in here, but how that build went is not known"
+              : "the platform could not tell whether its build landed, and no build of this push is on its draft"
+            : describeBuildStatus(status, built.compile.rawStatus),
         }
       : null;
   const fastForward = built?.fastForward ?? null;

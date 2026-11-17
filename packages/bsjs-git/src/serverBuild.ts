@@ -23,19 +23,26 @@ export const BUILD_OF_TRAILER = "Bluestep-Build-Of";
 
 /**
  * The source sha a commit message's {@link BUILD_OF_TRAILER} trailer names, or `null` when it names none. The web
- * rule exactly (`UserCodeScriptHelper.buildTrailer`): CRLF read as LF and trailing whitespace dropped, the last
- * paragraph is the text after the last blank line (`\n\n`), or the whole message when there is none, and it must hold
+ * rule exactly (`UserCodeScriptHelper.buildTrailer`, ruling 67): CRLF read as LF and trailing whitespace dropped, the
+ * last paragraph is the text after the last blank line (a line of only whitespace counts, as git interpret-trailers
+ * reads it), or the whole message when there is none, and it must hold
  * exactly one line that is, in full, `Bluestep-Build-Of: ` followed by a full lowercase commit id (40 or 64 hex). Exact
  * case, exactly one space, nothing else on the line.
  * @param message A commit's full message
  * @lastreviewed null
  */
 export function buildSourceOf(message: string): string | null {
-  const trimmed = message.replace(/\r\n/g, "\n").trimEnd();
-  const blank = trimmed.lastIndexOf("\n\n");
-  const last = blank < 0 ? trimmed : trimmed.slice(blank + 2);
+  const lines = message.replace(/\r\n/g, "\n").trimEnd().split("\n");
+  // A line of only whitespace separates paragraphs, as git interpret-trailers reads it.
+  let start = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^\s*$/.test(lines[i])) {
+      start = i + 1;
+      break;
+    }
+  }
   let found: string | null = null;
-  for (const line of last.split("\n")) {
+  for (const line of lines.slice(start)) {
     const match = TRAILER_LINE.exec(line);
     if (match) {
       if (found !== null) {

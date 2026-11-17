@@ -47,7 +47,12 @@ Target release: **1.0.0** (breaking).
     platform's `Bluestep-Build-Of: <pushed sha>` trailer (exact case, one space, a 40- or 64-hex id, the only such
     line of the last paragraph, CRLF read as LF), one parent, and every changed path under the output folder `F` of
     the parent's root `tsconfig.json` / `jsconfig.json` (none when `F` is empty), as web's rule; a rebuild chain too.
-    The subject never counts. Commit ids may be 64 hex throughout. An unclean build's manifest deletion reaches the folder.
+    The subject never counts. Commit ids may be 64 hex throughout. A whitespace-only line separates paragraphs, and the
+    tree comparison covers mode and gitlinks (ruling 67).
+  - **An unknown build outcome** (the platform's `BUILD_OUTCOME_UNKNOWN` refusal, name provisional) is never retried:
+    the draft is read back, a build of the push found there is taken in, and the push reports `buildIncomplete`
+    (`UNKNOWN`, raw status the code) and publishes nothing (`DraftBuildResult.outcomeUnknown`,
+    `DraftBuildOutcomeUnknownError`, `BUILD_OUTCOME_UNKNOWN_REASON`). An unclean build's manifest deletion reaches the folder.
   - Removed: `ScriptTranspiler` (`TranspileOutcome`, `ProjectBuildReport`, `buildUncleanReasons`), `TsLibResolver`,
     `checkEmittedEntrypoint` / `EmittedEntrypointCheck` (the platform refuses a missing entrypoint,
     `ENTRYPOINT_MISSING`), the stale client bundle warning, `B6PProviders.typescriptLibDirs` and its `ScriptContext`

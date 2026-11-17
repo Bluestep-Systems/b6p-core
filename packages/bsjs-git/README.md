@@ -91,7 +91,14 @@ rebuild chain of it: each commit carries the trailer `Bluestep-Build-Of: <base>`
 has one parent and changes only paths under the output folder `F` of the parent's root `tsconfig.json`, else
 `jsconfig.json` (`changesOnlyBuildOutput`; no commit is a build when `F` is empty); the subject never counts. This is
 web's rule (`docs/bsjs-git-snapshot-design.md`, "Build commits"), the trailer parsed as there: CRLF as LF, trailing
-whitespace dropped, the last paragraph (or the whole message), exactly one line `Bluestep-Build-Of: <40/64 hex>`. It is for taking
+whitespace dropped, the last paragraph (after the last blank or whitespace-only line, or the whole message), exactly one
+line `Bluestep-Build-Of: <40/64 hex>`. Rule 3 compares complete tree entries (mode and id, gitlinks included), so a
+mode-only or submodule change outside `F/` is not a build.
+
+A refusal with reason `BUILD_OUTCOME_UNKNOWN` (the platform could not confirm its build push; the name is provisional
+until web's) is never retried, since a repeat could build twice: `compileDraft` reads the draft back and returns
+`outcomeUnknown: { buildFound }`, moving the local draft to the head when that is a build of the push. `compile` is
+then `UNKNOWN` and `vouched` false. It is for taking
 in a build whose answer was lost. An unclean build deletes the manifest, and the fast-forward deletes it here too.
 
 It resolves to `{ compile, buildCommitSha, vouched, head, fastForward }`: `buildCommitSha` is `null` when the build made no commit

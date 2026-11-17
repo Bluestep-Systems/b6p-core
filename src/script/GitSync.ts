@@ -864,6 +864,12 @@ export interface DraftBuildOutcome {
    */
   readonly fastForward: BuildFastForward | null;
   /**
+   * Set when the platform could not tell whether its build landed: `buildFound` says whether the draft, read back, was
+   * a build of the push (then taken in as `fastForward` says). Nothing is published after it. `null` otherwise.
+   * @lastreviewed null
+   */
+  readonly outcomeUnknown: { readonly buildFound: boolean } | null;
+  /**
    * Whether the draft passes the platform's build check (a clean build with its manifest committed, or none needed).
    * @lastreviewed null
    */
@@ -1331,6 +1337,7 @@ async function buildPushed(repo: ScriptRepo, sleep?: (ms: number) => Promise<voi
       compile: result.compile,
       buildCommitSha: result.buildCommitSha,
       fastForward: result.fastForward,
+      outcomeUnknown: result.outcomeUnknown,
       vouched: result.vouched,
       error: null,
       errorKind: null,
@@ -1340,6 +1347,7 @@ async function buildPushed(repo: ScriptRepo, sleep?: (ms: number) => Promise<voi
       compile: null,
       buildCommitSha: null,
       fastForward: null,
+      outcomeUnknown: null,
       vouched: false,
       error: error instanceof Error ? error.message : String(error),
       errorKind: error instanceof GitUnpushedChangesError ? "not-requested" : "request-failed",
