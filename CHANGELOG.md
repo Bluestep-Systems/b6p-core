@@ -85,6 +85,16 @@ Target release: **1.0.0** (breaking).
 
 - CI runs the suite on `windows-latest` (Node 24) as well.
 
+### Fixed
+
+- **`bsjs-git` 0.3.1: a bearer client's first `/gql` call no longer fails on its CSRF token** (ClickUp 1k5g91bq9ef). The
+  token was read from `/csrf-token` in a session that was not signed in yet. The first bearer request then signed the
+  session in, and the sign-in renewed it and dropped the token. On releases that check the token after that renewal
+  (bkplayground on 26.11.09.00), that request got a 403 with no refreshed token, and `CsrfFetch` retried only a cached
+  token or a 403 that carried a new one. So b6p 0.9.0 could not pull or publish: a pull stopped at "Could not switch the
+  script to git publishing: HTTP 403". `CsrfFetch` now retries any 403 once, with a token read afresh from the
+  signed-in session.
+
 ## [0.9.0] - 2026-11-12
 
 ### Added

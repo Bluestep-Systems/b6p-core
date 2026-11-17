@@ -33,7 +33,7 @@
     "prepublishOnly": "npm run clean && npm run format-check && npm run check-types && npm run compile"
   },
   "dependencies": {
-    "@bluestep-systems/b6p-core-bsjs-git": "0.3.0",
+    "@bluestep-systems/b6p-core-bsjs-git": "0.3.1",
     "fast-xml-parser": "^5.10.1"
   },
   "devDependencies": {
