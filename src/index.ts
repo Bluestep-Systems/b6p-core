@@ -3,8 +3,8 @@ export { B6PCore } from "./B6PCore";
 export type { ReportResult } from "./B6PCore";
 export { B6PUri } from "./B6PUri";
 export { Err } from "./Err";
-export { checkEmittedEntrypoint, executePush, legacySyncRecords } from "./script/push";
-export type { EmittedEntrypointCheck, PushResult } from "./script/push";
+export { describeBuildStatus, executePush, legacySyncRecords } from "./script/push";
+export type { BuildIncomplete, PushResult } from "./script/push";
 export { resolveGitIdentity } from "./script/GitIdentity";
 export type { GitConfigReader, GitIdentitySources } from "./script/GitIdentity";
 export {
@@ -20,6 +20,7 @@ export {
 } from "./script/GitSync";
 export type {
   DraftAudit,
+  DraftBuildOutcome,
   DraftPullOutcome,
   DraftPullOptions,
   DraftPushOptions,
@@ -54,6 +55,14 @@ export { IdUtility } from "./data/IdUtility";
 export { OrgWorker } from "./data/OrgWorker";
 export { ScriptKey } from "./data/ScriptKey";
 export { ScriptUrlParser } from "./data/ScriptUrlParser";
+export type { PushRoute, SnapshotRefusal } from "./data/ServerVersion";
+export {
+  MIN_SERVER_VERSION,
+  meetsMinimumVersion,
+  parseReleaseTag,
+  resolvePushRoute,
+  snapshotRefusalFor,
+} from "./data/ServerVersion";
 
 // ─── Auth + sessions ─────────────────────────────────────────────────
 export { BearerAuthProvider } from "./auth/BearerAuthProvider";
@@ -67,14 +76,13 @@ export { ResponseCodes } from "./network/StatusCodes";
 export { ScriptFactory } from "./script/ScriptFactory";
 export { ScriptNode } from "./script/ScriptNode";
 export { ScriptRoot } from "./script/ScriptRoot";
-export type { TranspileOutcome, ProjectBuildReport, TypeCheckError } from "./script/ScriptTranspiler";
-export { buildUncleanReasons } from "./script/ScriptTranspiler";
 export { ScriptFile } from "./script/ScriptFile";
 export type { ScriptFolder } from "./script/ScriptFolder";
 export type { ScriptContext } from "./script/ScriptContext";
 export { ScriptService } from "./script/ScriptService";
+export { isOwnSourceDiagnostic, typeCheckErrorsOf } from "./script/ServerCompile";
+export type { TypeCheckError } from "./script/ServerCompile";
 export type { AuditResult, DeployConfig, DeployTargetResult, PullResult } from "./script/ScriptService";
-export { TsLibResolver } from "./script/TsLibResolver";
 
 // ─── Gateway (web-global) ────────────────────────────────────────────
 export { GatewayService } from "./gateway/GatewayService";

@@ -7,6 +7,7 @@ export namespace ApiEndpoints {
   export const CSRF_TOKEN = "/csrf-token";
   export const LOOKUP_TEST = "/lookup/test";
   export const APPINFO_U = "/appinfo/u";
+  export const APPINFO_VERSION = "/appinfo/version";
   export const FILES = "/files/";
   export const PUBLIC = "/public/";
   export const GQL = "/gql";

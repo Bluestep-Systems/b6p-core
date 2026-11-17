@@ -9,8 +9,8 @@
 // relative path and never hit the Windows branch. `path.win32` IS Node's real
 // Windows path implementation, so swapping `path`'s members for their win32
 // equivalents faithfully exercises the Windows code path on any host (including
-// b6p-core's ubuntu-only CI matrix). POSIX behavior is asserted with the real
-// (un-overridden) path module to guard against regressions.
+// a Linux-only CI matrix). Both POSIX and Windows behaviour are asserted under an explicit
+// path.posix / path.win32 swap, so the spec passes on either host.
 const path = require("path");
 const assert = require("node:assert");
 const { DownstairsPathParser } = require("../dist/data/DownstairsPathParser.js");
@@ -26,9 +26,11 @@ function test(name, fn) {
   }
 }
 
-// Run `fn` with the ambient `path` module's members swapped for path.win32,
-// then restore them — so POSIX tests outside this block are unaffected.
-function withWin32(fn) {
+// Run `fn` with the ambient `path` module's members swapped for `impl`
+// (path.win32 or path.posix), then restore them — so tests outside the block are
+// unaffected. Both are pinned explicitly so the spec means the same on any host,
+// including a real Windows runner where the ambient `path` is already win32.
+function withPath(impl, fn) {
   const keys = ["sep", "parse", "join", "isAbsolute", "relative", "dirname", "basename", "normalize"];
   const saved = {};
   for (const k of keys) {
@@ -36,7 +38,7 @@ function withWin32(fn) {
   }
   try {
     for (const k of keys) {
-      Object.defineProperty(path, k, { value: path.win32[k], configurable: true, writable: true });
+      Object.defineProperty(path, k, { value: impl[k], configurable: true, writable: true });
     }
     fn();
   } finally {
@@ -46,19 +48,21 @@ function withWin32(fn) {
   }
 }
 
-// --- POSIX (real ambient path) — guard against regressions in the existing behavior ---
-test("POSIX: absolute draft path keeps its root, no mangling", () => {
-  const p = new DownstairsPathParser("/some/path/U123456/MyScript/draft/file.js");
-  assert.strictEqual(p.prependingPath, "/some/path/U123456");
-  assert.strictEqual(p.getShavedName(), "/some/path/U123456/MyScript");
-  assert.strictEqual(p.U, "U123456");
-  assert.strictEqual(p.scriptName, "MyScript");
-  assert.strictEqual(p.type, "draft");
-  assert.strictEqual(p.rest, "file.js");
+// --- POSIX (path.posix pinned) — guard against regressions in the existing behavior ---
+withPath(path.posix, () => {
+  test("POSIX: absolute draft path keeps its root, no mangling", () => {
+    const p = new DownstairsPathParser("/some/path/U123456/MyScript/draft/file.js");
+    assert.strictEqual(p.prependingPath, "/some/path/U123456");
+    assert.strictEqual(p.getShavedName(), "/some/path/U123456/MyScript");
+    assert.strictEqual(p.U, "U123456");
+    assert.strictEqual(p.scriptName, "MyScript");
+    assert.strictEqual(p.type, "draft");
+    assert.strictEqual(p.rest, "file.js");
+  });
 });
 
 // --- Windows (path.win32 semantics) — the actual fix ---
-withWin32(() => {
+withPath(path.win32, () => {
   test("Windows: drive-letter draft path is un-mangled", () => {
     const p = new DownstairsPathParser("C:\\Users\\jdoe\\ws\\U100001\\MyScript\\draft\\file.js");
     // The bug produced "\\C:\\Users\\jdoe\\ws\\U100001" (bogus leading separator before "C:").

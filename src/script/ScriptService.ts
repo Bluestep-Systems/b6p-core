@@ -2,12 +2,13 @@ import * as path from "path";
 import { B6PUri } from "../B6PUri";
 import { DownstairsPathParser } from "../data/DownstairsPathParser";
 import { ScriptUrlParser } from "../data/ScriptUrlParser";
-import type { GitIdentity } from "@bluestep-systems/b6p-core-bsjs-git";
+import type { BuildFastForward, DraftBuildRefusalReason, GitIdentity } from "@bluestep-systems/b6p-core-bsjs-git";
 import { FolderNames } from "../constants";
 import type { PublishRefusal } from "./GitSync";
-import type { TypeCheckError } from "./ScriptTranspiler";
+import type { TypeCheckError } from "./ServerCompile";
+import type { SnapshotRefusal } from "../data/ServerVersion";
 import { auditDraft, draftFolderOf, GitSwitchDeclinedError, pullDraft, type DraftTarget } from "./GitSync";
-import { executePush, legacySyncRecords, type PushResult } from "./push";
+import { executePush, legacySyncRecords, type BuildIncomplete, type PushResult } from "./push";
 import type { ScriptContext } from "./ScriptContext";
 import { ScriptFactory } from "./ScriptFactory";
 
@@ -71,11 +72,6 @@ export interface DeployConfig {
    * @lastreviewed null
    */
   enableGit?: boolean;
-  /**
-   * The targets are built by a bundler outside this tool: no build manifest is written for them.
-   * @lastreviewed null
-   */
-  externallyBuilt?: boolean;
 }
 
 /**
@@ -95,7 +91,47 @@ export interface DeployTargetResult {
    */
   publishRefusal: PublishRefusal | null;
   /**
-   * The type-check count of the push (the script's own sources only, never a `.d.ts`); `null` when none ran.
+   * The build commit the platform made on the target, when it made one (see `PushResult.buildCommitSha`).
+   * @lastreviewed null
+   */
+  buildCommitSha: string | null;
+  /**
+   * Whether the platform vouched for the target's build; `null` when no build ran (see `PushResult.buildVouched`).
+   * @lastreviewed null
+   */
+  buildVouched: boolean | null;
+  /**
+   * Why the target's build request failed after its push, when it did.
+   * @lastreviewed null
+   */
+  buildError: string | null;
+  /**
+   * What the target's `buildError` is (see `PushResult.buildErrorKind`).
+   * @lastreviewed null
+   */
+  buildErrorKind: "not-requested" | "refused" | "request-failed" | null;
+  /**
+   * The target's build refusal reason (see `PushResult.buildErrorReason`).
+   * @lastreviewed null
+   */
+  buildErrorReason: DraftBuildRefusalReason | null;
+  /**
+   * The target's build status after which it does not publish, when it had one (see `PushResult.buildIncomplete`).
+   * @lastreviewed null
+   */
+  buildIncomplete: BuildIncomplete | null;
+  /**
+   * How the scratch clone was moved to the target's build commit (see `PushResult.buildFastForward`).
+   * @lastreviewed null
+   */
+  buildFastForward: BuildFastForward | null;
+  /**
+   * Set when a snapshot was asked for but the target's server does not build git drafts (see `PushResult.snapshotRefused`).
+   * @lastreviewed null
+   */
+  snapshotRefused: SnapshotRefusal | null;
+  /**
+   * The count of the platform build's diagnostics in the script's own sources (never a `.d.ts`); `null` when no build ran.
    * @lastreviewed null
    */
   typeCheckDiagnostics: number | null;
@@ -196,7 +232,6 @@ export class ScriptService {
     author?: GitIdentity;
     adoptUnbound?: boolean;
     enableGit?: boolean;
-    externallyBuilt?: boolean;
   }): Promise<PushResult | null> {
     const targetUrl = opts.targetUrl ?? (await this.ctx.prompt.inputBox({ prompt: "Paste in the target formula URI" }));
     if (targetUrl === undefined) {
@@ -214,7 +249,6 @@ export class ScriptService {
       author: opts.author,
       adoptUnbound: opts.adoptUnbound,
       enableGit: opts.enableGit,
-      externallyBuilt: opts.externallyBuilt,
     });
   }
 
@@ -225,7 +259,6 @@ export class ScriptService {
     overwrite?: string[];
     author?: GitIdentity;
     enableGit?: boolean;
-    externallyBuilt?: boolean;
   }): Promise<PushResult | null> {
     this.ctx.logger.info(`Push current for file: ${opts.filePath}`);
     const baseUrl = await this.deriveBaseUrl(opts.filePath);
@@ -246,7 +279,6 @@ export class ScriptService {
         overwrite: opts.overwrite,
         author: opts.author,
         enableGit: opts.enableGit,
-        externallyBuilt: opts.externallyBuilt,
       });
     }
     const parser = new DownstairsPathParser(opts.filePath);
@@ -258,7 +290,6 @@ export class ScriptService {
       overwrite: opts.overwrite,
       author: opts.author,
       enableGit: opts.enableGit,
-      externallyBuilt: opts.externallyBuilt,
     });
   }
 
@@ -594,7 +625,6 @@ export class ScriptService {
           author: config.author,
           adoptUnbound: false,
           enableGit: config.enableGit,
-          externallyBuilt: config.externallyBuilt,
         });
         results.push({
           target: target.url,
@@ -603,6 +633,14 @@ export class ScriptService {
           publishedSha: pushed?.publishedSha ?? null,
           publishError: pushed?.publishError ?? null,
           publishRefusal: pushed?.publishRefusal ?? null,
+          buildCommitSha: pushed?.buildCommitSha ?? null,
+          buildVouched: pushed?.buildVouched ?? null,
+          buildError: pushed?.buildError ?? null,
+          buildErrorKind: pushed?.buildErrorKind ?? null,
+          buildErrorReason: pushed?.buildErrorReason ?? null,
+          buildIncomplete: pushed?.buildIncomplete ?? null,
+          buildFastForward: pushed?.buildFastForward ?? null,
+          snapshotRefused: pushed?.snapshotRefused ?? null,
           typeCheckDiagnostics: pushed?.typeCheckDiagnostics ?? null,
           typeCheckErrors: pushed?.typeCheckErrors ?? [],
           switchedToGit: pushed?.switchedToGit ?? false,
@@ -616,6 +654,14 @@ export class ScriptService {
           publishedSha: null,
           publishError: null,
           publishRefusal: null,
+          buildCommitSha: null,
+          buildVouched: null,
+          buildError: null,
+          buildErrorKind: null,
+          buildErrorReason: null,
+          buildIncomplete: null,
+          buildFastForward: null,
+          snapshotRefused: null,
           typeCheckDiagnostics: null,
           typeCheckErrors: [],
           switchedToGit: (error as { switchedToGit?: boolean } | null)?.switchedToGit === true,
@@ -624,14 +670,48 @@ export class ScriptService {
       }
     }
 
-    const failed = results.filter((r) => r.error !== undefined || !r.pushed || r.publishError !== null);
+    // One result per target, in order.
+    const failed = results.filter(
+      (r, i) =>
+        r.error !== undefined ||
+        !r.pushed ||
+        r.publishError !== null ||
+        r.buildError !== null ||
+        r.buildIncomplete !== null ||
+        (r.buildFastForward !== null &&
+          r.buildFastForward.state !== "fast-forwarded" &&
+          r.buildFastForward.state !== "unchanged") ||
+        r.snapshotRefused !== null ||
+        // A snapshot that published nothing failed, whatever else is set.
+        (config.targets[i].snapshot === true && r.publishedSha === null)
+    );
     if (failed.length === 0) {
       this.ctx.prompt.info("Deploy complete!");
     } else {
       this.ctx.prompt.error(
         `Deploy finished with ${failed.length} of ${results.length} target(s) failed:\n\n` +
           failed
-            .map((r) => `${r.target}: ${r.error instanceof Error ? r.error.message : (r.publishError ?? "not pushed")}`)
+            .map(
+              (r) =>
+                `${r.target}: ${
+                  r.error instanceof Error
+                    ? r.error.message
+                    : (r.publishError ??
+                      r.buildError ??
+                      (r.buildIncomplete ? `pushed, but ${r.buildIncomplete.description}` : null) ??
+                      (r.buildFastForward?.state === "blocked"
+                        ? `pushed and built, but local files are in the way: ${r.buildFastForward.blockedPaths.join(", ")}`
+                        : null) ??
+                      (r.buildFastForward?.state === "failed"
+                        ? `pushed and built, but not taken in: ${r.buildFastForward.error}`
+                        : null) ??
+                      (r.snapshotRefused
+                        ? "pushed, but the server does not build git drafts"
+                        : r.pushed
+                          ? "pushed, but nothing was published"
+                          : "not pushed"))
+                }`
+            )
             .join("\n")
       );
     }

@@ -2,8 +2,8 @@
 
 Browser- and Node-safe git client for BlueStep BSJS scripts. It edits a script's **draft** branch with
 [isomorphic-git](https://isomorphic-git.org/) through the platform's git proxy (`<org>/git/<classid>___<seqnum>`),
-publishes it, reads git history, and reads the legacy (pre-git) history archive. No WebDAV, no Node built-in imports:
-the file system is injected, HTTP is `fetch`.
+asks the platform to build it, publishes it, reads git history, and reads the legacy (pre-git) history archive. No
+WebDAV, no Node built-in imports, no compiler: the file system is injected, HTTP is `fetch`, and the platform compiles.
 
 Used by [`@bluestep-systems/b6p-core`](../../README.md) (re-exported as `bsjsGit`) and by the BSJS editor.
 
@@ -28,7 +28,9 @@ await repo.commit("Edit main");        // stages every working-tree change
                                        // commit(msg, author, { parents }) makes a (merge) commit over the given parents even with nothing staged
 await repo.push();                     // the draft branch
                                        // commit(msg, author, { force: [".build/app.js"] }) stages those paths even when .gitignore matches them
-const { publishedSha, refreshed } = await repo.publish(); // the platform promotes draft to master
+const build = await repo.compileDraft();  // the platform builds the pushed draft; the local draft moves to its build commit
+                                          // { compile, buildCommitSha, vouched, head, fastForward }
+const { publishedSha, refreshed } = await repo.publish(); // the platform promotes draft (the build commit) to master
 
 await repo.sha("origin/draft");                 // a branch or sha as a commit sha
 await repo.isAncestor(a, b);                    // whether a is b or one of its ancestors
@@ -52,7 +54,8 @@ Every refusal is a typed `BsjsGitError` with a `code`: `GitAuthError` (401), `Gi
 publishes over WebDAV, so its repo is read-only), `GitCodeLockedError`, `GitPermissionError` (other 403),
 `GitRepoNotFoundError` (404: no repo, not visible, or git integration off), `GitPushRejectedError` (the forge refused
 the ref; `protectedBranch` for master), `GitNotFastForwardError`, `PublishRefusedError` (`reason` is the server's
-`PUBLISH_REFUSED` reason), `GitUnpushedChangesError`, `GitIdentityError`, `GitTransportError`.
+`PUBLISH_REFUSED` reason), `DraftBuildFailedError` / `DraftBuildMovedError` (the build), `GitBuildFastForwardBlockedError` (`paths`), `GitUnpushedChangesError`,
+`GitIdentityError`, `GitTransportError`.
 
 ## Auth modes
 
@@ -68,7 +71,56 @@ and a refused one retried once. Session mode relies on the platform's git proxy 
 `ensureGitModeResult()` is the same, also saying whether this call did the switch. `clone({ ensureGit: true })` does it first; a plain `clone()` never flips a script.
 The mode is read with a real query, `remoteObject(id: "<classid>___<seqnum>") { ... on ScriptFormula|ScriptMergeReport|ScriptEndpoint { gitPublishing gitCloneUrl } }`, not a write.
 
+## Build
+
+Nothing compiles in this package or in the editor: `compileDraft()` asks the platform to build the draft it holds. The
+local draft must already be pushed (`GitUnpushedChangesError` otherwise). It sends the script's update mutation with
+`compileDraft: true` and `expectedDraftSha` (the pushed head) on `/gql`; the platform compiles the draft branch at that
+commit against its siblings' snapshots and commits the output and stale-output deletes, plus the build manifest only when
+it vouches for the build (every project's output written, no blocking error; a type-checker finding is a warning), as one
+build commit authored by the caller. The answer's `extensions.bluestepCompile[0]` is the compile (`status`, counts,
+`diagnostics`, `gate`; `parseDraftCompileOutcome`) and `extensions.bluestepBuild[0]` the build commit (`{ commit,
+vouched }` of `{ script, draftSha, commit, built, vouched, status }`; `parseDraftBuildCommit`; `vouched` is also true
+for a draft that needs no manifest). The local draft is then moved exactly to the build commit by
+`fastForwardToBuild(sha)`: the working tree and index first, for exactly the paths the build changed (straight into the
+index, whatever `.gitignore` says), the branch last. A path whose local copy matches neither the pushed commit nor the
+build (a local edit, an untracked or ignored file) stops it before anything is touched; other local edits are kept. The
+outcome is `fastForward: { state, blockedPaths, error }` (`fast-forwarded`, `unchanged`, `blocked`, `failed`), never a
+build failure. `isBuildCommitOf(candidate, base)` says whether a commit is the platform's build of exactly the source `base`, or a
+rebuild chain of it: each commit carries the trailer `Bluestep-Build-Of: <base>` (`buildSourceOf`, `BUILD_OF_TRAILER`),
+has one parent and changes only paths under the output folder of some build project at the parent: each
+`tsconfig.json` at any depth gives `<its dir>/` + its `buildOutputFolder`, plus the root `jsconfig.json` when there is
+no root `tsconfig.json`; a project whose folder is empty or leaves the tree gives none, and with none at all nothing is
+a build (`buildConfigPaths`, `buildOutputFolders`, `changesOnlyBuildOutput`: the one resolver web and the BSJS editor
+use too). A chain is at most 16 build commits deep. The subject never counts. This is
+web's rule (`docs/bsjs-git-snapshot-design.md`, "Build commits"), the trailer parsed as there: CRLF as LF, trailing
+whitespace dropped, the last paragraph (after the last blank or whitespace-only line, or the whole message), exactly one
+line `Bluestep-Build-Of: <40/64 hex>`. Rule 3 compares complete tree entries (mode and id, gitlinks included), so a
+mode-only or submodule change outside `F/` is not a build.
+
+A refusal with reason `BUILD_OUTCOME_UNKNOWN` (the platform could not confirm its build push) is never retried, since a repeat could build twice: `compileDraft` reads the draft back and returns
+`outcomeUnknown: { buildFound }`, moving the local draft to the head when that is a build of the push. `compile` is
+then `UNKNOWN` and `vouched` false. It is for taking
+in a build whose answer was lost. An unclean build deletes the manifest, and the fast-forward deletes it here too.
+
+It resolves to `{ compile, buildCommitSha, vouched, head, fastForward }`: `buildCommitSha` is `null` when the build made no commit
+(already built at that commit, nothing to build). An unclean build (`vouched: false`) still commits its output, without
+a manifest, so `publish()` is refused until a clean build. `BUSY` is retried 3 times 5 s apart, `INPUT_INCOMPLETE` 3
+times 2 s apart, `COMPILER_UNAVAILABLE` and a failed request once (`COMPILE_RETRY`; `options.sleep` replaces the
+timer). A tripped gate or withheld emit is a result (`compile.status`; `compileAllowsPublish` says whether to publish).
+A draft that moved since the push is `DraftBuildMovedError` (`DRAFT_MOVED`); any other failure is
+`DraftBuildFailedError` (`messages`, `networkFailure`).
+
 ## Publish
+
+`publish({ at })` pins the publish to the commit that was built and checked (the build commit, or the pushed commit
+when there was none): the local draft must be that commit or a build of it (`isBuildCommitOf`), else
+`PublishPinMismatchError` (`at`, `local`) is thrown with nothing sent, so a later save cannot be published under an
+earlier build's result. b6p-core always pins.
+
+Build refusals are `DraftBuildFailedError` with a typed `reason` (`DRAFT_BUILD_REFUSAL_REASONS`: `DRAFT_MOVED`,
+`BUILD_OUTCOME_UNKNOWN`, `DRAFT_TOO_LARGE`, `REPO_MISSING`, `DRAFT_BRANCH_MISSING`; `rawReason` keeps a newer one) and
+are never retried.
 
 The mutation carries `expectedDraftSha`: the local draft head `publish()` verified equals the platform's. If the platform's draft moved since (someone pushed in between), it refuses with reason `DRAFT_MOVED`, thrown as `PublishDraftMovedError` (a `PublishRefusedError`), and publishes nothing. `gitMode()` reads the mode without switching anything.
 
@@ -95,11 +147,12 @@ package with esbuild (`platform: "browser"`, no plugins) to keep that true.
 
 A git script publishes `draft` exactly as committed, so the server refuses a draft whose sources no longer match the
 build manifest (`<outDir>/.b6p-build.json`, contract v1): the git blob SHA-1 of every source file the build was made
-from. Whoever builds writes it in the same commit as the output: `commit(msg, author, { buildManifest: {} })` stages the
-tree, computes the manifest over what the commit will hold and commits it with it. Pass the option only after a build that
-succeeded and emitted everything; after a failed or partial build omit it, which leaves any existing manifest as it is
-(so a publish refuses it). `{ buildManifest: { externallyBuilt: true } }` writes none, and none is written for a tree
-with no `tsconfig.json`, nor for a draft with no TypeScript source outside the output folder (`isTypeScriptSource`: `ts tsx mts cts`, never a `*.d.*` declaration; declarations are still listed in `sources` when a manifest is written). The pure helpers (`buildOutputFolder`, `buildManifestPath`, `isBuildSource`, `gitBlobSha1`,
-`planBuildManifest`, `formatBuildManifest`) are exported. A refused publish is `PublishBuildStaleError`
-(`BUILD_STALE`), `PublishBuildManifestMissingError` (`BUILD_MANIFEST_MISSING`) or `PublishBuildManifestInvalidError`
-(`BUILD_MANIFEST_INVALID`), each with `withheld` (the stale paths, or the manifest's path).
+from. The platform writes it in its build commit (see Build), only for a clean build; no client writes one, and this
+package has no manifest writer (0.3.0 removed `commit({ buildManifest })`, `planBuildManifest`, `formatBuildManifest`,
+`gitBlobSha1` and `BUILD_MANIFEST_BUILDER`). None is needed for an externally built script, a tree with no
+`tsconfig.json`, or a draft with no TypeScript source outside the output folder (`isTypeScriptSource`: `ts tsx mts
+cts`, never a `*.d.*` declaration). The layout helpers (`buildOutputFolder`, `buildManifestPath`, `isBuildSource`,
+`isTypeScriptSource`, `hasNoTsconfig`, `parseJsonc`) stay exported for reading. A refused publish is
+`PublishBuildStaleError` (`BUILD_STALE`), `PublishBuildManifestMissingError` (`BUILD_MANIFEST_MISSING`) or
+`PublishBuildManifestInvalidError` (`BUILD_MANIFEST_INVALID`), each with `withheld` (the stale paths, or the
+manifest's path).

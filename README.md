@@ -34,11 +34,11 @@ the platform through its subsystem services:
 import { B6PCore, type B6PProviders } from "@bluestep-systems/b6p-core";
 
 const providers: B6PProviders = {
-  fs,          // FileSystem  — read/write/list files
+  fs, // FileSystem  — read/write/list files
   persistence, // Persistence — durable key/value (settings, sessions)
-  prompt,      // Prompt      — ask the user for input/credentials
-  logger,      // Logger      — diagnostic logging
-  progress,    // Progress    — long-running task reporting
+  prompt, // Prompt      — ask the user for input/credentials
+  logger, // Logger      — diagnostic logging
+  progress, // Progress    — long-running task reporting
 };
 
 const core = new B6PCore(providers);
@@ -75,13 +75,13 @@ and `core.gateway.tokens` for managing the caller's own access tokens; see [Gate
 
 `core` itself — cross-cutting state that is not specific to any one subsystem:
 
-| Method | Purpose |
-| --- | --- |
-| `report` | Report cached metadata / org-cache state |
-| `updateCredentials` / `clearSessions` / `clearSettings` / `clearAll` | Auth & state management |
-| `getConfig` / `setConfig` | Configuration helpers |
-| `checkForUpdates` | GitHub-releases-based update check |
-| `dispose` | Release the session cleanup timer and org-cache resources |
+| Method                                                               | Purpose                                                   |
+| -------------------------------------------------------------------- | --------------------------------------------------------- |
+| `report`                                                             | Report cached metadata / org-cache state                  |
+| `updateCredentials` / `clearSessions` / `clearSettings` / `clearAll` | Auth & state management                                   |
+| `getConfig` / `setConfig`                                            | Configuration helpers                                     |
+| `checkForUpdates`                                                    | GitHub-releases-based update check                        |
+| `dispose`                                                            | Release the session cleanup timer and org-cache resources |
 
 See [`src/index.ts`](src/index.ts) for the full set of exported classes, provider interfaces, data
 utilities, constants, and types.
@@ -97,20 +97,20 @@ written over WebDAV any more (only `declarations/` and the root `.gitignore` sti
   also changed is kept and reported (`keptLocalPaths`); files missing locally come back. A folder pulled before git (files,
   no repository) is bound to the repo as it stands: its files that its last sync record shows unedited take the platform
   copy, edited ones are kept.
-- **push** commits the working tree as the author and pushes the draft branch. A **snapshot** push compiles first, then
-  also publishes (`publishedSha`) and reads back that the platform's `master` is at that commit.
+- **push** commits the working tree as the author and pushes the draft branch; the platform then builds it (see below).
+  A **snapshot** push also publishes the build (`publishedSha`) and reads back that the platform's `master` is at that
+  commit.
 - **audit** compares the working tree with the platform's draft (a folder that is not a git working copy yet is reported
   as not pulled).
-- **deploy** pushes the source draft's files to each target script through a scratch clone, and never binds the source
-  folder to a target.
+- **deploy** pushes the source draft's files to each target script through a scratch clone, and the target's platform
+  builds them; the source folder is never bound to a target.
 - **A script that still publishes over WebDAV is switched to git, one way.** A push does it on its first write (and
   `PushResult.switchedToGit` and a warning say so); a pull asks first (`Prompt.confirm`, safe answer first, so
   auto-confirm declines and the pull returns `null`) unless `enableGit: true` is passed. After the switch the script's
   draft and snapshot refuse WebDAV writes.
 - **The commit author is never invented.** It is the `author` option of `push`/`pushCurrent`/`deploy`, else `git config
   user.name`/`user.email` for the draft folder (global config included), else `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`
-  (then `GIT_COMMITTER_*`) from the environment, else a `GitIdentityError` before the compile and before the platform is
-  touched.
+  (then `GIT_COMMITTER_*`) from the environment, else a `GitIdentityError` before the platform is touched.
 - `B6PProviders.gitFs` (default `node:fs`) is the Node-style file system git works on; it must read and write the same
   disk as the `fs` provider.
 
@@ -121,17 +121,51 @@ given). Read `pushed` first: `false` means nothing was pushed.
 
 | Field | Meaning |
 | --- | --- |
-| `pushed` | The draft is on the platform. `false` when the draft folder is missing or empty, or a snapshot's compiled `scripts/app.js` is missing or has no code (only comments and empty-module lines, as from a blank or types-only `app.ts`) |
-| `commitSha` | The draft branch's head on the platform after the push (the commit this push made, or the one already there); `null` when `pushed` is `false` |
-| `publishedSha` | The commit the platform published, on a snapshot push; `null` on a plain push, an aborted one, or a failed publish. A caller that asked for a snapshot treats `null` as a failure |
-| `publishError` | Why the platform refused or failed the publish (the draft stays pushed); otherwise `null` |
+| `pushed` | The draft is on the platform. `false` when the draft folder is missing or empty |
+| `commitSha` | The draft commit this push made, or the one already there; `null` when `pushed` is `false` |
+| `route` | Which route ran: `{ mode: "server-build" \| "push-only", reason, serverVersion, required }`, `reason` one of `dev`, `at-or-above-floor`, `below-floor`, `unknown`, `floor-unset`. `null` when the push stopped before asking |
+| `snapshotRefused` | Set when a snapshot was asked for on a server that does not build git drafts: `{ reason: "too-old" \| "unknown" \| "floor-unset", serverVersion, required }`. The draft was pushed; nothing was built or published |
+| `build` | The platform's compile of the pushed draft (`compileDraft`): `status` (`COMPILED`, `GATE_TRIPPED`, `EMIT_WITHHELD`, `NOTHING_TO_COMPILE`, `SKIPPED_EXTERNALLY_BUILT`, …, or `UNKNOWN` with `rawStatus`), `errors` / `warnings`, `diagnostics` (+ `diagnosticsOmitted`), `gate`. `null` when no build ran or the request failed |
+| `buildCommitSha` | The platform's build commit (output, and the manifest when it vouched); the folder was moved to it unless `buildFastForward` says otherwise. `null` when it made none (already built, nothing to build) |
+| `buildFastForward` | How the folder was moved to the build: `{ state, blockedPaths, error }`, `state` `fast-forwarded`, `unchanged`, `blocked` (local files the build changes match neither side, listed; nothing was changed, nothing published) or `failed`. `null` when no build answer came |
+| `buildIncomplete` | The build ended in a status after which the draft does not publish (`BUSY` / `INPUT_INCOMPLETE` once retries ran out, `COMPILER_UNAVAILABLE`, `NOT_PERMITTED`, `WRITE_FAILED`, `OUTPUT_UPLOAD`, `SKIPPED_GIT_MANAGED`, `GATE_TRIPPED`, `EMIT_WITHHELD`, `UNKNOWN`): `{ status, rawStatus, description }`. `null` otherwise |
+| `buildVouched` | `true`: the build is clean and its manifest committed, or the draft needs none (externally built, nothing to build). `false`: unclean, output committed without a manifest, so a publish is refused until it builds cleanly. `null`: no build ran |
+| `buildError` / `buildErrorKind` | Why no build answer came after a successful push, and whether a build was `not-requested` (the platform's draft was no longer the pushed commit) or the `request-failed` (it may have run); otherwise `null` |
+| `publishedSha` | The commit the platform published on a snapshot push (the build commit); `null` on a plain push, when nothing was published, or on a failed publish. A caller that asked for a snapshot treats `null` as a failure |
+| `publishError` / `publishRefusal` | Why the platform refused or failed the publish (the draft stays pushed), and the structured `{ reason, withheld }` (`BUILD_STALE`, `BUILD_MANIFEST_MISSING`, `DRAFT_MOVED`, `ENTRYPOINT_MISSING`, …) |
 | `switchedToGit` | This push switched a WebDAV script to git, which cannot be undone |
-| `typeCheckDiagnostics` | Snapshot type-check: `0` clean, `> 0` published with diagnostics, `null` no check ran |
-| `liveVerified` | `true`: the platform's `master` is at `publishedSha`. `false`: it is at another commit. `null`: not proven either way (a plain push, an early stop, a failed publish, or `master` could not be fetched) |
-| `liveMismatches` | Draft-relative paths that differ between `publishedSha` and `master` when `liveVerified` is `false` (empty when they can't be listed) |
+| `typeCheckDiagnostics` | The platform build's whole count of `ERROR` and `WARNING` diagnostics; `null` when no build ran |
+| `typeCheckErrors` | Those in the script's own sources (never a `.d.ts`), as listed by the platform, which lists at most 20: `{ file, line, column, code, message, severity }`, a type-checker finding being a `WARNING`. Empty when none or no build ran |
+| `liveVerified` | `true`: the platform's `master` is at `publishedSha`. `false`: it is at another commit. `null`: not proven either way |
+| `liveMismatches` | Draft-relative paths that differ between `publishedSha` and `master` when `liveVerified` is `false` |
 | `keptPlatformOnly` | Platform-only files kept because deleting them was not confirmed (they are part of the pushed commit) |
 
-`historyRecorded` is gone: the git history is the history.
+### How a push builds (since 1.0.0)
+
+Nothing compiles in core or in `bsjsGit`; neither package has a runtime `typescript` dependency. The platform builds:
+
+1. The draft is committed and pushed over git (the confirmations above).
+2. `compileDraft` (GraphQL, `bsjsGit.ScriptRepo.compileDraft`) asks the platform to build the draft branch at the pushed
+   commit (`expectedDraftSha`; a draft that moved meanwhile is refused, `DraftBuildMovedError`). It commits the output,
+   plus the build manifest when the build is clean, as one build commit authored by the pushing user, and the folder is
+   fast-forwarded to it: the working tree and index first, for exactly the paths the build changed, then the branch. A
+   local file in the way (an edit, or an untracked or ignored copy matching neither side) leaves the folder as it was
+   and is reported (`buildFastForward`); a later push stops on it (`GitBuildFastForwardBlockedError`, with the paths)
+   until it is out of the way. A build whose answer was lost is taken in by the next push, not asked about: only a commit with the platform's
+   `Bluestep-Build-Of: <pushed sha>` trailer, one parent and an output-only diff (or a chain of such rebuilds) counts. `BUSY` is retried 3 times 5 s apart, `INPUT_INCOMPLETE` 3 times 2 s apart,
+   `COMPILER_UNAVAILABLE` and a failed request once. Every push builds, plain ones too.
+3. A snapshot push whose build status publishes (`COMPILED`, `NOTHING_TO_COMPILE`, `SKIPPED_EXTERNALLY_BUILT`) then
+   publishes the build commit and reads `master` back. An unclean build is refused by the platform's manifest check
+   (`publishRefusal.reason` `BUILD_MANIFEST_MISSING` or `BUILD_STALE`); a tripped gate or withheld emit publishes
+   nothing. Once the push succeeded, nothing throws: a failed build is `buildError`, a status that does not publish
+   `buildIncomplete`, a failed publish `publishError`, and none of them is reported complete. A deploy counts a
+   snapshot target that published nothing as failed.
+
+Before pushing, a push asks the org's server for its version (`/appinfo/version`) and picks the route; it never refuses
+a push for the version. A `dev` or `latest` server, or one at or above `MIN_SERVER_VERSION`, builds as above. Any other
+(below the floor, an unreadable version, the floor unset) gets the git push alone: no build, and a snapshot push takes
+no snapshot (`snapshotRefused`). `MIN_SERVER_VERSION` is `26.11.16.00`, the day the git build
+(web#2022) was readied; every web release from that day on has it.
 
 ### Overwrites and destructive prompts
 

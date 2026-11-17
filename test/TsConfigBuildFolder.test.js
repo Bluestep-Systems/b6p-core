@@ -7,9 +7,9 @@
 // treated an empty string as "missing" and threw.
 //
 // THE FIX: TsConfig.resolveOutDir() normalizes an empty/whitespace/missing
-// outDir to the transpiler's own default (`.build`) instead of throwing, so the
-// build step tolerates it. `.build` (not `.`) is deliberate — it keeps a source
-// `.ts` OUT of "its respective build folder" so it stays eligible for transpile.
+// outDir to the platform compiler's default (`.build`) instead of throwing, so the
+// push tolerates it. `.build` (not `.`) is deliberate — it keeps a source
+// `.ts` OUT of "its respective build folder" so it stays eligible for push.
 //
 // b6p-core has no test framework; this is a minimal, dependency-free node
 // script (run via `npm test`) that exercises the COMPILED static method.

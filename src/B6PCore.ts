@@ -160,7 +160,6 @@ export class B6PCore {
       ...platform,
       scriptMetadataStore: this.scriptMetadataStore,
       orgCache: this.orgCache,
-      typescriptLibDirs: providers.typescriptLibDirs,
       gitFs: providers.gitFs ?? nodeFs,
       gitToken: async () => {
         const header = await this.auth.authHeaderValue();

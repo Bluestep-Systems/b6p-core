@@ -6,7 +6,7 @@ import type { FetchLike, ScriptRepoOptions } from "@bluestep-systems/b6p-core-bs
 /**
  * What the script subsystem needs on top of {@link PlatformContext}: the script-tree
  * classes ({@link ScriptRoot}, {@link ScriptFile}, {@link ScriptFolder}, …),
- * {@link ScriptService}, and {@link ScriptTranspiler}.
+ * and {@link ScriptService}.
  *
  * This is a **dependency bundle, not a facade**: nothing implements it by being a
  * larger object that happens to contain these members. {@link B6PCore} *builds* one
@@ -24,13 +24,6 @@ import type { FetchLike, ScriptRepoOptions } from "@bluestep-systems/b6p-core-bs
 export interface ScriptContext extends PlatformContext {
   readonly scriptMetadataStore: ScriptMetaDataStore;
   readonly orgCache: OrgCache;
-  /**
-   * Consumer-supplied directories containing TypeScript's `lib.*.d.ts`, searched
-   * (in order) before the project-local `node_modules/typescript/lib` when the
-   * transpile step resolves the default library. See {@link B6PProviders.typescriptLibDirs}.
-   * @lastreviewed null
-   */
-  readonly typescriptLibDirs?: readonly string[];
   /**
    * The file system git works on: the draft folder is a git working tree, and isomorphic-git needs a Node-style
    * `fs` (with `.promises`) rather than the {@link FileSystem} provider. Reads and writes the same disk as `fs`.

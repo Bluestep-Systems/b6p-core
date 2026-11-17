@@ -124,13 +124,15 @@ are load-bearing rather than stylistic — each records something this repo undi
   coalesce `save()` before parallelizing anything.
 
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
-CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, transpilation,
-`GitSync` push/pull/audit of the draft as a git working tree, `GitIdentity` commit authors), `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit`, `GatewayTokenService`, `GatewayMarketplace`, `GatewayKb` —
+CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, `GitSync` push/pull/audit of the draft
+as a git working tree, `GitIdentity` commit authors, `ServerCompile` reading the platform's build diagnostics),
+`gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit`, `GatewayTokenService`, `GatewayMarketplace`, `GatewayKb` —
 web-global's gateway over the `b6pt_` token, pure-JS git through it, the caller's own token
 management, marketplace clones and knowledge bases), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`),
-`data/` (pure parsers and utilities), `constants/`, `update/`, `testing/` (vscode-free doubles, including `FakeGateway`).
+`data/` (pure parsers and utilities, `ServerVersion`), `constants/`, `update/`, `testing/` (vscode-free doubles,
+including `FakeGateway`).
 
-## Scripts are git (since 0.9.0)
+## Scripts are git (since 0.9.0), and the platform builds them (since 1.0.0)
 
 A script's `draft/` folder is the working tree of its git repo; push, pull, audit and deploy are in
 `src/script/GitSync.ts` over `bsjsGit.ScriptRepo`. No draft or snapshot file goes over WebDAV (only `declarations/` and
@@ -142,16 +144,43 @@ the root `.gitignore` do). Rules that bind changes here:
   first write, and says so (`switchedToGit`).
 - **A push never overwrites a platform edit without the one confirmation**; a confirmed overwrite is a merge commit so
   the platform's history stays. Never force-push.
+- **Nothing compiles here, in either package.** The push chain is git push → `compileDraft` pinned to the pushed commit
+  (`ScriptRepo.compileDraft`, `expectedDraftSha`) → fast-forward the folder to the platform's build commit → (snapshot)
+  publish that commit → read back `master`. The platform commits the output, and the build manifest only when it vouches
+  for the build, authored by the pushing user; an unclean build is published-or-refused by the platform's manifest check
+  (`BUILD_STALE`, `BUILD_MANIFEST_MISSING`), never decided by core. Every push builds, plain ones too.
+- **`MIN_SERVER_VERSION` (`data/ServerVersion.ts`) routes every push**: a `dev`/`latest` server or one at or above it
+  builds; any other (below it, unreadable version, floor unset) gets the git push alone, and a snapshot there is a
+  result (`PushResult.snapshotRefused`), not an error. It stays `null` until the first web tag with the git build
+  exists; 1.0.0 cannot release while it is `null` (`test/ServerVersionFloor.test.js` fails then).
+- **The fast-forward to the build commit never loses a local edit** (`ScriptRepo.fastForwardToBuild`): it updates the
+  working tree and index for exactly the paths the build changed, and moves the draft ref only after that succeeded.
+  A local copy matching neither side (an edit, an untracked or ignored file) stops it with nothing changed
+  (`buildFastForward.state` `blocked`, the paths listed); it is never forced over. A build whose answer was lost is
+  taken in by the next push when the platform's draft is exactly the build of the local head
+  (`ScriptRepo.isBuildCommitOf`: every commit of the chain carries `Bluestep-Build-Of: <the pushed sha>`, has one
+  parent and changes only paths under some build project's output folder at the parent (`buildOutputFolders`, shared
+  with web and the editor), by complete tree entries, exactly web's rule;
+  the subject never counts), never a platform edit. A build whose outcome the platform cannot tell
+  (`BUILD_OUTCOME_UNKNOWN`) is never retried: the draft is read back instead, and nothing is published.
+- `PushResult.typeCheckErrors` are the platform build's diagnostics in the script's own sources (no `.d.ts`, nothing
+  outside the tree; `ServerCompile.typeCheckErrorsOf`), `typeCheckDiagnostics` the platform's whole count. A build
+  that fails after a successful push is `buildError` (`buildErrorKind`), one that ends in a status that does not
+  publish `buildIncomplete`, a failed publish `publishError`: once the push succeeded, nothing throws, and none of
+  these reports "complete". A deploy target asked for a snapshot that published nothing is a failure.
 - The git working tree uses `ScriptContext.gitFs` (Node `fs`), not the `FileSystem` provider; both address the same disk.
 
 ## The bsjs-git package
 
 `packages/bsjs-git` (`@bluestep-systems/b6p-core-bsjs-git`) is the browser-safe git client: isomorphic-git against the
-platform's git proxy, publish, git history, and the legacy history archive client. It is a dependency of this package
-(re-exported as `bsjsGit`) and of the BSJS editor. Its rules differ from the rest of the repo:
+platform's git proxy, the platform's build (`compileDraft`) and publish, git history, and the legacy history archive
+client. It is a dependency of this package (re-exported as `bsjsGit`) and of the BSJS editor. Its rules differ from the
+rest of the repo:
 
 - **No Node built-ins, no Node-only globals** (`Buffer`, `process`) in `packages/bsjs-git/src`; the file system is
   injected. `packages/bsjs-git/test/NoNodeBuiltins.test.js` fails the build otherwise.
+- **No compiler**: the editor and this package push sources and ask the platform to build (`ScriptRepo.compileDraft`).
+  `typescript` is a devDependency there too, for building the package only.
 - **No WebDAV, no `SessionManager`** there: it talks to the proxy with the bearer token directly and must not import
   from this package (the dependency runs one way).
 - Its own scripts mirror this package's (`compile`, `check-types`, `format-check`, `test`); the root scripts build and
@@ -183,11 +212,10 @@ no matter what. Correctness comes from `check-types` under `strict` + `noUnusedL
 in `tsconfig.base.json` — strictness belongs there, and `tsconfig.json` carries only this package's
 output settings. Do not reintroduce a linter without wiring it to a **failing** exit code.
 
-**`typescript` is an exact-pinned runtime `dependency` at 5.9.2**, not a devDependency: this library
-compiles TypeScript *while running* (a `push --snapshot` transpiles in-process), so it needs the
-compiler as a library, and the same version builds the package. Do not float the pin, do not add a
-second compiler, and read `b6p-cli/docs/adr/0002-typescript-version-strategy.md` before touching it —
-it records why TypeScript 7 cannot serve this role and what would have to change first.
+**`typescript` is an exact-pinned `devDependency` (7.x) in both packages and builds them only.** Nothing ships a
+compiler and nothing in `src/` (of either package) may import `typescript`: the platform compiles BSJS, so a push sends
+sources over git and never emits or type-checks. Do not move it back to `dependencies`, do not float the pin, and read
+`b6p-cli/docs/adr/0003-*` (the TypeScript version strategy, superseding 0002) before changing this.
 
 ## Documentation, in the same change
 
@@ -223,7 +251,7 @@ number to make the check pass** — tag the JSDoc instead.
 - **Commits** are conventional (`fix(scope):`, `feat:`, `docs:`, `release: vX.Y.Z — summary`) and
   reference the task as `(CU-<taskid>)`. AI-authored commits carry their `Co-Authored-By` trailer.
 - **PRs** target `master`. CI must pass — type-check, format-check, compile and the full suite on Node
-  24 and 26. Address automated review rounds as follow-up commits on the same branch.
+  24 and 26, and again on windows-latest (Node 24). Address automated review rounds as follow-up commits on the same branch.
 - **Releases**: a `release: vX.Y.Z — summary` commit bumps `package.json` / `package-lock.json` and
   dates the CHANGELOG block. After it merges, push an annotated tag
   (`git tag -a vX.Y.Z -m "vX.Y.Z — summary" && git push origin vX.Y.Z`). `publish.yml` publishes to

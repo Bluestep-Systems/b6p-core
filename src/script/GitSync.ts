@@ -4,9 +4,16 @@ import * as os from "node:os";
 import {
   BsjsGitError,
   DRAFT_BRANCH,
+  GitBuildFastForwardBlockedError,
   GitNotFastForwardError,
+  GitUnpushedChangesError,
   PublishRefusedError,
   ScriptRepo,
+  compileAllowsPublish,
+  DraftBuildFailedError,
+  type BuildFastForward,
+  type DraftBuildRefusalReason,
+  type DraftCompileOutcome,
   type GitIdentity,
 } from "@bluestep-systems/b6p-core-bsjs-git";
 import { FolderNames, SpecialFiles } from "../constants";
@@ -795,13 +802,18 @@ export interface DraftPushOptions {
    */
   readonly adoptUnbound: boolean;
   /**
-   * Write the build manifest into the commit: set it only after a snapshot build that succeeded and emitted
-   * everything, so the output and its manifest are committed together; leave it unset after a failed or partial build
-   * (an existing manifest then stays and goes stale, which a publish refuses), and for a push that did not build.
-   * `externallyBuilt` is the script's own flag: such a script gets no manifest.
+   * After the push, ask the platform to build the pushed draft ({@link ScriptRepo.compileDraft}) and fast-forward to
+   * the build commit it makes; a snapshot then publishes the build, unless the build failed or ended in a status that
+   * does not publish. Without it a snapshot publishes the pushed commit as it is (the platform's manifest check still
+   * applies); `executePush` never asks for that, it takes no snapshot on a server that does not build.
    * @lastreviewed null
    */
-  readonly buildManifest?: { readonly externallyBuilt?: boolean };
+  readonly build?: boolean;
+  /**
+   * Waits between the build's retries; tests pass a recorder.
+   * @lastreviewed null
+   */
+  readonly sleep?: (ms: number) => Promise<void>;
   /**
    * The caller already confirmed switching a WebDAV script to git, so do not ask.
    * @lastreviewed null
@@ -828,6 +840,60 @@ export interface DraftPushOptions {
 export interface PublishRefusal {
   readonly reason: string;
   readonly withheld: string[];
+}
+
+/**
+ * The build half of a {@link DraftPushOutcome}: what the platform's build of the pushed draft came to.
+ * @lastreviewed null
+ */
+export interface DraftBuildOutcome {
+  /**
+   * The platform's compile: status, counts and diagnostics. `null` when the build request failed (see `error`).
+   * @lastreviewed null
+   */
+  readonly compile: DraftCompileOutcome | null;
+  /**
+   * The build commit the platform made, the platform draft's head. `null` when it made none (already built, nothing to
+   * build, the compile did not run) or the request failed. The local draft is there too unless `fastForward` says it
+   * is not.
+   * @lastreviewed null
+   */
+  readonly buildCommitSha: string | null;
+  /**
+   * How the local draft folder was moved to `buildCommitSha`: `fast-forwarded`, `unchanged` (no build commit),
+   * `blocked` (local files in the way, listed; nothing changed here) or `failed`. `null` when no build answer came.
+   * @lastreviewed null
+   */
+  readonly fastForward: BuildFastForward | null;
+  /**
+   * Set when the platform could not tell whether its build landed: `buildFound` says whether the draft, read back, was
+   * a build of the push (then taken in as `fastForward` says). Nothing is published after it. `null` otherwise.
+   * @lastreviewed null
+   */
+  readonly outcomeUnknown: { readonly buildFound: boolean } | null;
+  /**
+   * Whether the draft passes the platform's build check (a clean build with its manifest committed, or none needed).
+   * @lastreviewed null
+   */
+  readonly vouched: boolean;
+  /**
+   * Why no build answer came, when none did; the push itself succeeded.
+   * @lastreviewed null
+   */
+  readonly error: string | null;
+  /**
+   * What `error` is: `not-requested` (no build was asked for: the platform's draft was no longer the pushed commit),
+   * `refused` (the platform refused the build, `errorReason`; nothing was built), `request-failed` (any other failure;
+   * it may have run). `null` with no error.
+   * @lastreviewed null
+   */
+  readonly errorKind: "not-requested" | "refused" | "request-failed" | null;
+  /**
+   * The platform's refusal reason when `errorKind` is `refused` (`DRAFT_MOVED`, `DRAFT_TOO_LARGE`, `REPO_MISSING`,
+   * `DRAFT_BRANCH_MISSING`); `null` otherwise.
+   * @lastreviewed null
+   */
+  readonly errorReason: DraftBuildRefusalReason | null;
 }
 
 /**
@@ -880,7 +946,13 @@ export interface DraftPushOutcome {
    */
   readonly keptPlatformOnly: string[];
   /**
-   * Set when the push was asked to publish.
+   * Set when the push was asked to build.
+   * @lastreviewed null
+   */
+  readonly build?: DraftBuildOutcome;
+  /**
+   * Set when the push was asked to publish and, with `build`, the build let it: the build request did not fail and its
+   * status is one that publishes ({@link compileAllowsPublish}). Absent otherwise; `build` says why.
    * @lastreviewed null
    */
   readonly publish?: DraftPublishOutcome;
@@ -982,7 +1054,9 @@ export async function confirmOverwrittenFiles(opts: {
 }
 
 /**
- * Commits the draft folder's changes to the script's draft branch, pushes it and, for a snapshot, publishes it.
+ * Commits the draft folder's changes to the script's draft branch and pushes it; with `build`, asks the platform to
+ * build the pushed commit and fast-forwards the folder to the build commit (the platform compiles; nothing compiles
+ * here); for a snapshot, then publishes the build commit.
  *
  * Where the repo lives depends on the folder, and the script's publish mode (read first, never assumed from a repo
  * being there) decides whether a switch is needed:
@@ -1001,7 +1075,8 @@ export async function confirmOverwrittenFiles(opts: {
  * follow git's ignore rules, including the old script-root `.gitignore` rules ({@link legacyIgnoreRulesForDraft}).
  * Nothing is read through a symbolic link.
  *
- * Once the push has succeeded, nothing that follows throws: a failed publish comes back as `publish.error`.
+ * Once the push has succeeded, nothing that follows throws: a failed build comes back as `build.error` and a failed
+ * publish as `publish.error`.
  *
  * @throws an {@link Err.OverwriteDeclinedError} when an overwrite is not confirmed.
  * @throws {GitSwitchDeclinedError} when the switch is needed and declined.
@@ -1075,6 +1150,7 @@ async function pushDraftInner(
     } else {
       await ensureLocalExcludes(files, draftPath, scriptRoot);
       await repo.fetch();
+      await takeInPendingBuild(repo, ctx.logger);
     }
 
     const local = await repo.sha(DRAFT_BRANCH);
@@ -1183,13 +1259,8 @@ async function pushDraftInner(
     }
 
     const commitSha = platformMoved
-      ? await repo.commit(options.message, options.author, {
-          parents: [local, remote as string],
-          ...(options.buildManifest ? { buildManifest: options.buildManifest } : {}),
-        })
-      : await repo.commit(options.message, options.author, {
-          ...(options.buildManifest ? { buildManifest: options.buildManifest } : {}),
-        });
+      ? await repo.commit(options.message, options.author, { parents: [local, remote as string] })
+      : await repo.commit(options.message, options.author);
     const head = commitSha ?? local;
     if (head !== remote) {
       const pushed = await repo.push();
@@ -1199,10 +1270,22 @@ async function pushDraftInner(
     }
 
     const outcome: DraftPushOutcome = { commitSha: head, switchedToGit, keptPlatformOnly };
-    if (!options.snapshot) {
-      return outcome;
+    if (!options.build) {
+      return options.snapshot ? { ...outcome, publish: await publishAndVerify(repo, head) } : outcome;
     }
-    return { ...outcome, publish: await publishAndVerify(repo) };
+    const build = await buildPushed(repo, options.sleep);
+    const moved = build.fastForward?.state;
+    if (
+      !options.snapshot ||
+      build.error !== null ||
+      !build.compile ||
+      !compileAllowsPublish(build.compile.status) ||
+      (moved !== "fast-forwarded" && moved !== "unchanged")
+    ) {
+      return { ...outcome, build };
+    }
+    // Pinned to what was built and checked: a later save cannot be published under this build's result.
+    return { ...outcome, build, publish: await publishAndVerify(repo, build.buildCommitSha ?? head) };
   } finally {
     if (scratch) {
       await files.remove(scratch);
@@ -1214,11 +1297,28 @@ async function pushDraftInner(
 }
 
 /**
- * Publishes the pushed draft and reads back that the platform's published branch is at the commit the platform says it
- * published. Anything that goes wrong comes back as `error`, never a throw: the push itself already succeeded, and the
- * caller must still learn its commit.
+ * Takes in the platform's build of the local draft when the platform's draft is exactly that (a build whose answer
+ * this folder never got: a lost response, or a failure after the build committed), so it is not mistaken for a platform
+ * edit. Anything else on the platform is left to the overwrite checks, and so is a move that fails.
+ * @throws {GitBuildFastForwardBlockedError} when local files the build changes are in the way; nothing was changed
  * @lastreviewed null
  */
+async function takeInPendingBuild(repo: ScriptRepo, logger: ScriptContext["logger"]): Promise<void> {
+  const remote = await remoteDraftOf(repo);
+  const local = await repo.sha(DRAFT_BRANCH);
+  if (!remote || remote === local || !(await repo.isBuildCommitOf(remote, local))) {
+    return;
+  }
+  const moved = await repo.fastForwardToBuild(remote);
+  if (moved.state === "blocked") {
+    throw new GitBuildFastForwardBlockedError(remote, moved.blockedPaths);
+  }
+  if (moved.state === "failed") {
+    // The draft branch did not move; the overwrite checks below see the platform's draft as it is.
+    logger.warn(`Could not take in the platform's build ${remote} of this folder's draft: ${moved.error}`);
+  }
+}
+
 /**
  * The structured refusal in an error, when it is a `PUBLISH_REFUSED`.
  * @lastreviewed null
@@ -1234,11 +1334,55 @@ function refusalOf(error: unknown): PublishRefusal | null {
   };
 }
 
-async function publishAndVerify(repo: ScriptRepo): Promise<DraftPublishOutcome> {
+/**
+ * Asks the platform to build the draft just pushed and fast-forwards to its build commit. Never throws: the push already
+ * succeeded, and a failed build request comes back as `error`.
+ * @lastreviewed null
+ */
+async function buildPushed(repo: ScriptRepo, sleep?: (ms: number) => Promise<void>): Promise<DraftBuildOutcome> {
+  try {
+    const result = await repo.compileDraft(sleep ? { sleep } : {});
+    return {
+      compile: result.compile,
+      buildCommitSha: result.buildCommitSha,
+      fastForward: result.fastForward,
+      outcomeUnknown: result.outcomeUnknown,
+      vouched: result.vouched,
+      error: null,
+      errorKind: null,
+      errorReason: null,
+    };
+  } catch (error) {
+    return {
+      compile: null,
+      buildCommitSha: null,
+      fastForward: null,
+      outcomeUnknown: null,
+      vouched: false,
+      error: error instanceof Error ? error.message : String(error),
+      errorKind:
+        error instanceof GitUnpushedChangesError
+          ? "not-requested"
+          : error instanceof DraftBuildFailedError && error.reason !== null
+            ? "refused"
+            : "request-failed",
+      errorReason: error instanceof DraftBuildFailedError ? error.reason : null,
+    };
+  }
+}
+
+/**
+ * Publishes the pushed draft and reads back that the platform's published branch is at the commit the platform says it
+ * published. Anything that goes wrong comes back as `error`, never a throw: the push itself already succeeded, and the
+ * caller must still learn its commit.
+ * @lastreviewed null
+ */
+
+async function publishAndVerify(repo: ScriptRepo, at: string): Promise<DraftPublishOutcome> {
   let publishedSha: string;
   let refreshed: boolean;
   try {
-    const result = await repo.publish();
+    const result = await repo.publish({ at });
     publishedSha = result.publishedSha;
     refreshed = result.refreshed;
   } catch (error) {

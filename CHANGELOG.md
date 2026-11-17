@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Target release: **1.0.0** (breaking).
+
 ### BREAKING
 
 - **Node 18 through 22 are no longer supported; `engines.node` is now `>=24`.** CI runs on Node 24 and
@@ -14,6 +16,75 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING: nothing compiles in core or in `bsjs-git`; the platform builds every git push** (ClickUp CU-86bczwj62,
+  rulings 59-66). The in-process TypeScript compiler is gone: `typescript` is no longer a runtime dependency of either
+  package (a 7.0.2 devDependency builds them), and nothing in `src/` imports it. A push commits and pushes the draft
+  over git as before, then asks the platform to build the pushed commit (GraphQL `compileDraft` with
+  `expectedDraftSha`, web CU-1k5g91bq6u2): the platform compiles the draft branch against its siblings' snapshots and
+  commits the output, plus the build manifest only when it vouches for the build, as one build commit authored by the
+  pushing user. The draft folder is fast-forwarded to that commit, and a snapshot push publishes it. Every push builds,
+  plain ones too. An unclean build commits its output without a manifest, so its publish is refused by the platform
+  (`BUILD_MANIFEST_MISSING` / `BUILD_STALE`) while the push stands; a tripped gate or withheld emit publishes nothing.
+  - **A push checks the org's server version first** (`GET /appinfo/version`) and picks a route
+    (`PushResult.route`: `mode` `server-build` | `push-only`, `reason`, `serverVersion`, `required`). A `dev` or
+    `latest` build, or a release at or above `MIN_SERVER_VERSION`, builds. Anything else (below the floor, an
+    unreadable version, the floor unset) gets the git push alone, and a snapshot push takes no snapshot:
+    `PushResult.snapshotRefused` (`too-old` | `unknown` | `floor-unset`) says so, a result and not an error.
+    `MIN_SERVER_VERSION` is `26.11.16.00`: web releases are dated, so every release cut from that day on has the
+    git build (web#2022), and every earlier release line, backports included, sorts below it. New exports: `resolvePushRoute`, `snapshotRefusalFor`, `meetsMinimumVersion`, `parseReleaseTag`,
+    `MIN_SERVER_VERSION`, `PushRoute`, `SnapshotRefusal`.
+  - `PushResult` gains `route`, `snapshotRefused`, `build` (the platform's `DraftCompileOutcome`), `buildCommitSha`,
+    `buildVouched` and `buildError`; `DeployTargetResult` gains `buildCommitSha`, `buildVouched`, `buildError` and
+    `snapshotRefused`. `typeCheckDiagnostics` / `typeCheckErrors` now come from the platform's build: its `ERROR` and
+    `WARNING` diagnostics in the script's own sources (never a `.d.ts`, nothing outside the tree), and
+    `TypeCheckError` gains `severity`. New exports `typeCheckErrorsOf`, `isOwnSourceDiagnostic`; `TypeCheckError` now
+    comes from `script/ServerCompile`. A build that fails after the push is `buildError`; nothing throws once the push
+    succeeded. Deploy builds on each target. A build that ends in a status that does not publish is
+    `PushResult.buildIncomplete` (`{ status, rawStatus, description }`, `BuildIncomplete`, `describeBuildStatus`),
+    said in words, and no push reports itself complete over it; `buildErrorKind` tells a build `not-requested` from a
+    `request-failed` one. `typeCheckDiagnostics` is the platform's whole `ERROR` + `WARNING` count; `typeCheckErrors`
+    lists at most 20. A deploy target with `snapshot: true` that published nothing is a failure.
+  - **The folder is moved to the build commit without losing a local edit**: the working tree and index first, for
+    exactly the paths the build changed, then the branch. A local file in the way is `PushResult.buildFastForward`
+    (`state` `blocked`, `blockedPaths`), with nothing changed and nothing published, and a later push stops on it
+    (`GitBuildFastForwardBlockedError`). A build whose answer was lost is taken in by the next push as a
+    fast-forward instead of being asked about as a platform edit: a commit counts as a build only with the
+    platform's `Bluestep-Build-Of: <pushed sha>` trailer (exact case, one space, a 40- or 64-hex id, the only such
+    line of the last paragraph, CRLF read as LF), one parent, and every changed path under the output folder of some build
+    project at the parent (each `tsconfig.json` at any depth, plus the root `jsconfig.json` without a root
+    `tsconfig.json`; `buildConfigPaths`, `buildOutputFolders`), as web's rule; a rebuild chain of at most 16 too.
+    The subject never counts. Commit ids may be 64 hex throughout. A whitespace-only line separates paragraphs, and the
+    tree comparison covers mode and gitlinks (ruling 67).
+  - **A snapshot publishes exactly what was built**: `ScriptRepo.publish({ at })` refuses
+    (`PublishPinMismatchError`, nothing sent) unless the local draft is that commit or a build of it, and the push chain
+    pins every publish to its build commit (`PublishOptions`).
+  - **Build refusals are typed**: `DraftBuildFailedError.reason` (`DRAFT_BUILD_REFUSAL_REASONS`,
+    `DraftBuildRefusalReason`, `draftBuildRefusalReasonOf`; `rawReason`), none retried, including the new
+    `DRAFT_TOO_LARGE`. A push reports them as `buildErrorKind: "refused"` with `buildErrorReason`; deploy too.
+  - **An unknown build outcome** (the platform's `BUILD_OUTCOME_UNKNOWN` refusal) is never retried:
+    the draft is read back, a build of the push found there is taken in, and the push reports `buildIncomplete`
+    (`UNKNOWN`, raw status the code) and publishes nothing (`DraftBuildResult.outcomeUnknown`,
+    `DraftBuildOutcomeUnknownError`, `BUILD_OUTCOME_UNKNOWN_REASON`). An unclean build's manifest deletion reaches the folder.
+  - Removed: `ScriptTranspiler` (`TranspileOutcome`, `ProjectBuildReport`, `buildUncleanReasons`), `TsLibResolver`,
+    `checkEmittedEntrypoint` / `EmittedEntrypointCheck` (the platform refuses a missing entrypoint,
+    `ENTRYPOINT_MISSING`), the stale client bundle warning, `B6PProviders.typescriptLibDirs` and its `ScriptContext`
+    member, `ScriptRoot.compileDraftFolder` and the build-folder helpers, and the `externallyBuilt` option of `push`,
+    `pushCurrent` and `DeployConfig` (the platform reads the script's own flag). `DraftPushOptions.buildManifest` is
+    replaced by `build` (and `sleep`); `DraftPushOutcome` gains `build` (`DraftBuildOutcome`).
+- **`@bluestep-systems/b6p-core-bsjs-git` 0.3.0**: `ScriptRepo.compileDraft()` asks the platform to build the pushed
+  draft and moves the local draft to the build commit (`{ compile, buildCommitSha, vouched, head, fastForward }`;
+  `fastForwardToBuild`, `isBuildCommitOf`, `changesOnlyBuildOutput`, `buildSourceOf`, `BUILD_OF_TRAILER`,
+  `BUILD_COMMIT_SUBJECT`, `GitBuildFastForwardBlockedError`,
+  the types `BuildFastForward`, `BuildFastForwardState`), with the
+  `COMPILE_RETRY` policy, `DraftBuildFailedError` and `DraftBuildMovedError` (`DRAFT_MOVED`). New exports
+  `parseDraftCompileOutcome`, `parseDraftBuildCommit`, `compileAllowsPublish`, `KNOWN_DRAFT_COMPILE_STATUSES`,
+  `PUBLISHABLE_COMPILE_STATUSES`, and the types `DraftBuildResult`, `CompileDraftOptions`, `DraftCompileOutcome`,
+  `DraftCompileStatus`, `DraftBuildCommit`, `CompileDiagnostic`, `GateReport`, `GateProblem`, `RetryPolicy`. Its
+  `typescript` devDependency moves to 7.0.2. **BREAKING there:** the client manifest writer is
+  removed (`commit({ buildManifest })` / `CommitOptions.buildManifest`, `planBuildManifest`, `formatBuildManifest`,
+  `gitBlobSha1`, `BUILD_MANIFEST_BUILDER`, `BuildManifestPlan`): the platform writes the manifest. The layout readers
+  (`buildOutputFolder`, `buildManifestPath`, `isBuildSource`, `isTypeScriptSource`, `hasNoTsconfig`, `parseJsonc`)
+  stay. `bluestepBuild` shas may be 40 or 64 hex.
 - **`core.gateway.kb.resolve` (and so `pull` / `push`) match names and tenants ASCII case-insensitively**: the gateway lists a
   forge repo in any case under its canonical name, so `u5/KB-Notes` finds `U5/kb-notes`. A tenant typed `u<digits>` is
   queried as `U<digits>`; the result and the default local folder keep the canonical spelling. Rows differing only by
@@ -140,8 +211,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shapes and error codes, with hooks for git routes, and the self-service token routes
   (`grantToken` takes an optional id, alias, owner and expiry, and an expired token is refused;
   `issuedTokens()` lists what it accepts; `issuedSecrets` every secret it ever accepted).
+- CI runs the suite on `windows-latest` (Node 24) as well.
 
 ### Fixed
+
+- **`bsjs-git` 0.3.1: a bearer client's first `/gql` call no longer fails on its CSRF token** (ClickUp 1k5g91bq9ef). The
+  token was read from `/csrf-token` in a session that was not signed in yet. The first bearer request then signed the
+  session in, and the sign-in renewed it and dropped the token. On releases that check the token after that renewal
+  (bkplayground on 26.11.09.00), that request got a 403 with no refreshed token, and `CsrfFetch` retried only a cached
+  token or a 403 that carried a new one. So b6p 0.9.0 could not pull or publish: a pull stopped at "Could not switch the
+  script to git publishing: HTTP 403". `CsrfFetch` now retries any 403 once, with a token read afresh from the
+  signed-in session.
 
 - **Overlapping persistence writes no longer drop each other** (ClickUp 86bczx1wj). Each
   `SharedFilePersistence.setSecret` / `deleteSecret` / `clearSecrets` loads the whole `secrets.enc`,

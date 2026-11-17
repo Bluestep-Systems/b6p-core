@@ -10,6 +10,7 @@
 // (run via `npm test`). It exercises the COMPILED B6PCore from dist/ with
 // in-memory providers, seeding the same store `pull` writes to.
 const assert = require("node:assert");
+const path = require("node:path");
 const { B6PCore } = require("../dist/B6PCore.js");
 const { MockFileSystem } = require("../dist/testing/MockFileSystem.js");
 
@@ -18,8 +19,10 @@ const SCRIPT_NAME = "MyReport";
 const CLASSID = "530024"; // merge report → editdetailreport1.jsp
 const SEQNUM = "202";
 const ORIGIN = "https://myorg.bluestep.net/";
-// POSIX path inside a script root: <workspace>/<U######>/<scriptName>/draft/...
-const FILE_PATH = `/ws/${U}/${SCRIPT_NAME}/draft/scripts/app.ts`;
+// Absolute host path inside a script root: <workspace>/<U######>/<scriptName>/draft/...
+// path.resolve gives "/ws/..." on POSIX and "<drive>:\\ws\\..." on Windows, so the
+// spec feeds each host the shape of path it really receives.
+const FILE_PATH = path.resolve("/ws", U, SCRIPT_NAME, "draft", "scripts", "app.ts");
 
 // The persistence key + serialized shape the ScriptMetaDataStore uses. This is
 // exactly what a real `pull` leaves behind (a ScriptKey serialized via its
@@ -72,6 +75,7 @@ function makePersistence(initial) {
 }
 
 const errors = [];
+const logged = [];
 function makeCore(persistence) {
   const noop = () => {};
   const prompt = {
@@ -83,7 +87,7 @@ function makeCore(persistence) {
     showMessage: noop,
     confirm: async () => false,
   };
-  const logger = { info: noop, warn: noop, error: noop, debug: noop };
+  const logger = { info: noop, warn: noop, error: (m) => logged.push(m), debug: noop };
   const progress = { report: noop, withProgress: async (_o, task) => task({ report: noop }) };
   return new B6PCore({
     fs: new MockFileSystem(),
@@ -132,7 +136,10 @@ async function test(name, fn) {
     assert.strictEqual(url, null);
     assert.ok(
       errors.some((m) => /No stored metadata/.test(m) && m.includes(SCRIPT_NAME)),
-      "expected a 'No stored metadata' error mentioning the script name, got:\n  " + errors.join("\n  ")
+      "expected a 'No stored metadata' error mentioning the script name, got:\n  " +
+        errors.join("\n  ") +
+        "\nlogger.error:\n  " +
+        logged.join("\n  ")
     );
     core.dispose();
   });

@@ -8,6 +8,11 @@ import {
   GitPushRejectedError,
   GitUnpushedChangesError,
   DRAFT_MOVED_REASON,
+  BUILD_OUTCOME_UNKNOWN_REASON,
+  DraftBuildOutcomeUnknownError,
+  PublishPinMismatchError,
+  DraftBuildFailedError,
+  DraftBuildMovedError,
   PublishBuildManifestInvalidError,
   PublishBuildManifestMissingError,
   PublishBuildStaleError,
@@ -15,8 +20,15 @@ import {
   PublishFailedError,
   PublishRefusedError,
 } from "./errors";
-import { gitBlobSha1, planBuildManifest } from "./buildManifest";
 import { CsrfFetch, type ScriptAuth } from "./csrf";
+import { buildConfigPaths, buildOutputFolders, changesOnlyBuildOutput } from "./buildManifest";
+import {
+  buildSourceOf,
+  COMPILE_RETRY,
+  parseDraftBuildCommit,
+  parseDraftCompileOutcome,
+  type DraftCompileOutcome,
+} from "./serverBuild";
 import { basicTokenFetch, createProxyHttp, type FetchLike } from "./http";
 import { compoundId, publishMutationFor, type ScriptRef } from "./scriptKey";
 
@@ -32,7 +44,8 @@ export const DRAFT_BRANCH = "draft";
 export const PUBLISHED_BRANCH = "master";
 
 const REMOTE = "origin";
-const SHA = /^[0-9a-f]{40}$/;
+/** A full lowercase commit id: SHA-1 (40 hex) or SHA-256 (64 hex). */
+const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /**
  * Who a commit is by. Always supplied by the caller: this package never invents an identity.
@@ -190,8 +203,6 @@ export interface CommitOptions {
   readonly parents?: readonly string[];
   /** Stage these paths even when .gitignore matches them. */
   readonly force?: readonly string[];
-  /** Write the build manifest in this commit; see {@link ScriptRepo.commit}. */
-  readonly buildManifest?: { readonly externallyBuilt?: boolean };
 }
 
 /**
@@ -217,6 +228,103 @@ export interface LogPage {
   readonly commits: CommitInfo[];
   /** The history loaded here ends before the page did: deepen the clone and ask again. */
   readonly shallowBoundary: boolean;
+}
+
+/**
+ * What {@link ScriptRepo.compileDraft} did.
+ * @lastreviewed null
+ */
+export interface DraftBuildResult {
+  /**
+   * The platform's compile of the draft: status, counts and diagnostics.
+   * @lastreviewed null
+   */
+  readonly compile: DraftCompileOutcome;
+  /**
+   * The build commit the platform made on the draft branch, now also the local draft's head. `null` when the build
+   * made none (the draft was already built at the pushed commit, nothing needed building, or the compile did not run).
+   * @lastreviewed null
+   */
+  readonly buildCommitSha: string | null;
+  /**
+   * Whether the platform vouched for the build, so the build manifest is in the draft and it can publish. False after
+   * an unclean build: its output is committed without a manifest, and a publish is refused until a clean build.
+   * @lastreviewed null
+   */
+  readonly vouched: boolean;
+  /**
+   * The local draft's head after the build: `buildCommitSha`, or the pushed commit when there was no build commit.
+   * @lastreviewed null
+   */
+  readonly head: string;
+  /**
+   * How the local draft was moved to `buildCommitSha` ({@link ScriptRepo.fastForwardToBuild}); `unchanged` when there
+   * is no build commit.
+   * @lastreviewed null
+   */
+  readonly fastForward: BuildFastForward;
+  /**
+   * Set when the platform could not tell whether its build landed ({@link BUILD_OUTCOME_UNKNOWN_REASON}): the draft
+   * was then read back, and `buildFound` says whether its head is a build of the pushed commit (by the build-commit
+   * rule, {@link ScriptRepo.isBuildCommitOf}). When it is, the local draft was moved to it as after any build. `compile`
+   * is then `UNKNOWN` (raw status the refusal code) and `vouched` false: nothing says how the build went. `null` when
+   * the platform answered.
+   * @lastreviewed null
+   */
+  readonly outcomeUnknown: { readonly buildFound: boolean } | null;
+}
+
+/**
+ * How {@link ScriptRepo.fastForwardToBuild} went:
+ *  - `fast-forwarded`: the working tree, index and local draft branch are at the build commit.
+ *  - `unchanged`: the local draft was there already, or there was nothing to move to.
+ *  - `blocked`: local files the build changes are in the way (`blockedPaths`); nothing was changed.
+ *  - `failed`: the move could not be done (`error`); the local draft branch was not moved.
+ * @lastreviewed null
+ */
+export type BuildFastForwardState = "fast-forwarded" | "unchanged" | "blocked" | "failed";
+
+/**
+ * What {@link ScriptRepo.fastForwardToBuild} did.
+ * @lastreviewed null
+ */
+export interface BuildFastForward {
+  /** See {@link BuildFastForwardState}. @lastreviewed null */
+  readonly state: BuildFastForwardState;
+  /**
+   * When `blocked`: the paths the build changes whose local copy matches neither the local draft's commit nor the
+   * build (a local edit, or an untracked or ignored file), sorted. Empty otherwise.
+   * @lastreviewed null
+   */
+  readonly blockedPaths: readonly string[];
+  /** When `failed`: why. `null` otherwise. @lastreviewed null */
+  readonly error: string | null;
+}
+
+/** How many build commits deep {@link ScriptRepo.isBuildCommitOf} follows a chain, as web's rule (16). */
+const MAX_BUILD_CHAIN = 16;
+
+const UNCHANGED: BuildFastForward = { state: "unchanged", blockedPaths: [], error: null };
+
+/**
+ * Options of {@link ScriptRepo.publish}.
+ * @lastreviewed null
+ */
+export interface PublishOptions {
+  /** The commit the publish is pinned to; see {@link ScriptRepo.publish}. @lastreviewed null */
+  readonly at?: string;
+}
+
+/**
+ * Options of {@link ScriptRepo.compileDraft}.
+ * @lastreviewed null
+ */
+export interface CompileDraftOptions {
+  /**
+   * Waits between retries. Defaults to a real timer; tests pass a recorder.
+   * @lastreviewed null
+   */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -500,11 +608,6 @@ export class ScriptRepo {
    * @param author overrides the constructor's author.
    * @param options `parents` makes the commit over exactly those parents (a merge when there are two) and commits even
    *        with nothing staged: the tree is whatever is staged now.
-   * @param options `buildManifest` writes the build manifest ({@link planBuildManifest}) for the tree this commit will
-   *        hold, outputs included, and commits it with them. Pass it only after a build that succeeded and emitted
-   *        everything; after a failed or partial build omit it, which leaves any existing manifest as it is (stale,
-   *        so a publish refuses it). No manifest is written for an externally built script or a tree with no
-   *        `tsconfig.json`.
    * @returns the new commit's sha, or `undefined` when nothing changed.
    * @throws {GitIdentityError} when there is no author.
    * @lastreviewed null
@@ -534,9 +637,6 @@ export class ScriptRepo {
         await git.add({ fs: this.#fs, dir: this.dir, filepath: path });
       }
     }
-    if (options.buildManifest && (await this.#writeBuildManifest(options.buildManifest))) {
-      changed += 1;
-    }
     if (changed === 0 && !parent) {
       return undefined;
     }
@@ -548,45 +648,6 @@ export class ScriptRepo {
       committer: who,
       ...(parent ? { parent } : {}),
     });
-  }
-
-  async #stagedTree(): Promise<{ path: string; oid: string }[]> {
-    const tree: { path: string; oid: string }[] = [];
-    await git.walk({
-      fs: this.#fs,
-      dir: this.dir,
-      trees: [git.STAGE()],
-      map: async (filepath, [entry]) => {
-        if (entry && (await entry.type()) === "blob") {
-          tree.push({ path: filepath, oid: await entry.oid() });
-        }
-        return undefined;
-      },
-    });
-    return tree;
-  }
-
-  /** @returns whether the manifest changed (and was staged). */
-  async #writeBuildManifest(options: { readonly externallyBuilt?: boolean }): Promise<boolean> {
-    const tree = await this.#stagedTree();
-    const plan = await planBuildManifest(
-      tree,
-      async (path) => {
-        const entry = tree.find((f) => f.path === path);
-        return entry ? (await git.readBlob({ fs: this.#fs, dir: this.dir, oid: entry.oid })).blob : undefined;
-      },
-      options
-    );
-    if (!plan) {
-      return false;
-    }
-    const bytes = new TextEncoder().encode(plan.content);
-    if (tree.find((f) => f.path === plan.path)?.oid === (await gitBlobSha1(bytes))) {
-      return false;
-    }
-    await this.writeFile(plan.path, bytes);
-    await git.add({ fs: this.#fs, dir: this.dir, filepath: plan.path, force: true });
-    return true;
   }
 
   /**
@@ -777,18 +838,364 @@ export class ScriptRepo {
   }
 
   /**
+   * Asks the platform to build the pushed draft (GraphQL `compileDraft`, pinned with `expectedDraftSha` to the commit
+   * this client pushed), then fast-forwards the local draft and working tree to the build commit the platform made.
+   * The platform compiles the draft branch against its siblings' snapshots and commits the output, plus the build
+   * manifest when it vouches for the build, as one commit authored by the caller. No compiler runs here.
+   *
+   * Retries `BUSY`, `INPUT_INCOMPLETE` and `COMPILER_UNAVAILABLE` outcomes and a failed request by
+   * {@link COMPILE_RETRY}; when the retries run out the last outcome is returned. A tripped gate, a withheld emit or
+   * an unclean build is a result, not an error.
+   * @throws {GitUnpushedChangesError} when the local draft is not what the platform holds.
+   * @throws {DraftBuildMovedError} when the platform's draft moved since the push (`DRAFT_MOVED`); nothing was built.
+   * @throws {DraftBuildFailedError} on any other GraphQL error, an unreadable answer, or a request that failed twice.
+   * @lastreviewed null
+   */
+  async compileDraft(options: CompileDraftOptions = {}): Promise<DraftBuildResult> {
+    await this.fetch();
+    const local = await this.#resolve(DRAFT_BRANCH);
+    const remote = await this.#resolve(`refs/remotes/${REMOTE}/${DRAFT_BRANCH}`).catch(() => undefined);
+    if (local !== remote) {
+      throw new GitUnpushedChangesError(local, remote);
+    }
+    const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const used = { BUSY: 0, INPUT_INCOMPLETE: 0, COMPILER_UNAVAILABLE: 0, NETWORK: 0 };
+    for (;;) {
+      let body: GraphQlBody;
+      try {
+        body = await this.#buildRequest(local);
+      } catch (error) {
+        if (error instanceof DraftBuildOutcomeUnknownError) {
+          // Never asked again: a repeat could build a second time. Read back what is there instead.
+          return this.#afterUnknownOutcome(local);
+        }
+        if (
+          error instanceof DraftBuildFailedError &&
+          error.networkFailure &&
+          used.NETWORK < COMPILE_RETRY.NETWORK.times
+        ) {
+          used.NETWORK++;
+          await sleep(COMPILE_RETRY.NETWORK.delayMs);
+          continue;
+        }
+        throw error;
+      }
+      const compile = parseDraftCompileOutcome(firstOf(body.extensions?.bluestepCompile));
+      if (
+        compile.status === "BUSY" ||
+        compile.status === "INPUT_INCOMPLETE" ||
+        compile.status === "COMPILER_UNAVAILABLE"
+      ) {
+        const policy = COMPILE_RETRY[compile.status];
+        if (used[compile.status] < policy.times) {
+          used[compile.status]++;
+          await sleep(policy.delayMs);
+          continue;
+        }
+      }
+      const build = parseDraftBuildCommit(firstOf(body.extensions?.bluestepBuild));
+      if (!build.commit || build.commit === local) {
+        return {
+          compile,
+          buildCommitSha: null,
+          vouched: build.vouched,
+          head: local,
+          fastForward: UNCHANGED,
+          outcomeUnknown: null,
+        };
+      }
+      // The build exists on the platform from here on: a failure to take it in is not a build failure.
+      let fastForward: BuildFastForward;
+      try {
+        await this.fetch();
+        fastForward = (await this.isAncestor(local, build.commit))
+          ? await this.fastForwardToBuild(build.commit)
+          : {
+              state: "failed",
+              blockedPaths: [],
+              error: `the platform's build commit ${build.commit} does not follow the pushed commit ${local}`,
+            };
+      } catch (error) {
+        fastForward = {
+          state: "failed",
+          blockedPaths: [],
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      const head = fastForward.state === "fast-forwarded" ? build.commit : local;
+      return { compile, buildCommitSha: build.commit, vouched: build.vouched, head, fastForward, outcomeUnknown: null };
+    }
+  }
+
+  /** {@link compileDraft} after a {@link BUILD_OUTCOME_UNKNOWN_REASON}: read the draft back and take in a build of it. */
+  async #afterUnknownOutcome(local: string): Promise<DraftBuildResult> {
+    const compile = parseDraftCompileOutcome({ status: BUILD_OUTCOME_UNKNOWN_REASON });
+    try {
+      await this.fetch();
+      const remote = await this.#resolve(`refs/remotes/${REMOTE}/${DRAFT_BRANCH}`);
+      if (remote !== local && (await this.isBuildCommitOf(remote, local))) {
+        const fastForward = await this.fastForwardToBuild(remote);
+        return {
+          compile,
+          buildCommitSha: remote,
+          vouched: false,
+          head: fastForward.state === "fast-forwarded" ? remote : local,
+          fastForward,
+          outcomeUnknown: { buildFound: true },
+        };
+      }
+      return {
+        compile,
+        buildCommitSha: null,
+        vouched: false,
+        head: local,
+        fastForward: UNCHANGED,
+        outcomeUnknown: { buildFound: false },
+      };
+    } catch (error) {
+      return {
+        compile,
+        buildCommitSha: null,
+        vouched: false,
+        head: local,
+        fastForward: {
+          state: "failed",
+          blockedPaths: [],
+          error: error instanceof Error ? error.message : String(error),
+        },
+        outcomeUnknown: { buildFound: false },
+      };
+    }
+  }
+
+  /**
+   * Moves the local draft to `buildSha`, the platform's build commit of it (output and manifest only), without losing a
+   * local edit. The working tree and index are brought to the build first, for exactly the paths the build changes
+   * relative to the local draft's commit, and the draft branch is moved only once that succeeded. A path whose local
+   * copy matches neither side (a local edit, or an untracked or ignored file) stops it before anything is touched
+   * (`blocked`, with the paths); a local copy that already matches the build is fine. Other local edits are kept.
+   * Exactly to `buildSha`, not to whatever the draft is now: a push landing after the build is not taken in.
+   * @param buildSha A commit that has the local draft as an ancestor, already fetched
+   * @lastreviewed null
+   */
+  async fastForwardToBuild(buildSha: string): Promise<BuildFastForward> {
+    const local = await this.#resolve(DRAFT_BRANCH);
+    if (local === buildSha) {
+      return UNCHANGED;
+    }
+    try {
+      if (!(await this.isAncestor(local, buildSha))) {
+        return { state: "failed", blockedPaths: [], error: `${buildSha} does not follow the local draft ${local}` };
+      }
+      const changes = await this.diff(local, buildSha);
+      const blocked: string[] = [];
+      const current = new Map<string, string | undefined>();
+      for (const change of changes) {
+        let oid: string | undefined;
+        try {
+          oid = await this.#workingOid(change.path);
+        } catch {
+          blocked.push(change.path);
+          continue;
+        }
+        current.set(change.path, oid);
+        if (oid !== change.oldOid && oid !== change.newOid) {
+          blocked.push(change.path);
+        }
+      }
+      if (blocked.length > 0) {
+        return { state: "blocked", blockedPaths: blocked.sort(), error: null };
+      }
+      for (const change of changes) {
+        const filepath = posixClean(change.path);
+        if (change.newOid) {
+          if (current.get(change.path) !== change.newOid) {
+            const { blob } = await git.readBlob({ fs: this.#fs, dir: this.dir, oid: change.newOid });
+            await this.writeFile(filepath, blob);
+          }
+          // Straight into the index, whatever .gitignore says: the build committed it.
+          await git.updateIndex({ fs: this.#fs, dir: this.dir, filepath, add: true });
+        } else {
+          if (current.get(change.path) !== undefined) {
+            await this.#fs.promises.unlink(`${this.dir}/${filepath}`);
+          }
+          await git.updateIndex({ fs: this.#fs, dir: this.dir, filepath, remove: true });
+        }
+      }
+      await git.writeRef({
+        fs: this.#fs,
+        dir: this.dir,
+        ref: `refs/heads/${DRAFT_BRANCH}`,
+        value: buildSha,
+        force: true,
+      });
+      return { state: "fast-forwarded", blockedPaths: [], error: null };
+    } catch (error) {
+      return { state: "failed", blockedPaths: [], error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /**
+   * Whether `candidate` is the platform's build of the source commit `base`, after any chain of rebuilds of it. Every
+   * commit from `candidate` down to `base` must be a build commit by the web rule (`bsjs-git-snapshot-design.md`):
+   * its trailer names `base` ({@link buildSourceOf}), it has exactly one parent, and relative to that parent it changes
+   * only paths under the output folder ({@link changesOnlyBuildOutput}). The subject counts for nothing. Checking each
+   * link, not just the head, is stricter than the server's retry match, and only refuses chains the server never makes. An edit made on the platform
+   * fails at least one of these, so it is never taken for a build. The commits must be fetched.
+   * @lastreviewed null
+   */
+  async isBuildCommitOf(candidate: string, base: string): Promise<boolean> {
+    try {
+      const source = await this.#resolve(base);
+      let oid = await this.#resolve(candidate);
+      for (let depth = 0; depth < MAX_BUILD_CHAIN; depth++) {
+        const { commit } = await git.readCommit({ fs: this.#fs, dir: this.dir, oid });
+        if (commit.parent.length !== 1 || buildSourceOf(commit.message) !== source) {
+          return false;
+        }
+        const parent = commit.parent[0];
+        if (!(await this.#changesOnlyOutput(parent, oid))) {
+          return false;
+        }
+        if (parent === source) {
+          return true;
+        }
+        oid = parent;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Rule 3 of the build-commit rule for `oid` over `parent` ({@link changesOnlyBuildOutput}): the paths whose complete
+   * tree entry differs, mode and id included, gitlinks (submodules) too.
+   */
+  async #changesOnlyOutput(parent: string, oid: string): Promise<boolean> {
+    const [before, after] = await Promise.all([this.#treeEntries(parent), this.#treeEntries(oid)]);
+    const changed: string[] = [];
+    for (const [path, entry] of before) {
+      if (after.get(path) !== entry) {
+        changed.push(path);
+      }
+    }
+    for (const path of after.keys()) {
+      if (!before.has(path)) {
+        changed.push(path);
+      }
+    }
+    const configs: { path: string; text: string }[] = [];
+    for (const path of buildConfigPaths(before.keys())) {
+      configs.push({ path, text: await this.readText(parent, path) });
+    }
+    return changesOnlyBuildOutput(changed, buildOutputFolders(configs));
+  }
+
+  /** Every non-tree entry of a commit's tree (blobs, symlinks, gitlinks) as path to `<mode> <id>`. */
+  async #treeEntries(rev: string): Promise<Map<string, string>> {
+    const ref = await this.#resolve(rev);
+    const entries = new Map<string, string>();
+    await git.walk({
+      fs: this.#fs,
+      dir: this.dir,
+      trees: [git.TREE({ ref })],
+      map: async (path, [entry]) => {
+        if (!entry || path === ".") {
+          return undefined;
+        }
+        const type = await entry.type();
+        if (type !== "tree") {
+          entries.set(path, `${(await entry.mode()).toString(8)} ${await entry.oid()}`);
+        }
+        return undefined;
+      },
+    });
+    return entries;
+  }
+
+  /** The git blob id of a working-tree file, `undefined` when there is none. */
+  async #workingOid(path: string): Promise<string | undefined> {
+    let bytes: Uint8Array;
+    try {
+      bytes = await this.#fs.promises.readFile(`${this.dir}/${posixClean(path)}`);
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") {
+        return undefined;
+      }
+      throw error;
+    }
+    return (await git.hashBlob({ object: bytes })).oid;
+  }
+
+  async #buildRequest(expectedDraftSha: string): Promise<GraphQlBody> {
+    const { mutationName, inputType } = publishMutationFor(this.script);
+    const query = `mutation Build($inputs: [${inputType}!]!) { ${mutationName}(inputs: $inputs) { id } }`;
+    const payload = JSON.stringify({
+      query,
+      variables: { inputs: [{ topId: compoundId(this.script), compileDraft: true, expectedDraftSha }] },
+    });
+    let response: Response;
+    try {
+      response = await this.#csrf.postJson("gql", payload);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      throw new DraftBuildFailedError(message, [message], true, { cause });
+    }
+    if (response.status === 502 || response.status === 503 || response.status === 504) {
+      throw new DraftBuildFailedError(`HTTP ${response.status}`, [], true);
+    }
+    if (!response.ok) {
+      throw new DraftBuildFailedError(`HTTP ${response.status}`);
+    }
+    let body: GraphQlBody;
+    try {
+      body = (await response.json()) as GraphQlBody;
+    } catch (cause) {
+      throw new DraftBuildFailedError("the platform's answer was not readable JSON", [], false, { cause });
+    }
+    const errors = body.errors ?? [];
+    const unknown = errors.find((e) => e.extensions?.reason === BUILD_OUTCOME_UNKNOWN_REASON);
+    if (unknown) {
+      throw new DraftBuildOutcomeUnknownError(unknown.extensions?.publish, unknown.message);
+    }
+    const moved = errors.find((e) => e.extensions?.reason === DRAFT_MOVED_REASON);
+    if (moved) {
+      throw new DraftBuildMovedError(moved.extensions?.publish, moved.message);
+    }
+    if (errors.length > 0) {
+      const messages = errors.map((e) => e.message);
+      // A refusal (DRAFT_TOO_LARGE, REPO_MISSING, DRAFT_BRANCH_MISSING, ...) carries its reason; none is retried.
+      const reason = errors.find((e) => typeof e.extensions?.reason === "string")?.extensions?.reason ?? null;
+      throw new DraftBuildFailedError(messages.join("; "), messages, false, { reason });
+    }
+    return body;
+  }
+
+  /**
    * Publishes the draft: asks the platform to promote the pushed draft to the published branch (the same publish
    * the platform runs for any script, a `takeSnapshot` update) and returns the commit it published.
    *
    * @returns the published sha (`config.publishedSha`). The publish has happened once this resolves; `refreshed` says
    *          whether the follow-up fetch that brings `origin/master` up to date also succeeded (`refreshError` if not).
+   * @param options.at Pin the publish: the commit that was built and checked (the build commit from
+   *        {@link compileDraft}, or the pushed commit when there was none). The local draft must be that commit or a
+   *        build of it ({@link isBuildCommitOf}), else nothing is sent; the platform is then asked to publish exactly
+   *        the local draft (`expectedDraftSha`), so a later save cannot slip in under a build's result.
    * @throws {GitUnpushedChangesError} when the local draft is not what the platform holds.
+   * @throws {PublishPinMismatchError} when `at` is given and the local draft is neither it nor a build of it.
    * @throws {PublishRefusedError} when the platform refuses (nothing is written); `reason` says why.
    * @lastreviewed null
    */
-  async publish(): Promise<PublishResult> {
+  async publish(options: PublishOptions = {}): Promise<PublishResult> {
     await this.fetch();
     const local = await this.#resolve(DRAFT_BRANCH);
+    if (options.at !== undefined) {
+      const at = await this.#resolve(options.at);
+      if (local !== at && !(await this.isBuildCommitOf(local, at))) {
+        throw new PublishPinMismatchError(at, local);
+      }
+    }
     const remote = await this.#resolve(`refs/remotes/${REMOTE}/${DRAFT_BRANCH}`).catch(() => undefined);
     if (local !== remote) {
       throw new GitUnpushedChangesError(local, remote);
@@ -954,6 +1361,7 @@ export class ScriptRepo {
 
 interface GraphQlBody {
   data?: Record<string, GraphQlScript | GraphQlScript[] | undefined>;
+  extensions?: { bluestepCompile?: unknown; bluestepBuild?: unknown };
   errors?: { message: string; extensions?: { code?: string; reason?: string; publish?: unknown } }[];
 }
 
@@ -961,6 +1369,10 @@ interface GraphQlScript {
   config?: { publishedSha?: string };
   gitPublishing?: boolean;
   gitCloneUrl?: string | null;
+}
+
+function firstOf(value: unknown): unknown {
+  return Array.isArray(value) ? value[0] : undefined;
 }
 
 function isGitError(error: unknown, ...codes: string[]): boolean {

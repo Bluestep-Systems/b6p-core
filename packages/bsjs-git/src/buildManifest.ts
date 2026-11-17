@@ -1,8 +1,8 @@
 /**
  * The BSJS build manifest, contract v1: a file under the script's output folder that records the git blob SHA-1 of every
- * source file a build was made from. A git-managed script publishes its `draft` branch exactly as committed, without
- * recompiling, so the server refuses a publish whose sources no longer match the manifest. Whoever builds writes the
- * manifest in the same commit as the build output.
+ * source file a build was made from. A git-managed script publishes its `draft` branch exactly as committed, so the
+ * server refuses a publish whose sources no longer match the manifest. The platform's build (`ScriptRepo.compileDraft`)
+ * writes it in its build commit; nothing here writes one. These are the contract's layout rules, for reading.
  *
  * Everything here is pure (no file system, no Node built-ins): paths are as they appear in the git tree, relative to
  * its root, `/`-separated.
@@ -14,12 +14,6 @@
  * @lastreviewed null
  */
 export const BUILD_MANIFEST_NAME = ".b6p-build.json";
-
-/**
- * Written to the manifest's informational `builder` field.
- * @lastreviewed null
- */
-export const BUILD_MANIFEST_BUILDER = "bsjs-git/0.2.0";
 
 const SOURCE_EXTENSIONS = new Set(["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "json", "jsonc"]);
 const TYPESCRIPT_EXTENSIONS = new Set(["ts", "tsx", "mts", "cts"]);
@@ -188,75 +182,57 @@ export function hasNoTsconfig(paths: Iterable<string>): boolean {
 }
 
 /**
- * The git blob id of some bytes: `sha1("blob <length>\0" + bytes)` as 40 lowercase hex digits, what `git hash-object`
- * prints.
+ * The config files that make a tree's build projects, by the platform's rule: every `tsconfig.json` at any depth, plus
+ * the root `jsconfig.json` when there is no root `tsconfig.json`. Sorted.
+ * @param paths Every file path of the tree (`/`-separated)
  * @lastreviewed null
  */
-export async function gitBlobSha1(bytes: Uint8Array): Promise<string> {
-  const header = new TextEncoder().encode(`blob ${bytes.length}\0`);
-  const all = new Uint8Array(header.length + bytes.length);
-  all.set(header, 0);
-  all.set(bytes, header.length);
-  const digest = new Uint8Array(await globalThis.crypto.subtle.digest("SHA-1", all));
-  return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
+export function buildConfigPaths(paths: Iterable<string>): string[] {
+  const all = [...paths];
+  const configs = all.filter((p) => p === "tsconfig.json" || p.endsWith("/tsconfig.json"));
+  if (!all.includes("tsconfig.json") && all.includes("jsconfig.json")) {
+    configs.push("jsconfig.json");
+  }
+  return configs.sort();
 }
 
 /**
- * The manifest's text: version 1, keys sorted, two-space indent, a final newline.
- * @param sources Source path to blob id
+ * The output folders of a tree's build projects, the one resolver the platform, core and the BSJS editor share: for
+ * each config ({@link buildConfigPaths}), `<config dir>/` + its {@link buildOutputFolder} (`.build` by default). A
+ * project whose folder is empty (output in place) or leaves the tree contributes nothing. Sorted, without repeats.
+ * @param configs Each config file's path and text
  * @lastreviewed null
  */
-export function formatBuildManifest(
-  sources: Readonly<Record<string, string>>,
-  builder = BUILD_MANIFEST_BUILDER
-): string {
-  const sorted: Record<string, string> = {};
-  for (const key of Object.keys(sources).sort()) {
-    sorted[key] = sources[key];
+export function buildOutputFolders(configs: Iterable<{ readonly path: string; readonly text: string }>): string[] {
+  const folders = new Set<string>();
+  for (const config of configs) {
+    const folder = buildOutputFolder(config.text);
+    if (folder === "") {
+      continue;
+    }
+    const slash = config.path.lastIndexOf("/");
+    folders.add(slash < 0 ? folder : `${config.path.slice(0, slash)}/${folder}`);
   }
-  return `${JSON.stringify({ builder, sources: sorted, version: 1 }, null, 2)}\n`;
+  return [...folders].sort();
 }
 
 /**
- * What {@link planBuildManifest} decided.
+ * Rule 3 of the platform's build-commit rule (web `UserCodeScriptHelper`, `bsjs-git-snapshot-design.md`), exactly:
+ * every path the commit adds, changes or removes (complete tree entries) must be under the output folder of some build
+ * project at the parent ({@link buildOutputFolders}), i.e. start with `<folder>/`; a manifest in a folder is covered.
+ * With no folders at all, no commit is a build.
+ * @param changedPaths Every path whose tree entry differs between the commit and its parent
+ * @param folders The parent's output folders ({@link buildOutputFolders})
  * @lastreviewed null
  */
-export interface BuildManifestPlan {
-  /** Where the manifest goes. */
-  readonly path: string;
-  /** Its text. */
-  readonly content: string;
-}
-
-/**
- * The manifest for the tree a commit will hold, or `undefined` when none is to be written: the script is externally
- * built, or no file in the tree is named `tsconfig.json`, or the tree has no TypeScript source outside the output folder ({@link isTypeScriptSource}).
- *
- * @param tree Every file of the tree as committed: path and git blob id. The manifest itself may be among them (it is
- *        not a source)
- * @param readConfig The bytes of a root file by path (`tsconfig.json`, `jsconfig.json`), `undefined` when absent
- * @param options.externallyBuilt A bundler builds this script, so its inputs are unknowable here: no manifest
- * @lastreviewed null
- */
-export async function planBuildManifest(
-  tree: readonly { readonly path: string; readonly oid: string }[],
-  readConfig: (path: string) => Promise<Uint8Array | undefined>,
-  options: { readonly externallyBuilt?: boolean } = {}
-): Promise<BuildManifestPlan | undefined> {
-  if (options.externallyBuilt || hasNoTsconfig(tree.map((f) => f.path))) {
-    return undefined;
+export function changesOnlyBuildOutput(changedPaths: Iterable<string>, folders: readonly string[]): boolean {
+  if (folders.length === 0) {
+    return false;
   }
-  const config = (await readConfig("tsconfig.json")) ?? (await readConfig("jsconfig.json"));
-  const folder = buildOutputFolder(config === undefined ? undefined : new TextDecoder().decode(config));
-  if (!tree.some((file) => isTypeScriptSource(file.path, folder))) {
-    // Its JavaScript runs as written: there is no build to be stale.
-    return undefined;
-  }
-  const sources: Record<string, string> = {};
-  for (const file of tree) {
-    if (isBuildSource(file.path, folder)) {
-      sources[file.path] = file.oid;
+  for (const path of changedPaths) {
+    if (!folders.some((folder) => path.startsWith(`${folder}/`))) {
+      return false;
     }
   }
-  return { path: buildManifestPath(folder), content: formatBuildManifest(sources) };
+  return true;
 }
