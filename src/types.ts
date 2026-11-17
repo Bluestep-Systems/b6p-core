@@ -708,6 +708,8 @@ export type GatewayErrorCode =
   | "non-fast-forward"
   | "too-large"
   | "forge-unavailable"
+  | "scope-escalation"
+  | "alias-taken"
   | "invalid-request"
   | "token-limit"
   | "registry-unavailable";
@@ -821,4 +823,194 @@ export interface GatewayMarketplaceRepo {
  */
 export interface GatewayMarketplaceRepoList {
   repos: GatewayMarketplaceRepo[];
+}
+
+/**
+ * One of the caller's own access tokens, as `GET /api/v1/tokens` lists it. The secret is never
+ * listed.
+ * @lastreviewed null
+ */
+export interface GatewayTokenRecord {
+  id: string;
+  /**
+   * Unique among this user's tokens.
+   * @lastreviewed null
+   */
+  alias: string;
+  scopes: string[];
+  /**
+   * ISO 8601, or `null` for a token minted before the gateway recorded creation times.
+   * @lastreviewed null
+   */
+  createdAt: string | null;
+  /**
+   * ISO 8601, or `null` for a token that never expires.
+   * @lastreviewed null
+   */
+  expiresAt: string | null;
+  /**
+   * ISO 8601, or `null` when the token has not been used. Approximate: the gateway stamps it at
+   * most every 12 hours, so it can trail the real last use by that long.
+   * @lastreviewed null
+   */
+  lastUsedAt: string | null;
+  /**
+   * Whether this is the token that made the request (the one b6p has stored).
+   * @lastreviewed null
+   */
+  current: boolean;
+}
+
+/**
+ * Body of `GET /api/v1/tokens`.
+ * @lastreviewed null
+ */
+export interface GatewayTokenList {
+  tokens: GatewayTokenRecord[];
+}
+
+/**
+ * A listed token, as `core.gateway.tokens.list()` returns it. The gateway lists expired tokens too;
+ * {@link expired} tells them apart.
+ * @lastreviewed null
+ */
+export interface GatewayTokenSummary extends GatewayTokenRecord {
+  /**
+   * `true` when {@link GatewayTokenRecord.expiresAt} is in the past by this machine's clock at the
+   * time of the listing. Derived here, not sent by the gateway.
+   * @lastreviewed null
+   */
+  expired: boolean;
+  /**
+   * `true` when {@link GatewayTokenRecord.expiresAt} is `null`.
+   * @lastreviewed null
+   */
+  neverExpires: boolean;
+}
+
+/**
+ * What `core.gateway.tokens.create()` mints.
+ * @lastreviewed null
+ */
+export interface GatewayTokenCreateRequest {
+  /**
+   * Unique among this user's tokens.
+   * @lastreviewed null
+   */
+  alias: string;
+  /**
+   * Must be a subset of the presenting token's scopes, or the gateway refuses with `scope-escalation`.
+   * @lastreviewed null
+   */
+  scopes: readonly string[];
+  /**
+   * ISO 8601 expiry, sent as given. `null` mints a token that never expires. Left out, the token is
+   * minted for 90 days, or until the presenting token expires if that comes first
+   * ({@link GatewayCreatedToken.expiryCapped} says when it did): the gateway refuses a token that
+   * would outlive the one making the request.
+   * @lastreviewed null
+   */
+  expiresAt?: string | null;
+}
+
+/**
+ * Set on a {@link GatewayCreatedToken} when no expiry was asked for and the default 90 days would
+ * have outlived the presenting token.
+ * @lastreviewed null
+ */
+export interface GatewayExpiryCap {
+  /**
+   * The expiry the token was minted with: the presenting token's own, ISO 8601.
+   * @lastreviewed null
+   */
+  cappedTo: string;
+  /**
+   * What would have applied without the cap.
+   * @lastreviewed null
+   */
+  requested: "90d";
+}
+
+/**
+ * What `core.gateway.tokens.create()` returns: the minted token and whether its default expiry was
+ * shortened.
+ * @lastreviewed null
+ */
+export interface GatewayCreatedToken extends GatewayMintedToken {
+  /**
+   * Non-null only when the caller gave no expiry and it was capped at the presenting token's.
+   * @lastreviewed null
+   */
+  expiryCapped: GatewayExpiryCap | null;
+}
+
+/**
+ * Body of `201` from `POST /api/v1/tokens` and `POST /api/v1/tokens/{id}/rotate`. It carries the
+ * secret, which the gateway shows only this once.
+ * @lastreviewed null
+ */
+export interface GatewayMintedTokenBody {
+  id: string;
+  /**
+   * The `b6pt_…` secret. Not retrievable again.
+   * @lastreviewed null
+   */
+  token: string;
+  alias: string;
+  scopes: string[];
+  /**
+   * ISO 8601, or `null` for a token that never expires.
+   * @lastreviewed null
+   */
+  expiresAt: string | null;
+}
+
+/**
+ * A freshly minted token, secret included. Core never logs it; showing it is the consumer's job.
+ * @lastreviewed null
+ */
+export interface GatewayMintedToken extends GatewayMintedTokenBody {
+  /**
+   * `true` when {@link GatewayMintedTokenBody.expiresAt} is `null`.
+   * @lastreviewed null
+   */
+  neverExpires: boolean;
+}
+
+/**
+ * Result of `core.gateway.tokens.revoke()`.
+ * @lastreviewed null
+ */
+export interface GatewayTokenRevokeResult {
+  id: string;
+  alias: string;
+  /**
+   * `true` when the revoked token was the one b6p has stored. Core leaves the stored (now dead)
+   * token in place; the consumer decides what to do about it.
+   * @lastreviewed null
+   */
+  revokedCurrent: boolean;
+}
+
+/**
+ * Result of `core.gateway.tokens.rotate()`.
+ * @lastreviewed null
+ */
+export interface GatewayTokenRotateResult {
+  /**
+   * The token that was rotated, now revoked.
+   * @lastreviewed null
+   */
+  replaced: { id: string; alias: string };
+  /**
+   * Its replacement: same alias, scopes and absolute end date (`expiresAt`), with a new secret.
+   * @lastreviewed null
+   */
+  token: GatewayMintedToken;
+  /**
+   * `true` when the rotated token was the one b6p has stored; the replacement is then stored in
+   * its place. (When storing fails, `rotate()` throws `Err.GatewayTokenStoreError` instead.)
+   * @lastreviewed null
+   */
+  rotatedCurrent: boolean;
 }
