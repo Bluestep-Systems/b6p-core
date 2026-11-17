@@ -277,8 +277,9 @@ test("resolve: a mixed-case ref pulls into a folder named for the canonical name
   await withKb(async ({ kb }) => {
     const cwd = tmp();
     const result = await kb.pull("u1/HANDBOOK", { cwd });
-    assert.ok(fs.existsSync(path.join(cwd, "U1-handbook")));
-    assert.ok(!fs.existsSync(path.join(cwd, "u1-HANDBOOK")));
+    // Compare the folder's name as listed: on a case-insensitive file system (Windows, macOS) existsSync would find
+    // "u1-HANDBOOK" too, since it is the same folder.
+    assert.deepStrictEqual(fs.readdirSync(cwd), ["U1-handbook"]);
     assert.strictEqual(result.kb.ref, "tenant/U1/handbook");
   });
 });
