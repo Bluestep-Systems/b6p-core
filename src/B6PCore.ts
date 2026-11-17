@@ -9,10 +9,44 @@ import { OrgCache, type OrgCacheSettings } from "./cache/OrgCache";
 import type { PlatformContext } from "./PlatformContext";
 import { ScriptService } from "./script/ScriptService";
 import { UpdateService } from "./update/UpdateService";
+import { GatewayService } from "./gateway/GatewayService";
+import type { GatewayTokenSource, GatewayTokenStore } from "./providers";
+import { Gateway } from "./constants/Gateway";
+import { SettingsKeys } from "./constants/SettingsKeys";
 
 const NOOP_ORG_CACHE_SETTINGS: OrgCacheSettings = {
   getParsedAnyDomainOverrideUrl: () => null,
 };
+
+/**
+ * The gateway's token source: the `b6pt_` token the bearer provider already stores (ruling 22),
+ * read without prompting. A consumer-supplied {@link AuthProvider} of some other scheme holds no
+ * such token, so the gateway then has none and every request fails `token-missing` before sending.
+ * @lastreviewed null
+ */
+function gatewayTokenFrom(auth: AuthProvider<AuthParams>): GatewayTokenSource {
+  if (auth instanceof BearerAuthProvider) {
+    return { token: () => auth.storedToken() };
+  }
+  return { token: async () => undefined };
+}
+
+/**
+ * Where a rotated replacement of the stored token is written: {@link BearerAuthProvider.replaceStoredToken}.
+ * Any other {@link AuthProvider} stores no `b6pt_` token, so the gateway never presented one and
+ * there is nothing to replace; the write is refused.
+ * @lastreviewed null
+ */
+function gatewayTokenStoreFrom(auth: AuthProvider<AuthParams>): GatewayTokenStore {
+  if (auth instanceof BearerAuthProvider) {
+    return { replace: (expected, next) => auth.replaceStoredToken(expected, next) };
+  }
+  return {
+    replace: async () => {
+      throw new Error("The configured auth provider stores no gateway token to replace.");
+    },
+  };
+}
 
 /**
  * Result returned by the report command.
@@ -72,6 +106,13 @@ export class B6PCore {
    */
   readonly script: ScriptService;
 
+  /**
+   * Web-global's gateway: knowledge bases, marketplace repos and the caller's own tokens, over the
+   * `b6pt_` token.
+   * @lastreviewed null
+   */
+  readonly gateway: GatewayService;
+
   private readonly _isDebugMode: () => boolean;
 
   constructor(providers: B6PProviders) {
@@ -127,6 +168,24 @@ export class B6PCore {
       },
       gitFetch: providers.fetchFn,
       gitEnv: providers.gitEnv,
+    });
+
+    // The gateway is a second origin that takes the same stored `b6pt_` token, but per request: it
+    // reads it through a non-prompting accessor and never goes through `SessionManager`'s cookie
+    // bootstrap or `auth.authHeaderValue()`. Its URL is read from core config on every
+    // request (default gateway.bluestep.net) and validated by the client.
+    const persistence = this.persistence;
+    this.gateway = new GatewayService({
+      ...platform,
+      gatewayToken: gatewayTokenFrom(this.auth),
+      gatewayTokenStore: gatewayTokenStoreFrom(this.auth),
+      gatewayUrl: async () => {
+        const configured = await persistence.get<unknown>(`settings.${SettingsKeys.GATEWAY_URL}`);
+        return configured === undefined || configured === null || configured === ""
+          ? Gateway.DEFAULT_URL
+          : String(configured);
+      },
+      fetchFn: providers.fetchFn ?? globalThis.fetch.bind(globalThis),
     });
 
     // Initialize update service if configuration is provided
