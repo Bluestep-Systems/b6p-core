@@ -10,6 +10,7 @@ import type { PlatformContext } from "./PlatformContext";
 import { ScriptService } from "./script/ScriptService";
 import { UpdateService } from "./update/UpdateService";
 import { GatewayService } from "./gateway/GatewayService";
+import { SchemaService } from "./schema/SchemaService";
 import type { GatewayTokenSource, GatewayTokenStore } from "./providers";
 import { Gateway } from "./constants/Gateway";
 import { SettingsKeys } from "./constants/SettingsKeys";
@@ -113,6 +114,12 @@ export class B6PCore {
    */
   readonly gateway: GatewayService;
 
+  /**
+   * Schema apply: generate, test and apply declarative manifests against one org (super users only).
+   * @lastreviewed null
+   */
+  readonly schema: SchemaService;
+
   private readonly _isDebugMode: () => boolean;
 
   constructor(providers: B6PProviders) {
@@ -168,6 +175,8 @@ export class B6PCore {
       gitFetch: providers.fetchFn,
       gitEnv: providers.gitEnv,
     });
+
+    this.schema = new SchemaService(platform);
 
     // The gateway is a second origin that takes the same stored `b6pt_` token, but per request: it
     // reads it through a non-prompting accessor and never goes through `SessionManager`'s cookie
