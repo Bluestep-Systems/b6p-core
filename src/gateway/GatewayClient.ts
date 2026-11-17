@@ -218,8 +218,9 @@ export function gatewayErrorFor(status: number, bodyText: string, what: string, 
  *
  * REST requests made through this client ({@link request} / {@link getJson}) run **one at a time**,
  * in call order, so a burst from a caller cannot fan out into parallel token reads or parallel
- * connections (the same discipline `SessionManager` keeps). {@link authHeadersFor} is not queued:
- * requests a caller sends itself with that header are outside this queue.
+ * connections (the same discipline `SessionManager` keeps). {@link sequence} puts a longer task, such
+ * as one of the git layer's operations, in the same queue. {@link authHeadersFor} is not queued: a
+ * request a caller sends itself with that header is outside it unless wrapped in `sequence`.
  *
  * Redirects are never followed; a 3xx is an {@link Err.GatewayUnexpectedResponseError} with code
  * `redirect-refused`. A request path that resolves off the gateway's origin is refused unsent.
@@ -289,8 +290,18 @@ export class GatewayClient {
    * @lastreviewed null
    */
   request(method: string, path: string, options: GatewayRequestOptions = {}): Promise<JsonValue | undefined> {
-    const run = (): Promise<JsonValue | undefined> => this.send(method, path, options);
-    const result = this.tail.then(run, run);
+    return this.sequence(() => this.send(method, path, options));
+  }
+
+  /**
+   * Run `task` in this client's one-at-a-time queue, behind any request or task already in
+   * flight. The git layer wraps a whole operation (several HTTP requests) in this so git traffic
+   * and REST calls never overlap. `task` must not itself call {@link request} or `sequence`, which
+   * would wait on the queue it is holding.
+   * @lastreviewed null
+   */
+  sequence<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(task, task);
     this.tail = result.catch(() => undefined);
     return result;
   }

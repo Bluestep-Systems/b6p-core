@@ -24,6 +24,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   gateway URLs only. A request path that resolves off the gateway origin is refused unsent, and a
   redirect is never followed (`redirect-refused`). The token never appears in an error message or a log
   line.
+- **`core.gateway.git`: pure-JS git over the gateway** (ClickUp 86bczx1wd). `GatewayGit` clones a
+  knowledge base or marketplace repo from its listing's `gitUrl` (optionally at a branch or tag),
+  reports `status` (dirty paths, ahead/behind), fast-forwards with `pull`, and `push`es the
+  current branch to its upstream. It uses isomorphic-git (MIT, exact-pinned; no git install needed,
+  bundles into single-file builds) and the stored `b6pt_` token on every request. Pushes are
+  fast-forward only: never forced, never a ref deletion, never tags; a non-fast-forward is
+  `GatewayConflictError`. A pull that would overwrite local changes throws
+  `GatewayDirtyWorkingTreeError` (with the `paths`) and changes nothing; other unusable folders
+  are `GatewayWorkingCopyError` (`reason`). File contents are never rewritten. A git request
+  that stalls (no response headers in 30 s, or a body silent for 60 s) fails as
+  `GatewayUnavailableError` and releases the queue; a pull checks the files out before it moves
+  the branch, so an interrupted pull never leaves HEAD ahead of the tree, and the next pull
+  finishes it. A pull refuses when anything is staged (`GatewayDirtyWorkingTreeError`, with the
+  staged paths), because the checkout would drop it. Server push-rejection text is redacted,
+  isomorphic-git's protocol errors surface as `GatewayUnexpectedResponseError` (no body quoted), and a
+  failed clone removes every folder it created. A clone target with a `.git` or `git~N` path
+  component (any case, and the NTFS/HFS+ aliases: trailing dots or spaces, Unicode-ignorable
+  characters) is refused before any request (`GatewayWorkingCopyError`, reason
+  `unsafe-target`).
 - **Gateway contract delta (2026-11-10)**: `400 invalid-request` → `Err.GatewayInvalidRequestError`;
   `409 token-limit` → `Err.GatewayTokenLimitError` (`limit`, 50 when the body says so, else `null`);
   `503 registry-unavailable` is a `GatewayUnavailableError` naming web-global as the one that could
