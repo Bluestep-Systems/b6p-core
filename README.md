@@ -68,6 +68,17 @@ between the local filesystem and the platform (the draft over git, `declarations
 | `deriveWorkspacePath` | Recover the workspace folder from a path inside a script root |
 | `getFactory` | The `ScriptFactory` for entering the script tree from a bare path |
 
+`core.schema` ([`SchemaService`](src/schema/SchemaService.ts)) — declarative schema apply against one org
+(super users only; every method takes any URL on the org):
+
+| Method | Purpose |
+| --- | --- |
+| `generate` | The manifest (YAML) describing the named objects as they stand, optionally `closure` / `portable` |
+| `recipe` | Run a recipe (`LINK_VIEW_GRANTS`): its manifest plus the findings it met |
+| `test` | Dry-run a manifest as the caller: the plan, any refusals, and a one-use key when it passes (`verbose` adds same-name warnings) |
+| `apply` | Apply the plan a `test` approved: the same manifest string and its key; never retried |
+| `testThenApply` | `test`, ask `confirm` with the result, then `apply` with the same manifest and key |
+
 `core.gateway` ([`GatewayService`](src/gateway/GatewayService.ts)) — web-global's gateway
 (`https://gateway.bluestep.net`), the origin for knowledge bases and marketplace repos. It
 holds the HTTP client, the git layer, `core.gateway.kb` (knowledge bases), `core.gateway.marketplace`

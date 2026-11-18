@@ -126,6 +126,7 @@ are load-bearing rather than stylistic — each records something this repo undi
 Subsystems under `src/`: `auth/` (`BearerAuthProvider`), `session/` (`SessionManager` — WebDAV login,
 CSRF, cookies, retry), `network/`, `script/` (`ScriptService`, the script tree, `GitSync` push/pull/audit of the draft
 as a git working tree, `GitIdentity` commit authors, `ServerCompile` reading the platform's build diagnostics),
+`schema/` (`SchemaService`, `core.schema`: super-only schema apply over the org's `/gql`, `SchemaContext` extends `PlatformContext`),
 `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit`, `GatewayTokenService`, `GatewayMarketplace`, `GatewayKb` —
 web-global's gateway over the `b6pt_` token, pure-JS git through it, the caller's own token
 management, marketplace clones and knowledge bases), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`),

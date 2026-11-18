@@ -1059,3 +1059,264 @@ export interface GatewayTokenRotateResult {
    */
   rotatedCurrent: boolean;
 }
+
+// ─── Schema apply (core.schema) ──────────────────────────────────────
+// Mirrors web's schema_apply.graphqls. Enums are string-literal unions; a nullable SDL field is `T | null`.
+// Every operation is reserved to super users on the server.
+
+/**
+ * The recipes `core.schema.recipe()` can run.
+ * @lastreviewed null
+ */
+export type SchemaRecipeName = "LINK_VIEW_GRANTS";
+
+/**
+ * How much a recipe finding matters: `ERROR` is something the recipe needed and could not state (clear it before
+ * relying on the manifest); `WARNING` is something for a person to decide.
+ * @lastreviewed null
+ */
+export type SchemaRecipeFindingSeverity = "ERROR" | "WARNING";
+
+/**
+ * What a recipe met, typed.
+ * @lastreviewed null
+ */
+export type SchemaRecipeFindingCode =
+  | "UNNAMED_FORM"
+  | "NAME_COLLISION"
+  | "CONFLICTING_GRANTS"
+  | "UNPLACED_GRANTS"
+  | "RELATIVE_WRITER"
+  | "DATA_UNIT_AWARE_WRITER"
+  | "DYNAMIC_WRITER_WITHOUT_QUERY"
+  | "VIEW_GROUP_NAMED_BY_KEY"
+  | "UNIT_SCOPED_PLATFORM_WRITER"
+  | "EXPLICIT_DENY"
+  | "USER_WOULD_BE_LOWERED"
+  | "GENERATOR_NOTE";
+
+/**
+ * One thing a recipe met.
+ * @lastreviewed null
+ */
+export interface SchemaRecipeFinding {
+  /** What, typed. @lastreviewed null */
+  code: SchemaRecipeFindingCode;
+  /** How much it matters. @lastreviewed null */
+  severity: SchemaRecipeFindingSeverity;
+  /** The user or group it concerns, when one. @lastreviewed null */
+  subjectId: string | null;
+  /** The field it concerns (a link field, or a label field), when one. @lastreviewed null */
+  fieldId: string | null;
+  /** The form or record type it concerns, when one. @lastreviewed null */
+  formId: string | null;
+  /** What, in a sentence. @lastreviewed null */
+  detail: string;
+}
+
+/**
+ * What `core.schema.recipe()` answers: the recipe's manifest and what it met.
+ * @lastreviewed null
+ */
+export interface SchemaRecipeResult {
+  /** The recipe's manifest, as a YAML stream, for `test`. @lastreviewed null */
+  manifest: string;
+  /** What the recipe met, ordered by code, then form, field and subject. @lastreviewed null */
+  findings: SchemaRecipeFinding[];
+}
+
+/**
+ * The gate's stages, in the order they run (the server's `SchemaGateStage`).
+ * @lastreviewed null
+ */
+export type SchemaGateStage = "SHAPE" | "WELL_FORMEDNESS" | "RESOLUTION" | "AUTHORITY" | "POLICY" | "CONVERGENCE";
+
+/**
+ * Why a stage refused, an element is a CONFLICT, or an apply did not go through (the server's `SchemaRefusalCode`).
+ * @lastreviewed null
+ */
+export type SchemaRefusalCode =
+  | "SHAPE"
+  | "NOT_WELL_FORMED"
+  | "DUPLICATE_MATCHER"
+  | "AMBIGUOUS_MATCH"
+  | "OTHER_TENANT_KEY"
+  | "PORTABLE_IN_SOURCE_TENANT"
+  | "UNRESOLVED_REFERENCE"
+  | "NAME_TAKEN"
+  | "ATTACHMENT_MISMATCH"
+  | "CONFLICTING_GRANTS"
+  | "NOT_YET_WRITABLE"
+  | "FROZEN"
+  | "NOT_PERMITTED"
+  | "PRIMARY_ADMIN"
+  | "POLICY_REFUSED"
+  | "NOT_CONVERGENT"
+  | "LEVEL_NOT_IN_FAMILY"
+  | "SYSTEM_SUBJECT_GRANT"
+  | "RECIPROCAL_MISMATCH"
+  | "CLOSURE_COUNT_MISMATCH"
+  | "CRITERION_INVALID"
+  | "KEY_INVALID"
+  | "STALE"
+  | "HISTORY_UNAVAILABLE";
+
+/**
+ * What apply would do to one element.
+ * @lastreviewed null
+ */
+export type SchemaActionKind = "CREATE" | "ADOPT" | "UPDATE" | "NO_CHANGE" | "CONFLICT";
+
+/**
+ * Which kind of difference an update writes: a property's `CHANGE`, or an ordered container's `REORDER`.
+ * @lastreviewed null
+ */
+export type SchemaDeltaKind = "CHANGE" | "REORDER";
+
+/**
+ * One difference an update would write.
+ * @lastreviewed null
+ */
+export interface SchemaDelta {
+  /** The property, or the ordered container, within the element: dotted component names. @lastreviewed null */
+  path: string;
+  /** A property's change, or a container's reorder. @lastreviewed null */
+  kind: SchemaDeltaKind;
+  /** For a CHANGE, the value now as JSON with sorted keys; null when it has none, and for a REORDER. @lastreviewed null */
+  from: string | null;
+  /** For a CHANGE, the value wanted as JSON with sorted keys; null when cleared or removed, and for a REORDER. @lastreviewed null */
+  to: string | null;
+  /** For a REORDER, each listed element's live position, in the manifest's order; empty for a CHANGE. @lastreviewed null */
+  livePositions: number[];
+}
+
+/**
+ * One reason an element is a CONFLICT.
+ * @lastreviewed null
+ */
+export interface SchemaConflictReason {
+  /** Why, typed. @lastreviewed null */
+  code: SchemaRefusalCode;
+  /** What is wrong, in a sentence; it names no object by id. @lastreviewed null */
+  detail: string;
+}
+
+/**
+ * One action of a plan.
+ * @lastreviewed null
+ */
+export interface SchemaPlannedAction {
+  /** The element: its document's kind and name, then the containers leading to it. @lastreviewed null */
+  element: string;
+  /** What apply would do to it. @lastreviewed null */
+  action: SchemaActionKind;
+  /** The id of the object it lands on, when there is one with an id of its own. @lastreviewed null */
+  objectId: string | null;
+  /** For a CREATE, the spec it would create, as JSON with sorted keys; null otherwise. @lastreviewed null */
+  spec: string | null;
+  /** For an UPDATE or ADOPT, every difference it would write, in order; empty otherwise. @lastreviewed null */
+  deltas: SchemaDelta[];
+  /** For a CONFLICT, every reason it cannot be applied; empty otherwise. @lastreviewed null */
+  reasons: SchemaConflictReason[];
+}
+
+/**
+ * An object a matcher caught.
+ * @lastreviewed null
+ */
+export interface SchemaMatchHit {
+  /** Its id, when it has one of its own. @lastreviewed null */
+  objectId: string | null;
+  /** The object as read, its spec as JSON with sorted keys. @lastreviewed null */
+  live: string;
+}
+
+/**
+ * A failure that left no plan: stage 1, 2 or 3 refused the manifest outright.
+ * @lastreviewed null
+ */
+export interface SchemaRefusal {
+  /** The stage that refused. @lastreviewed null */
+  stage: SchemaGateStage;
+  /** Why, typed. @lastreviewed null */
+  code: SchemaRefusalCode;
+  /** Where in the manifest: 'the manifest', 'document N' (the header is 0), or an element. @lastreviewed null */
+  locus: string;
+  /** What is wrong, in a sentence. @lastreviewed null */
+  detail: string;
+  /** For AMBIGUOUS_MATCH, every object the matcher caught; empty otherwise. @lastreviewed null */
+  hits: SchemaMatchHit[];
+}
+
+/**
+ * Why an apply did not go through, or why `test` was refused before reading the manifest.
+ * @lastreviewed null
+ */
+export interface SchemaApplyRefusal {
+  /** Why, typed. @lastreviewed null */
+  code: SchemaRefusalCode;
+  /** Where in the manifest, when one place is to blame; null for KEY_INVALID, STALE and whole-manifest refusals. @lastreviewed null */
+  element: string | null;
+  /** Why, in a sentence; it names no object by id. @lastreviewed null */
+  detail: string;
+}
+
+/**
+ * Something a plan met that holds nothing up but should be known.
+ * @lastreviewed null
+ */
+export interface SchemaWarning {
+  /** The element it concerns, as in {@link SchemaPlannedAction}. @lastreviewed null */
+  element: string;
+  /** What was met, in a sentence; it names no object by id. @lastreviewed null */
+  detail: string;
+}
+
+/**
+ * What `core.schema.test()` answers.
+ * @lastreviewed null
+ */
+export interface SchemaTestResult {
+  /** Whether every gate stage passed. Only then is there a key. @lastreviewed null */
+  passed: boolean;
+  /** The first stage that refused something, or null when the gate passed. @lastreviewed null */
+  failedAt: SchemaGateStage | null;
+  /** The plan, in manifest order; empty when stage 1, 2 or 3 refused the manifest outright. @lastreviewed null */
+  actions: SchemaPlannedAction[];
+  /** Why stage 1, 2 or 3 refused the manifest outright; empty when there is a plan. @lastreviewed null */
+  refusals: SchemaRefusal[];
+  /** The key that authorizes exactly this plan, present only when passed; valid ten minutes, once. @lastreviewed null */
+  schemaMutationKey: string | null;
+  /** When the test was refused before the manifest was read (HISTORY_UNAVAILABLE): why; null otherwise. @lastreviewed null */
+  refusal: SchemaApplyRefusal | null;
+  /** What a person should know of the plan that holds nothing up. @lastreviewed null */
+  warnings: SchemaWarning[];
+}
+
+/**
+ * A document's object, once applied.
+ * @lastreviewed null
+ */
+export interface SchemaAppliedObject {
+  /** The document: its kind and name. @lastreviewed null */
+  element: string;
+  /** The object's id. @lastreviewed null */
+  objectId: string;
+}
+
+/**
+ * What `core.schema.apply()` answers.
+ * @lastreviewed null
+ */
+export interface SchemaApplyResult {
+  /** Whether the plan was applied and committed. Anything else wrote nothing. @lastreviewed null */
+  applied: boolean;
+  /** When applied, each document's object in manifest order; empty otherwise. @lastreviewed null */
+  objects: SchemaAppliedObject[];
+  /** When not applied, why: the first refusal. Null when applied. @lastreviewed null */
+  refusal: SchemaApplyRefusal | null;
+  /** When the gate, planned again, no longer passed: the stage that refused. Null otherwise. @lastreviewed null */
+  failedAt: SchemaGateStage | null;
+  /** When applied, the commit in the schema's history repository that records this apply. Null otherwise. @lastreviewed null */
+  historyCommit: string | null;
+}

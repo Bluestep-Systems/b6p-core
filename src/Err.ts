@@ -659,6 +659,33 @@ export namespace Err {
     }
   }
 
+  /**
+   * Error thrown when the server refuses a schema operation (`generateSchema`, `schemaRecipe`, `testSchema`,
+   * `applySchema`) with `FORBIDDEN`: these operations are reserved to super users.
+   * @lastreviewed null
+   */
+  export class SchemaForbiddenError extends Error {
+    constructor(readonly operation: string) {
+      super(`${operation} is reserved to super users; the signed-in user is not one`);
+      this.name = "SchemaForbiddenError";
+    }
+  }
+
+  /**
+   * Error thrown when the org's server does not know a schema operation, or an argument of one (for example
+   * `testSchema(verbose:)`): it predates the feature. `feature` names what was rejected.
+   * @lastreviewed null
+   */
+  export class SchemaServerTooOldError extends Error {
+    constructor(
+      readonly feature: string,
+      readonly serverMessage: string
+    ) {
+      super(`The org's server does not support ${feature}; it predates the schema apply feature (${serverMessage})`);
+      this.name = "SchemaServerTooOldError";
+    }
+  }
+
   // General Utility Errors
 
   /**

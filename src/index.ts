@@ -84,6 +84,11 @@ export { isOwnSourceDiagnostic, typeCheckErrorsOf } from "./script/ServerCompile
 export type { TypeCheckError } from "./script/ServerCompile";
 export type { AuditResult, DeployConfig, DeployTargetResult, PullResult } from "./script/ScriptService";
 
+// ─── Schema apply ────────────────────────────────────────────────────
+export { SchemaService } from "./schema/SchemaService";
+export type { SchemaContext } from "./schema/SchemaContext";
+export type { SchemaGenerateOptions, SchemaTestOptions, SchemaTestThenApplyResult } from "./schema/SchemaService";
+
 // ─── Gateway (web-global) ────────────────────────────────────────────
 export { GatewayService } from "./gateway/GatewayService";
 export { GatewayGit } from "./gateway/GatewayGit";
@@ -193,6 +198,25 @@ export type {
   ScriptGqlResp,
   ScriptGQLGoodResp,
   ScriptGQLBadResp,
+  SchemaRecipeName,
+  SchemaRecipeFindingSeverity,
+  SchemaRecipeFindingCode,
+  SchemaRecipeFinding,
+  SchemaRecipeResult,
+  SchemaGateStage,
+  SchemaRefusalCode,
+  SchemaActionKind,
+  SchemaDeltaKind,
+  SchemaDelta,
+  SchemaConflictReason,
+  SchemaPlannedAction,
+  SchemaMatchHit,
+  SchemaRefusal,
+  SchemaApplyRefusal,
+  SchemaWarning,
+  SchemaTestResult,
+  SchemaAppliedObject,
+  SchemaApplyResult,
   ConfigJsonContent,
   GatewayErrorCode,
   GatewayErrorBody,
