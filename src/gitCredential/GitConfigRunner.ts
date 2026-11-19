@@ -1,8 +1,10 @@
 import { execFile } from "node:child_process";
+import * as fsSync from "node:fs";
 import { constants as fsConstants } from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { Err } from "../Err";
+import { trackOnExit, untrackOnExit } from "../persistence/exitCleanup";
 import type { ConfigPathStyle } from "./credentialConfig";
 
 /**
@@ -114,25 +116,20 @@ export async function resolveSymlink(file: string): Promise<string> {
  * Edit a config file under git's lock protocol ({@link GitConfigRunner.editFile}). The file is read
  * and written as bytes: `edit` gets each byte as one character (latin1) and must return text in the
  * same form, so bytes that are not UTF-8 (a cp1252 name, say) pass through unchanged. The lock is
- * created with the file's own mode and set to it before anything is written, so the copy is never
- * more readable than the file.
+ * created owner-only and set to the file's mode, read under the lock, before anything is written,
+ * so the copy is never more readable than the file. Until it is renamed or removed, the lock is
+ * removed if the process stops (`exitCleanup.ts`), and only while it is still the file (inode) this
+ * call created.
  * @lastreviewed null
  */
 export async function editConfigFile(file: string, edit: (text: string) => string | null): Promise<boolean> {
   const target = await resolveSymlink(file);
   const lock = `${target}.lock`;
-  let mode: number | undefined;
-  try {
-    mode = (await fsp.stat(target)).mode & 0o7777;
-  } catch (error) {
-    if (codeOf(error) !== "ENOENT") {
-      throw error;
-    }
-  }
   let handle: fsp.FileHandle | undefined;
   for (let waited = 0; ; waited += 25) {
     try {
-      handle = await fsp.open(lock, "wx", mode ?? 0o666);
+      // Owner-only until the file's own mode is known: the copy is never more readable than the file.
+      handle = await fsp.open(lock, "wx", 0o600);
       break;
     } catch (error) {
       if (codeOf(error) !== "EEXIST" || waited >= 2_000) {
@@ -144,9 +141,27 @@ export async function editConfigFile(file: string, edit: (text: string) => strin
       await sleep(25);
     }
   }
+  const made = await handle.stat();
+  const cleanup = trackOnExit(lock, () => {
+    try {
+      const now = fsSync.statSync(lock);
+      return now.dev === made.dev && now.ino === made.ino;
+    } catch {
+      return false;
+    }
+  });
   try {
-    if (mode !== undefined && process.platform !== "win32") {
-      await handle.chmod(mode);
+    // The mode is read only now, under the lock, so a change another writer made while b6p waited is the one kept.
+    let mode: number | undefined;
+    try {
+      mode = (await fsp.stat(target)).mode & 0o7777;
+    } catch (error) {
+      if (codeOf(error) !== "ENOENT") {
+        throw error;
+      }
+    }
+    if (process.platform !== "win32") {
+      await handle.chmod(mode ?? 0o666 & ~process.umask());
     }
     let text = "";
     try {
@@ -161,6 +176,7 @@ export async function editConfigFile(file: string, edit: (text: string) => strin
       await handle.close();
       handle = undefined;
       await fsp.unlink(lock);
+      untrackOnExit(cleanup);
       return false;
     }
     await handle.writeFile(Buffer.from(next, "latin1"));
@@ -169,6 +185,7 @@ export async function editConfigFile(file: string, edit: (text: string) => strin
     for (let attempt = 0; ; attempt++) {
       try {
         await fsp.rename(lock, target);
+        untrackOnExit(cleanup);
         return true;
       } catch (error) {
         const code = codeOf(error);
@@ -181,6 +198,7 @@ export async function editConfigFile(file: string, edit: (text: string) => strin
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await fsp.unlink(lock).catch(() => undefined);
+    untrackOnExit(cleanup);
     throw error;
   }
 }
@@ -233,8 +251,14 @@ export function gitConfigRunner(env?: NodeJS.ProcessEnv): GitConfigRunner {
       const paths = outcome.code === 0 ? outcome.stdout.split(/\r?\n/).filter((line) => line !== "") : [];
       const user = paths[paths.length - 1];
       if (user === undefined) {
+        const said = outcome.stderr
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find((line) => /^(fatal|error):/.test(line));
         throw new Err.GitCredentialSetupError(
-          "git did not report its global config file (git var GIT_CONFIG_GLOBAL needs git 2.42 or later).",
+          said
+            ? `git did not report its global config file: ${said}`
+            : "git did not report its global config file (git var GIT_CONFIG_GLOBAL needs git 2.42 or later).",
           outcome.code === -1 ? null : outcome.code
         );
       }

@@ -140,10 +140,10 @@ are load-bearing rather than stylistic — each records something this repo undi
   move or delete the user's entries to fix that; report them (`others`). Each setup and removal runs whole under
   `GitCredentialResets.exclusive` (one git config lock); host-list and reset-record changes go through
   `mutatePublic`, and reads of the record take its lock; `SharedFilePersistence` holds one state-file lock for every
-  write. `withFileLock` works like git's `<file>.lock`: never add a time-, mtime- or heartbeat-based takeover; a
-  waiter removes a lock only when its holder is provably dead (same host and PID namespace, pid gone or reused), by
-  rename-and-verify. Config files are edited as bytes (latin1 in, latin1 out), with the lock created at the file's
-  mode, and an append must leave every existing entry reading the same (`keepsEntries`). `clearSettings`/`clearAll` keep the reset
+  write. `withFileLock` works like git's `<file>.lock` (Brendan's ruling: no auto takeover): never let another
+  process remove a lock, by age, clock, pid or anything else; release only while the lock holds this acquisition's
+  token, keep a refused release pending for this process, and leave exit/signal cleanup to `exitCleanup.ts`. Config files are edited as bytes (latin1 in, latin1 out), with the lock created owner-only and set to
+  the file's mode read under the lock, and an append must leave every existing entry reading the same (`keepsEntries`). `clearSettings`/`clearAll` keep the reset
   record in the same write (`clearPublicExcept`). A plain `git push` in a draft does not build or publish; do not add
   a server hook or helper behaviour that pretends otherwise: that stays `core.script.push`. The token goes only to
   the `get` answer: never into git's argv, a config file, a log line or an error.

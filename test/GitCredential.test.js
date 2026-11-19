@@ -623,14 +623,29 @@ const CONTEXT_CASES = {
     "https://bluestep.net",
     "https://*.example.com",
     "https://gate*.bluestep.net",
-    "https://someone@gateway.bluestep.net",
     "*.bluestep.net",
     "GATEWAY.bluestep.net:8443",
   ],
 };
 
+// Patterns naming another user: git never asks them for a request b6p answers as it arrives, but a remote URL naming
+// that user brings them in, and one answering `username=b6p` makes git ask b6p next, so b6p counts them as `maybe`.
+const OTHER_USER_CASES = [
+  "https://someone@gateway.bluestep.net",
+  "https://alice@*.bluestep.net",
+  "alice@gateway.bluestep.net",
+];
+
 test("credentialContextMatch: yes, no or maybe for each pattern, as git 2.53's credential contexts decide", () => {
   const host = "gateway.bluestep.net";
+  for (const url of OTHER_USER_CASES) {
+    assert.strictEqual(credentialContextMatch(url, host), "maybe", url);
+  }
+  assert.strictEqual(
+    credentialContextMatch("https://alice@other.bluestep.net", host),
+    "no",
+    "another host still is not"
+  );
   for (const [want, urls] of Object.entries(CONTEXT_CASES)) {
     for (const url of urls) {
       assert.strictEqual(credentialContextMatch(url, host), want, String(url));
@@ -839,7 +854,8 @@ function faultOn(match, mode, before) {
 }
 const isWrite = (args) => args.some((a) => a === "--add" || a.startsWith("--unset"));
 const anyWrite = () => true;
-const addsHelper = (args) => args === null || (args.includes("--add") && args[args.length - 1] === GitCredential.DEFAULT_HELPER);
+const addsHelper = (args) =>
+  args === null || (args.includes("--add") && args[args.length - 1] === GitCredential.DEFAULT_HELPER);
 const userReset = (file) => () =>
   execFileSync("git", ["config", "--file", file, "--add", "credential.https://gateway.bluestep.net.helper", ""]);
 
@@ -1256,7 +1272,7 @@ test("two host stores over the same directory lose nothing and resurrect nothing
   assert.deepStrictEqual(await b.hosts(), ["three.bluestep.net", "two.bluestep.net"], "the forgotten host stays gone");
 });
 
-test("two processes recording at once lose nothing; a dead holder's lock is removed; a held one times out", async () => {
+test("two processes recording at once lose nothing; a held lock times out", async () => {
   const dir = fs.mkdtempSync(path.join(tmp, "persist-"));
   const dist = path.join(__dirname, "..", "dist", "index.js");
   const child = (prefix) =>
@@ -1275,10 +1291,10 @@ test("two processes recording at once lose nothing; a dead holder's lock is remo
 
   const lock = path.join(dir, `${PublicKeys.GIT_CREDENTIAL_HOSTS.replace(/[^A-Za-z0-9_.-]/g, "_")}.lock`);
   fs.writeFileSync(lock, lockStamp({ pid: deadPid() }));
-  assert.strictEqual(
-    await new GitCredentialHosts(new SharedFilePersistence(dir)).record("https://late.bluestep.net/"),
-    true
-  );
+  const late = new GitCredentialHosts(new SharedFilePersistence(dir));
+  // A dead holder's lock waits for a person; the record is then made.
+  fs.unlinkSync(lock);
+  assert.strictEqual(await late.record("https://late.bluestep.net/"), true);
   assert.ok(!fs.existsSync(lock), "released after use");
 
   const { withFileLock } = require("../dist/persistence/fileLock.js");
@@ -1394,7 +1410,12 @@ test("status reads the config in effect where it runs: a repository's local stor
 test("status counts helpers from the command line (GIT_CONFIG_COUNT), which git reads last", async () => {
   const config = scratchConfig();
   await makeService({ config }).service.setupGit();
-  const env = { ...config.env, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "credential.helper", GIT_CONFIG_VALUE_0: "store" };
+  const env = {
+    ...config.env,
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "credential.helper",
+    GIT_CONFIG_VALUE_0: "store",
+  };
   const status = await makeService({ config: { ...config, env } }).service.setupStatus();
   assert.strictEqual(status.hosts[0].configured, false);
   assert.deepStrictEqual(status.hosts[0].others, [{ key: "credential.helper", value: "store", file: null }]);
@@ -1506,7 +1527,10 @@ test("git older than 2.27.0 is refused for status and removal, and older than 2.
   }
   await assert.rejects(at("not git").setupStatus(), Err.GitCredentialSetupError);
   const missing = makeService({ git: async () => ({ code: -1, stdout: "", stderr: "" }) }).service;
-  await assert.rejects(missing.setupStatus(), (e) => e instanceof Err.GitCredentialSetupError && /installed/.test(e.message));
+  await assert.rejects(
+    missing.setupStatus(),
+    (e) => e instanceof Err.GitCredentialSetupError && /installed/.test(e.message)
+  );
 });
 
 test("clear keeps the record whole: a removal during a slow clear still finds b6p's pair", async () => {
@@ -1537,7 +1561,14 @@ test("clear keeps the record whole: a removal during a slow clear still finds b6
   const b6p = new core.B6PCore({
     fs: new core.MockFileSystem(),
     persistence,
-    prompt: { inputBox: async () => undefined, confirm: async () => undefined, info: noop, popup: async () => {}, warn: noop, error: noop },
+    prompt: {
+      inputBox: async () => undefined,
+      confirm: async () => undefined,
+      info: noop,
+      popup: async () => {},
+      warn: noop,
+      error: noop,
+    },
     logger,
     progress: { withProgress: async (tasks) => Promise.all(tasks.map((t) => t.execute())) },
   });
@@ -1580,7 +1611,9 @@ test("SharedFilePersistence clears all public state but the kept keys in one wri
   assert.strictEqual(writes, 1);
   const fresh = new SharedFilePersistence(dir);
   assert.strictEqual(await fresh.get("other"), undefined);
-  assert.deepStrictEqual(await fresh.get(PublicKeys.GIT_CREDENTIAL_RESETS), { f: { k: { state: "installed", helper: "h" } } });
+  assert.deepStrictEqual(await fresh.get(PublicKeys.GIT_CREDENTIAL_RESETS), {
+    f: { k: { state: "installed", helper: "h" } },
+  });
   assert.strictEqual(await fresh.get("absent"), undefined);
 });
 
@@ -1687,9 +1720,9 @@ test("a config file that is not UTF-8 keeps every byte: setup only adds b6p's en
     Buffer.from([0xe9]), // cp1252 é
     Buffer.from("\n# raw bytes "),
     Buffer.from(Array.from({ length: 128 }, (_, i) => 0x80 + i).filter((b) => b !== 0x0a)),
-    Buffer.from("\n[alias]\n\tx = \"bad "),
+    Buffer.from('\n[alias]\n\tx = "bad '),
     Buffer.from([0xc3, 0x28, 0xff, 0xfe]), // invalid UTF-8
-    Buffer.from("\" ; comment "),
+    Buffer.from('" ; comment '),
     Buffer.from([0xa0, 0xe9]),
     Buffer.from("\n[credential]\n\thelper = cache\n"),
   ]);
@@ -1817,7 +1850,9 @@ test("pairs are counted as git sees them: a reset on its header's line counts, a
 
   // One pair, its reset on the header's line: b6p's, but not lines it can cut out alone; kept and reported.
   const one = makeService({
-    config: scratchConfig(`[credential "https://gateway.bluestep.net"] helper =\n\thelper = ${GitCredential.DEFAULT_HELPER}\n`),
+    config: scratchConfig(
+      `[credential "https://gateway.bluestep.net"] helper =\n\thelper = ${GitCredential.DEFAULT_HELPER}\n`
+    ),
   });
   await one.resets.put(one.config.file, GW_KEY, { state: "installed", helper: GitCredential.DEFAULT_HELPER });
   const kept = await one.service.removeGit();
@@ -1838,7 +1873,11 @@ test("a relative GIT_CONFIG_GLOBAL names one file, the process directory's, for 
   assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), ["", GitCredential.DEFAULT_HELPER]);
   assert.strictEqual((await service.setupStatus()).configured, true);
   const repo = scratchRepo(config.env);
-  assert.strictEqual((await service.setupStatus({ cwd: repo })).configured, true, "the same file from another directory");
+  assert.strictEqual(
+    (await service.setupStatus({ cwd: repo })).configured,
+    true,
+    "the same file from another directory"
+  );
   assert.deepStrictEqual(await service.removeGit(), { removed: ["https://gateway.bluestep.net"], keptResets: [] });
   assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), []);
 });
@@ -1855,7 +1894,9 @@ function startOf(pid) {
     if (process.platform === "win32") {
       return null;
     }
-    return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim().replace(/\s+/g, "_");
+    return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" })
+      .trim()
+      .replace(/\s+/g, "_");
   } catch {
     return null;
   }
@@ -1890,64 +1931,24 @@ test("the lock never has two holders, even when a holder's event loop is blocked
       const proc = require("node:child_process").spawn(process.execPath, ["-e", code], { stdio: "inherit" });
       proc.on("exit", (status) => (status === 0 ? resolve() : reject(new Error(`${name} exited ${status}`))));
     });
-  await Promise.all([
-    child("A", 0, "const end = Date.now() + 6500; while (Date.now() < end) {}"),
-    child("B", 400, ""),
-  ]);
-  const marks = fs.readFileSync(log, "utf8").trim().split("\n").map((l) => l.split(" "));
+  await Promise.all([child("A", 0, "const end = Date.now() + 6500; while (Date.now() < end) {}"), child("B", 400, "")]);
+  const marks = fs
+    .readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => l.split(" "));
   const at = (who, what) => Number((marks.find((m) => m[0] === who && m[1] === what) ?? [])[2]);
   assert.ok(at("A", "out") > 0 && at("B", "in") > 0, marks.join("|"));
   assert.ok(at("B", "in") >= at("A", "out"), "B entered only after A left");
   assert.ok(!fs.existsSync(lock));
 });
 
-test("a lock whose holder on this host has exited is removed at once, and the timeout names the lock and its holder", async () => {
-  const { withFileLock } = require("../dist/persistence/fileLock.js");
-  const lock = lockIn();
-  fs.writeFileSync(lock, lockStamp({ pid: deadPid(), start: "1" }));
-  const started = Date.now();
-  assert.strictEqual(await withFileLock(lock, async () => "in", { timeoutMs: 2000 }), "in");
-  assert.ok(Date.now() - started < 1000);
-  assert.ok(!fs.existsSync(lock));
-
-  // A live holder: the wait ends with a message that says what to do.
-  const held = lockStamp({ pid: process.ppid, start: "-" });
-  fs.writeFileSync(lock, held);
-  const error = await withFileLock(lock, async () => "never", { timeoutMs: 200 }).then(
-    () => null,
-    (e) => e
-  );
-  assert.ok(error);
-  assert.ok(error.message.includes(lock), error.message);
-  assert.ok(error.message.includes(`process ${process.ppid} on ${os.hostname()}`), error.message);
-  assert.ok(error.message.includes(`If no b6p or VS Code process is running, delete ${lock}.`), error.message);
-  assert.strictEqual(fs.readFileSync(lock, "utf8"), held, "never removed");
-});
-
-test("a lock whose pid now names another process (pid reuse) is removed; one whose process is still the holder is not", async () => {
-  const { withFileLock } = require("../dist/persistence/fileLock.js");
-  if (startOf(process.pid) === null) {
-    return; // No start time on this platform (Windows): a live pid always counts as the holder.
-  }
-  const sleeper = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"]);
-  try {
-    await sleepMs(100);
-    const lock = lockIn();
-    fs.writeFileSync(lock, lockStamp({ pid: sleeper.pid, start: "1" }));
-    assert.strictEqual(await withFileLock(lock, async () => "in", { timeoutMs: 2000 }), "in", "the pid was reused");
-    const real = lockStamp({ pid: sleeper.pid, start: startOf(sleeper.pid) });
-    fs.writeFileSync(lock, real);
-    await assert.rejects(withFileLock(lock, async () => "never", { timeoutMs: 200 }), /Timed out/);
-    assert.strictEqual(fs.readFileSync(lock, "utf8"), real);
-  } finally {
-    sleeper.kill();
-  }
-});
-
-test("a lock is never removed unless its holder is certainly gone: another host, a partial stamp, another namespace, EPERM", async () => {
+test("a lock is never removed by another process: a dead holder, another host, a partial stamp, any age", async () => {
   const { withFileLock } = require("../dist/persistence/fileLock.js");
   const dead = deadPid();
   const kept = [
+    lockStamp({ pid: dead }),
+    `b6p-lock pid=${dead} host=${os.hostname()} token=0123456789abcdef01234567`,
     lockStamp({ pid: dead, host: "another-host" }),
     lockStamp({ pid: dead, ns: "pid:[1]" }),
     `b6p-lock pid=${dead} host=${os.hostname()}`,
@@ -1962,50 +1963,252 @@ test("a lock is never removed unless its holder is certainly gone: another host,
     fs.writeFileSync(lock, stamp);
     const old = new Date(Date.now() - 86_400_000);
     fs.utimesSync(lock, old, old); // A day old: age never matters.
-    await assert.rejects(withFileLock(lock, async () => "never", { timeoutMs: 150 }), /Timed out/, stamp);
+    await assert.rejects(
+      withFileLock(lock, async () => "never", { timeoutMs: 150 }),
+      /Timed out/,
+      stamp
+    );
     assert.strictEqual(fs.readFileSync(lock, "utf8"), stamp, stamp);
   }
 });
 
-test("two waiters that both proved the same holder dead: one takes the lock, the other puts it back", async () => {
+// ── round 6: no takeover at all, pending releases, crash cleanup, directories, users, modes, git's errors ──
+
+test("a dead holder's lock is never removed: the wait ends naming the lock, its holder, and what to do", async () => {
   const { withFileLock } = require("../dist/persistence/fileLock.js");
   const lock = lockIn();
-  fs.writeFileSync(lock, lockStamp({ pid: deadPid() }));
-  let inside = 0;
-  let most = 0;
-  let firstInside = null;
-  const entered = new Promise((resolve) => (firstInside = resolve));
-  let moves = 0;
-  // Both waiters have read the dead stamp before either moves it; the second moves only once the first holds a new lock.
-  const gate = async (original, from, ...rest) => {
-    if (path.resolve(String(from)) === lock) {
-      const n = ++moves;
-      if (n === 1) {
-        await sleepMs(150);
-      } else if (n === 2) {
-        await Promise.race([entered, sleepMs(3000)]);
-      }
-    }
-    return original(from, ...rest);
-  };
-  let restored = 0;
-  const link = (original, ...args) => {
-    restored++;
-    return original(...args);
-  };
-  const work = async () => {
-    inside++;
-    most = Math.max(most, inside);
-    firstInside();
-    await sleepMs(300);
-    inside--;
-  };
-  await withPatchedFs({ rename: gate, link }, () =>
-    Promise.all([withFileLock(lock, work, { timeoutMs: 5000 }), withFileLock(lock, work, { timeoutMs: 5000 })])
+  const dead = deadPid();
+  const stamp = lockStamp({ pid: dead, start: "1" }); // Round 5 took this one over: same host and namespace, pid gone.
+  fs.writeFileSync(lock, stamp);
+  const error = await withFileLock(lock, async () => "never", { timeoutMs: 300 }).then(
+    () => null,
+    (e) => e
   );
-  assert.strictEqual(most, 1, "the two never held the lock together");
-  assert.strictEqual(restored, 1, "the second waiter found the first's lock where the dead one was, and put it back");
-  assert.deepStrictEqual(fs.readdirSync(path.dirname(lock)), []);
+  assert.ok(error, "not taken over");
+  assert.ok(error.message.includes(`held by process ${dead} on ${os.hostname()}`), error.message);
+  assert.ok(error.message.includes(`If no b6p or VS Code process is running, delete ${lock}.`), error.message);
+  assert.strictEqual(fs.readFileSync(lock, "utf8"), stamp);
+  // An empty lock (a process stopped between creating and writing it) says so.
+  fs.writeFileSync(lock, "");
+  await assert.rejects(
+    withFileLock(lock, async () => "never", { timeoutMs: 100 }),
+    /The lock is empty/
+  );
+});
+
+test("a release refused every time stays pending, and this process removes that lock on its next acquisition", async () => {
+  const { withFileLock } = require("../dist/persistence/fileLock.js");
+  const lock = lockIn();
+  const refuse = async (original, target, ...rest) => {
+    if (path.resolve(String(target)) === lock) {
+      throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    }
+    return original(target, ...rest);
+  };
+  await withPatchedFs({ unlink: refuse, rename: refuse }, () => withFileLock(lock, async () => "first"));
+  assert.ok(fs.existsSync(lock), "left by the refused release");
+  const started = Date.now();
+  assert.strictEqual(await withFileLock(lock, async () => "next", { timeoutMs: 1000 }), "next");
+  assert.ok(Date.now() - started < 500, "recovered at once, not after a wait");
+  assert.ok(!fs.existsSync(lock));
+});
+
+test("a process stopped by SIGINT or SIGTERM removes its locks and git's config lock, and stops with that signal", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
+  const dist = path.join(__dirname, "..", "dist", "index.js");
+  const fileLock = path.join(__dirname, "..", "dist", "persistence", "fileLock.js");
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    const dir = fs.mkdtempSync(path.join(tmp, "sig-"));
+    const lock = path.join(dir, "state.lock");
+    const config = path.join(dir, "gitconfig");
+    fs.writeFileSync(config, "[user]\n\tname = x\n");
+    const ready = path.join(dir, "ready");
+    const code =
+      `const c = require(${JSON.stringify(dist)}); const fsp = require("fs/promises"); const fs = require("fs");` +
+      `const { withFileLock } = require(${JSON.stringify(fileLock)});` +
+      `setInterval(() => {}, 1000);` +
+      `const rename = fsp.rename; fsp.rename = (a, b) => String(a).endsWith(".lock") ? new Promise(() => {}) : rename(a, b);` +
+      `withFileLock(${JSON.stringify(lock)}, async () => {` +
+      `  c.editConfigFile(${JSON.stringify(config)}, (t) => t + "[a]\\n\\tb = 1\\n");` +
+      `  setTimeout(() => fs.writeFileSync(${JSON.stringify(ready)}, ""), 200);` +
+      `  await new Promise(() => {});` +
+      `});`;
+    const proc = require("node:child_process").spawn(process.execPath, ["-e", code], { stdio: "inherit" });
+    for (let i = 0; i < 100 && !fs.existsSync(ready); i++) {
+      await sleepMs(50);
+    }
+    assert.ok(fs.existsSync(lock) && fs.existsSync(`${config}.lock`), `${signal}: both locks held`);
+    const ended = new Promise((resolve) => proc.on("exit", (status, sig) => resolve({ status, sig })));
+    proc.kill(signal);
+    const { status, sig } = await ended;
+    assert.strictEqual(sig, signal, `${signal}: stopped by the signal (status ${status})`);
+    assert.ok(!fs.existsSync(lock), `${signal}: b6p's lock removed`);
+    assert.ok(!fs.existsSync(`${config}.lock`), `${signal}: git's config lock removed`);
+    assert.strictEqual(fs.readFileSync(config, "utf8"), "[user]\n\tname = x\n");
+  }
+});
+
+test("a deleted ~/.b6p is created again: the next write succeeds instead of timing out", async () => {
+  const dir = path.join(fs.mkdtempSync(path.join(tmp, "persist-")), "b6p");
+  const p = new SharedFilePersistence(dir);
+  await p.set("a", 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+  const started = Date.now();
+  await p.set("b", 2);
+  assert.ok(Date.now() - started < 2000);
+  assert.strictEqual(await new SharedFilePersistence(dir).get("b"), 2);
+});
+
+test("the lock under natural timing: many processes, never two inside (a wx marker), nothing left", async () => {
+  const fileLock = path.join(__dirname, "..", "dist", "persistence", "fileLock.js");
+  const script =
+    `const fs = require("fs"); const { withFileLock } = require(${JSON.stringify(fileLock)}); const D = process.argv[1];` +
+    `(async () => { for (let i = 0; i < 3; i++) { await withFileLock(D + "/l.lock", async () => {` +
+    `  try { fs.writeFileSync(D + "/inside", "", { flag: "wx" }); } catch { fs.appendFileSync(D + "/overlap", "x"); return; }` +
+    `  await new Promise((r) => setTimeout(r, 2)); fs.unlinkSync(D + "/inside");` +
+    `}, { timeoutMs: 15000, retryMs: 1 }); } })().catch((e) => { fs.appendFileSync(D + "/err", e.message); });`;
+  let overlaps = 0;
+  const started = Date.now();
+  for (let trial = 0; trial < 12; trial++) {
+    const dir = fs.mkdtempSync(path.join(tmp, "stress-"));
+    await Promise.all(
+      Array.from(
+        { length: 8 },
+        () =>
+          new Promise((resolve) =>
+            require("node:child_process")
+              .spawn(process.execPath, ["-e", script, dir], { stdio: "inherit" })
+              .on("exit", resolve)
+          )
+      )
+    );
+    overlaps += fs.existsSync(path.join(dir, "overlap")) ? 1 : 0;
+    assert.ok(
+      !fs.existsSync(path.join(dir, "err")),
+      fs.existsSync(path.join(dir, "err")) ? fs.readFileSync(path.join(dir, "err"), "utf8") : ""
+    );
+    assert.deepStrictEqual(fs.readdirSync(dir), [], "nothing left behind");
+  }
+  assert.strictEqual(overlaps, 0);
+  assert.ok(Date.now() - started < 15_000, `${Date.now() - started} ms`);
+});
+
+test("a helper on a pattern naming another user may hand git username=b6p, so b6p answers: not configured", async () => {
+  // Real git over loopback https: a reset, then an alice@ helper that answers username=b6p and keeps what it is told
+  // to store, then b6p. A fetch from https://alice@<host> gets the token from b6p and git hands it to alice's helper.
+  const port = 40000 + (process.pid % 20000);
+  const host = `gateway.bluestep.net:${port}`;
+  const work = fs.mkdtempSync(path.join(tmp, "tls-"));
+  const kept = path.join(work, "alice-kept").replace(/\\/g, "/");
+  const alice = `!f() { if [ "$1" = get ]; then echo username=b6p; elif [ "$1" = store ]; then cat >> '${kept}'; fi; }; f`;
+  const stateFile = path.join(work, "state.json");
+  fs.writeFileSync(stateFile, JSON.stringify({ token: TOKEN, gatewayUrl: `https://${host}`, public: {} }));
+  const script = path.join(__dirname, "support", "GitCredentialHelper.js").replace(/\\/g, "/");
+  const helper = `!"${process.execPath.replace(/\\/g, "/")}" "${script}" "${stateFile.replace(/\\/g, "/")}"`;
+  const config = scratchConfig();
+  const add = (key, value) => execFileSync("git", ["config", "--global", "--add", key, value], { env: config.env });
+  const key = `credential.https://${host}.helper`;
+  add(key, "");
+  add(`credential.https://alice@${host}.helper`, alice);
+  add(`credential.https://${host}/.helper`, helper); // The trailing slash: a new section, after alice's.
+
+  const openssl = spawnSync("openssl", ["version"]);
+  if (process.platform !== "win32" && openssl.status === 0) {
+    execFileSync(
+      "openssl",
+      [
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-subj",
+        "/CN=gateway.bluestep.net",
+        "-days",
+        "1",
+        "-keyout",
+        path.join(work, "key.pem"),
+        "-out",
+        path.join(work, "cert.pem"),
+      ],
+      { stdio: "ignore" }
+    );
+    const https = require("node:https");
+    const server = https.createServer(
+      { key: fs.readFileSync(path.join(work, "key.pem")), cert: fs.readFileSync(path.join(work, "cert.pem")) },
+      (req, res) => {
+        const basic = /^Basic (.+)$/.exec(req.headers.authorization ?? "");
+        const password = basic ? Buffer.from(basic[1], "base64").toString("utf8").split(":").slice(1).join(":") : "";
+        if (password !== TOKEN) {
+          res.writeHead(401, { "WWW-Authenticate": 'Basic realm="BlueStep Git"' });
+          res.end();
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/x-git-upload-pack-advertisement" });
+        res.end("001e# service=git-upload-pack\n0000");
+      }
+    );
+    await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+    try {
+      await new Promise((resolve) => {
+        require("node:child_process")
+          .spawn(
+            "git",
+            [
+              "-c",
+              "http.sslVerify=false",
+              "-c",
+              `http.curloptResolve=gateway.bluestep.net:${port}:127.0.0.1`,
+              "ls-remote",
+              `https://alice@${host}/kb.git`,
+            ],
+            { env: { ...config.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" }, stdio: "ignore" }
+          )
+          .on("exit", resolve);
+      });
+    } finally {
+      server.close();
+    }
+    assert.ok(
+      fs.existsSync(kept) && fs.readFileSync(kept, "utf8").includes(TOKEN),
+      "git handed b6p's token to alice's helper"
+    );
+  }
+  const status = await makeService({ config, gatewayUrl: `https://${host}` }).service.setupStatus({ helper });
+  assert.strictEqual(status.hosts[0].configured, false);
+  assert.deepStrictEqual(status.hosts[0].alsoAsked, [alice]);
+});
+
+test("the config file's mode is read under git's lock: a mode changed while b6p waited is the one kept", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
+  const config = scratchConfig("[credential]\n\thelper = cache\n");
+  fs.chmodSync(config.file, 0o644);
+  fs.writeFileSync(`${config.file}.lock`, ""); // Another git is writing it.
+  const { service } = makeService({ config });
+  const setup = service.setupGit();
+  await sleepMs(300);
+  fs.chmodSync(config.file, 0o600); // That writer leaves the file owner-only, then lets go.
+  fs.unlinkSync(`${config.file}.lock`);
+  await setup;
+  assert.strictEqual(fs.statSync(config.file).mode & 0o777, 0o600);
+  assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), ["", GitCredential.DEFAULT_HELPER]);
+});
+
+test("a broken global config: git's own message, not a missing version", async () => {
+  const config = scratchConfig("[credential\n\thelper = x\n");
+  const error = await makeService({ config })
+    .service.setupStatus()
+    .then(
+      () => null,
+      (e) => e
+    );
+  assert.ok(error instanceof Err.GitCredentialSetupError);
+  assert.match(error.message, /bad config line 1/);
+  assert.strictEqual(error.exitCode, 128);
 });
 
 test("a pull whose host cannot be recorded still succeeds", async () => {

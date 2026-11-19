@@ -562,9 +562,16 @@ export class GitCredentialService {
       if (outcome.code === -1) {
         throw new Err.GitCredentialSetupError("git could not be run; it may not be installed.", null);
       }
-      const version = parseGitVersion(outcome.stdout);
+      const version = outcome.code === 0 ? parseGitVersion(outcome.stdout) : null;
       if (version === null) {
-        throw new Err.GitCredentialSetupError("git did not report a version b6p recognises.", outcome.code);
+        // git reads its config even for --version, and exits 128 on a broken one: say what git said.
+        const said = gitSaid(outcome.stderr);
+        throw new Err.GitCredentialSetupError(
+          said
+            ? `git failed (exit ${outcome.code}): ${said}`
+            : `git did not report a version b6p recognises (exit ${outcome.code}).`,
+          outcome.code
+        );
       }
       return version;
     });
@@ -804,6 +811,15 @@ export class GitCredentialService {
   }
 }
 
+// The line of git's stderr that says what went wrong: its first `fatal:` or `error:` line, else its first line.
+function gitSaid(stderr: string): string {
+  const lines = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  return lines.find((line) => /^(fatal|error):/.test(line)) ?? lines[0] ?? "";
+}
+
 // A string as the bytes of its UTF-8 encoding, one latin1 character each: the form config file edits work in.
 const asBytes = (text: string): string => Buffer.from(text, "utf8").toString("latin1");
 
@@ -839,7 +855,7 @@ function requireSuccess(outcome: GitConfigOutcome, what: "read" | "add" | "remov
     throw new Err.GitCredentialSetupError("git could not be run; it may not be installed.", null);
   }
   const verb = { read: "reading", add: "adding to", remove: "removing from" }[what];
-  const detail = outcome.stderr.trim().split(/\r?\n/)[0] ?? "";
+  const detail = gitSaid(outcome.stderr);
   throw new Err.GitCredentialSetupError(
     `git config failed ${verb} the user's git config (exit ${outcome.code})${detail ? `: ${detail}` : ""}.`,
     outcome.code

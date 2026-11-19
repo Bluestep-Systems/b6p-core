@@ -38,9 +38,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `credentialHostOf`, `requestedCredentialHost`, `Err.GitCredentialSetupError` and the result types.
 - **`Persistence.withLock(name, work)`** (optional): an exclusive lock across every process using the same store,
   held for as long as `work` runs. `SharedFilePersistence` implements it with a lockfile in its directory that works
-  as git's `<file>.lock` does: never taken over for its age; removed by a waiter only when its holder (pid, host,
-  start time, PID namespace in the stamp) has certainly exited; and a 10 s wait that ends naming the lockfile and its
-  holder. Release retries a transient `EPERM`/`EBUSY`/`EACCES`. Core uses it for the git-credential host list, reset records and git
+  as git's `<file>.lock` does: never removed by another process; released only while it holds its own token (a
+  refused release stays pending and is finished by the same process); removed on exit, SIGINT, SIGTERM, SIGHUP and a
+  fatal uncaught exception; and a 10 s wait that ends naming the lockfile and its holder. A deleted directory is
+  created again. Core uses it for the git-credential host list, reset records and git
   config changes; without it those are serialized within the process only.
 - **`Persistence.clearPublicExcept(keep)`** (optional): clear public state but the named keys in one write.
   `SharedFilePersistence` implements it.

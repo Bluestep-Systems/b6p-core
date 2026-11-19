@@ -472,7 +472,8 @@ await core.gitCredential.removeGit(); // { removed, keptResets: [{ url, file, re
   (`git var GIT_CONFIG_GLOBAL`, chosen by git's own rule; never worked out from `HOME` or `USERPROFILE`, which Git
   for Windows does not always use; a relative `GIT_CONFIG_GLOBAL` is resolved against the process's directory, once,
   for every read, edit and record). The pair is written in one edit under git's own lock on that file
-  (`<file>.lock`, created exclusively with the file's mode and renamed over the file, as every git writer does; a
+  (`<file>.lock`, created exclusively and owner-only, set to the file's mode as read under the lock, and renamed over
+  the file, as every git writer does; a
   symlink is followed to its target, even a missing one, as git's `resolve_symlink` does, so it stays a link). The
   file never holds one line without the other, and no other git writer's change lands in between. The file is edited
   as bytes, so a value that is not UTF-8 is kept exactly; a last value continued with a trailing `\` is ended with an
@@ -486,8 +487,9 @@ await core.gitCredential.removeGit(); // { removed, keptResets: [{ url, file, re
   as none, by the user when it names one, and by path prefix (escapes normalized, dot segments resolved). Any other
   pattern (no scheme, a `%` in the host, port 0, `https://` with no host at all, or an empty subsection,
   `[credential ""]`) is matched as git's partial-URL fallback does: only the parts it names, percent-decoded, compared
-  exactly, so `https://` and `""` apply to every https request; since that fallback compares the username config has
-  set so far, any `credential.username` entry makes a partial pattern naming another user `maybe`. Each entry is
+  exactly, so `https://` and `""` apply to every https request. A pattern naming any user (`https://alice@<host>`)
+  is `maybe` for its host: a remote URL naming that user brings its helper in, and one that answers `username=b6p`
+  makes git ask b6p next, which answers, and git then hands the token to that helper on `store`. Each entry is
   `yes` (every request b6p answers for the host), `no` or `maybe` (only some: a path, the `b6p` user, a partial
   pattern's host spelling). In doubt, another helper counts as asked, and a reset or b6p's own entry as not applying
   when it would hide one, so `configured` is true only when git certainly asks b6p alone; setup repairs any host
@@ -527,15 +529,15 @@ await core.gitCredential.removeGit(); // { removed, keptResets: [{ url, file, re
   another's. Each record or forget of a tenant host, and each reset record, is also one read-modify-write under
   `Persistence.withLock`, and each setup or removal holds one git config lock (`b6p:git_credential_config`) from
   reading the config to settling the last record, so two never interleave, in one process or several. A lockfile
-  (`withFileLock`) works as git's `<file>.lock` does: created exclusively, held for as long as the work runs, and
-  never taken over for its age or by any clock. Its stamp names the holder's process id, host name, start time (Linux
-  `/proc/<pid>/stat`, macOS `ps -o lstart=`; not on Windows) and PID namespace (Linux). A waiter removes a lock only
-  when its holder is certainly gone: same host and namespace, and the pid no longer exists or now belongs to a
-  process with another start time. Another host's lock, a partial stamp, or a pid b6p may not signal is never
-  removed. The removal renames the lock aside and deletes it only if it still holds the dead stamp (otherwise it is
-  linked back), and release does the same with its own stamp, retrying a transient `EPERM`/`EBUSY`/`EACCES`. After
-  10 s a waiter gives up with an error naming the lockfile and its holder: "If no b6p or VS Code process is running,
-  delete <path>." A pull whose host cannot be recorded still succeeds.
+  (`withFileLock`) works as git's `<file>.lock` does: created exclusively, its stamp (process id, host name, a
+  token) written through the same handle at once, held for as long as the work runs, and **never removed by another
+  process**, whatever its age or holder. Release removes it only while it holds this acquisition's token, retrying a
+  transient `EPERM`/`EBUSY`/`EACCES`; a release still refused stays pending, and this process (only this one) removes
+  that lock on its next acquisition of it and on exit. As git's tempfile.c does, b6p removes the locks it holds, and
+  git's `<config>.lock` while it is editing a config file (only while it is still the file it created), when the
+  process exits, gets SIGINT, SIGTERM or SIGHUP (then stopping with that signal when nothing else handles it), or dies
+  of an uncaught exception. A deleted `~/.b6p` is created again. After 10 s a waiter gives up with an error naming the
+  lockfile and its holder (or saying the lock is empty): "If no b6p or VS Code process is running, delete <path>." A pull whose host cannot be recorded still succeeds.
 - The helper command defaults to `GitCredential.DEFAULT_HELPER`; pass `{ helper }` to write another.
 - The token never reaches git's argv, a config file, a log line or an error message. Failures of `git config`, and
   of a config file edit, are `Err.GitCredentialSetupError` (`exitCode`).

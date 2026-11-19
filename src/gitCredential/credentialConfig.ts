@@ -1,5 +1,4 @@
 import * as path from "node:path";
-import { GitCredential } from "../constants/GitCredential";
 
 /**
  * One `credential.helper` or `credential.<url>.helper` entry, or an `includeIf.<condition>.path`
@@ -330,7 +329,7 @@ function matchHost(have: string, pattern: string): boolean {
  * sets must equal the request's as written (case-sensitive), which is all git compares.
  * @lastreviewed null
  */
-function partialMatch(url: string, host: string, usernameMayChange: boolean): CredentialContextMatch {
+function partialMatch(url: string, host: string): CredentialContextMatch {
   const protoEnd = url.indexOf("://");
   const cp = protoEnd === -1 ? 0 : protoEnd + 3;
   const at = url.indexOf("@", cp);
@@ -367,12 +366,8 @@ function partialMatch(url: string, host: string, usernameMayChange: boolean): Cr
     match = "maybe";
   }
   if (username !== undefined) {
-    // b6p answers only requests with no username or `b6p`; but this fallback compares the request's
-    // username as config has set it so far (credential.c `credential_config_callback`), so where a
-    // `credential.username` entry may have set another, the pattern may match.
-    if (username !== GitCredential.USERNAME && !usernameMayChange) {
-      return "no";
-    }
+    // A pattern naming any user may apply: the remote URL may name that user, and the helper may then
+    // answer `username=b6p`, after which git asks b6p, which answers (see credentialContextMatch).
     match = "maybe";
   }
   if (wantPath !== undefined) {
@@ -396,28 +391,23 @@ function partialMatch(url: string, host: string, usernameMayChange: boolean): Cr
  *   request.
  *
  * A request's path, the case of its host and a username in the remote URL are not known here, so
- * an entry that depends on them is `maybe`. `usernameMayChange` (the config has a
- * `credential.username` or `credential.<url>.username` entry) makes a partial pattern naming any
- * user `maybe` too: the fallback compares the username config has set so far, which can be any.
+ * an entry that depends on them is `maybe`. A pattern naming any user is `maybe` for the host it
+ * names, never `no`: a remote URL naming that user (`https://alice@host`) brings its helper in, which
+ * may answer `username=b6p` without a password, and git then asks b6p, which answers with the token
+ * and hands it to every helper asked on `store`. (The partial-URL fallback also compares the
+ * username a `credential.username` entry has set so far, which can be any.)
  * @lastreviewed null
  */
-export function credentialContextMatch(
-  url: string | null,
-  host: string,
-  usernameMayChange = false
-): CredentialContextMatch {
+export function credentialContextMatch(url: string | null, host: string): CredentialContextMatch {
   if (url === null) {
     return "yes";
   }
   const pattern = normalizePattern(url);
   if (pattern === null) {
-    return partialMatch(url, host, usernameMayChange);
+    return partialMatch(url, host);
   }
   const target = splitPort(host.toLowerCase());
   if (pattern.scheme !== "https") {
-    return "no";
-  }
-  if (pattern.user !== null && pattern.user !== GitCredential.USERNAME) {
     return "no";
   }
   if (!matchHost(target.host, pattern.host)) {
@@ -478,7 +468,6 @@ export function askedFor(
   let foreign: HelperEntry[] = [];
   let surelyB6p = false;
   let clearedB6p: HelperEntry | null = null;
-  const usernameMayChange = entries.some((e) => e.kind === "username");
   for (const entry of entries) {
     if (entry.kind === "username") {
       continue;
@@ -488,7 +477,7 @@ export function askedFor(
       foreign.push(entry);
       continue;
     }
-    const match = credentialContextMatch(entry.url, host, usernameMayChange);
+    const match = credentialContextMatch(entry.url, host);
     if (match === "no") {
       continue;
     }

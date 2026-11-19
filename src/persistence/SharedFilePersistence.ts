@@ -192,9 +192,13 @@ export class SharedFilePersistence implements Persistence {
   private mutateState(change: (state: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
     return enqueueFileMutation(this.statePath, async () => {
       await this.ensureDir();
-      await withFileLock(`${this.statePath}.lock`, async () => {
-        await this.saveState(change(await this.loadState()));
-      });
+      await withFileLock(
+        `${this.statePath}.lock`,
+        async () => {
+          await this.saveState(change(await this.loadState()));
+        },
+        { ensureDir: () => this.recreateDir() }
+      );
     });
   }
 
@@ -267,8 +271,8 @@ export class SharedFilePersistence implements Persistence {
    * Run `work` holding `<configDir>/<name>.lock`, created exclusively and removed after, so the CLI
    * and the extension (and two CLI processes) take turns. Within this process the same lock is
    * also queued, so two instances over the same directory do not poll each other. The lock is held
-   * for as long as `work` runs ({@link withFileLock}); one is removed by a waiter only when its
-   * holder has certainly exited, never for its age; waiting gives up after 10 s, naming the lockfile.
+   * for as long as `work` runs ({@link withFileLock}) and never removed by another process; waiting
+   * gives up after 10 s, naming the lockfile and saying to delete it if no b6p process is running.
    * @lastreviewed null
    */
   async withLock<T>(name: string, work: () => Promise<T>): Promise<T> {
@@ -277,8 +281,8 @@ export class SharedFilePersistence implements Persistence {
     const lockPath = path.join(this.configDir, `${name.replace(/[^A-Za-z0-9_.-]/g, "_")}.lock`);
     const tail = LOCK_QUEUES.get(lockPath) ?? Promise.resolve();
     const run = tail.then(
-      () => withFileLock(lockPath, work),
-      () => withFileLock(lockPath, work)
+      () => withFileLock(lockPath, work, { ensureDir: () => this.recreateDir() }),
+      () => withFileLock(lockPath, work, { ensureDir: () => this.recreateDir() })
     );
     LOCK_QUEUES.set(
       lockPath,
@@ -288,6 +292,12 @@ export class SharedFilePersistence implements Persistence {
   }
 
   // ── Internal: dir + key bootstrap ─────────────────────────────────
+
+  // The directory went away after it was made (a person deleted ~/.b6p): make it again, locked down.
+  private recreateDir(): Promise<void> {
+    this.dirReady = false;
+    return this.ensureDir();
+  }
 
   private async ensureDir(): Promise<void> {
     if (this.dirReady) {
