@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-19
+
 ### Added
 
 - **`core.gitCredential`: b6p as git's credential helper** (ClickUp CU-1k5g91bqjd7). Plain `git pull` and `git push`
