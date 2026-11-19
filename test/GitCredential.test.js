@@ -43,6 +43,15 @@ fs.writeFileSync(EMPTY, "");
 let configN = 0;
 
 /** Public-state persistence in memory (all the store and the service touch). */
+/**
+ * Records keyed by the form two spellings of one config file share on this platform (git for Windows reports
+ * C:/Users/…, path.join gives C:\Users\…), so a test compares the file, not its spelling.
+ */
+function byFile(all) {
+  const style = process.platform === "win32" ? "win32" : "posix";
+  return Object.fromEntries(Object.entries(all).map(([file, keys]) => [core.configPathKey(file, style), keys]));
+}
+
 function memoryPersistence(initial = {}) {
   const data = { ...initial };
   return {
@@ -795,11 +804,14 @@ test("setup records each reset it writes: file, exact key and the helper after i
   const config = scratchConfig();
   const { service, resets, persistence } = makeService({ config });
   await service.setupGit();
-  assert.deepStrictEqual(await resets.all(), {
-    [config.file]: {
-      "credential.https://gateway.bluestep.net.helper": { state: "installed", helper: GitCredential.DEFAULT_HELPER },
-    },
-  });
+  assert.deepStrictEqual(
+    byFile(await resets.all()),
+    byFile({
+      [config.file]: {
+        "credential.https://gateway.bluestep.net.helper": { state: "installed", helper: GitCredential.DEFAULT_HELPER },
+      },
+    })
+  );
   assert.ok(persistence.data[PublicKeys.GIT_CREDENTIAL_RESETS]);
   await service.removeGit();
   assert.deepStrictEqual(await resets.all(), {});
@@ -889,11 +901,14 @@ test("a setup that stopped after writing is finished by a retry with one pair, a
     "",
     GitCredential.DEFAULT_HELPER,
   ]);
-  assert.deepStrictEqual(await retry.resets.all(), {
-    [config.file]: {
-      "credential.https://gateway.bluestep.net.helper": { state: "installed", helper: GitCredential.DEFAULT_HELPER },
-    },
-  });
+  assert.deepStrictEqual(
+    byFile(await retry.resets.all()),
+    byFile({
+      [config.file]: {
+        "credential.https://gateway.bluestep.net.helper": { state: "installed", helper: GitCredential.DEFAULT_HELPER },
+      },
+    })
+  );
   await retry.service.removeGit();
   assert.deepStrictEqual(gitGetAll(config.env, "credential.https://gateway.bluestep.net.helper"), []);
   assert.deepStrictEqual(gitGetAll(config.env, "credential.helper"), ["cache"]);
@@ -1091,9 +1106,10 @@ test("two setups at once, in one process, write one pair and one record", async 
   const other = makeService({ config, persistence });
   await Promise.all([service.setupGit(), service.setupGit(), other.service.setupGit()]);
   assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), ["", GitCredential.DEFAULT_HELPER]);
-  assert.deepStrictEqual(await resets.all(), {
-    [config.file]: { [GW_KEY]: { state: "installed", helper: GitCredential.DEFAULT_HELPER } },
-  });
+  assert.deepStrictEqual(
+    byFile(await resets.all()),
+    byFile({ [config.file]: { [GW_KEY]: { state: "installed", helper: GitCredential.DEFAULT_HELPER } } })
+  );
   await Promise.all([service.removeGit(), other.service.setupGit()]);
   const values = gitGetAll(config.env, GW_KEY);
   assert.ok(
@@ -1200,6 +1216,36 @@ test("on Windows, a reset recorded under b6p's backslash path is still found und
   const result = await service.removeGit();
   assert.deepStrictEqual(result, { removed: ["https://gateway.bluestep.net"], keptResets: [] });
   assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), [], "b6p's reset went with its helper");
+});
+
+test("on Windows, the reset record holds one spelling per file: every write and read meets the same entry", async () => {
+  const installed = { state: "installed", helper: GitCredential.DEFAULT_HELPER };
+  const persistence = memoryPersistence();
+  const resets = new GitCredentialResets(persistence, "win32");
+  await resets.put("C:/Users/Example/.gitconfig", "credential.https://a.helper", installed);
+  await resets.put("C:\\Users\\Example\\.gitconfig", "credential.https://b.helper", installed);
+  assert.deepStrictEqual(await resets.all(), {
+    "C:/Users/Example/.gitconfig": { "credential.https://a.helper": installed, "credential.https://b.helper": installed },
+  });
+  await resets.put("c:\\users\\example\\.GITCONFIG", "credential.https://a.helper", undefined);
+  await resets.put("C:\\Users\\Example\\.gitconfig", "credential.https://b.helper", undefined);
+  assert.deepStrictEqual(await resets.all(), {}, "removal under another spelling takes the record out");
+  // A record already holding two spellings (written before this) reads as one file, and the next write merges it.
+  const split = memoryPersistence({
+    [PublicKeys.GIT_CREDENTIAL_RESETS]: {
+      "C:/Users/Example/.gitconfig": { "credential.https://a.helper": installed },
+      "C:\\Users\\Example\\.gitconfig": { "credential.https://b.helper": installed },
+    },
+  });
+  const merged = new GitCredentialResets(split, "win32");
+  assert.deepStrictEqual(Object.keys(await merged.all()), ["C:/Users/Example/.gitconfig"]);
+  await merged.put("C:\\Users\\Example\\.gitconfig", "credential.https://a.helper", undefined);
+  assert.deepStrictEqual(await merged.all(), { "C:/Users/Example/.gitconfig": { "credential.https://b.helper": installed } });
+  // On POSIX, two spellings are two files.
+  const posix = new GitCredentialResets(memoryPersistence(), "posix");
+  await posix.put("/home/a/.gitconfig", "k", installed);
+  await posix.put("/home/A/.gitconfig", "k", installed);
+  assert.strictEqual(Object.keys(await posix.all()).length, 2);
 });
 
 test("clearSettings and clearAll keep the record of b6p's resets, so a later removal still takes them out", async () => {
@@ -1500,7 +1546,10 @@ test('an empty subsection, [credential ""], applies to every host: in status, in
   assert.deepStrictEqual(status.hosts[0].alsoAsked, ["store"]);
   // git asks it: a helper there runs for the gateway's request.
   const marks = path.join(tmp, `marks-${++configN}`);
-  const asking = scratchConfig(`[credential ""]\n\thelper = "!f() { echo x >> '${marks}'; }; f"\n`);
+  // Forward slashes: inside a quoted config value git reads a backslash as an escape, so C:\Users\… breaks the file.
+  const asking = scratchConfig(
+    `[credential ""]\n\thelper = "!f() { echo x >> '${marks.replace(/\\/g, "/")}'; }; f"\n`
+  );
   credential("fill", "protocol=https\nhost=gateway.bluestep.net\n\n", asking.env);
   assert.ok(fs.existsSync(marks), "git 2.53 asks a helper under an empty subsection");
   // b6p's own entry there is b6p's to remove.
@@ -1798,7 +1847,7 @@ test("the lockfile is never more readable than the config file: a 0600 file unde
 test("a credential.username that changes partway through the config: a partial user@ helper may be asked", async () => {
   // git's partial-URL fallback compares the username config has set so far.
   const marks = path.join(tmp, `marks-${++configN}`);
-  const mark = `"!f() { echo x >> '${marks}'; }; f"`;
+  const mark = `"!f() { echo x >> '${marks.replace(/\\/g, "/")}'; }; f"`; // forward slashes, as above
   const scenario = (helper) =>
     "[credential]\n\tusername = someone\n" +
     `[credential "someone@gateway.bluestep.net"]\n\thelper = ${helper}\n` +
@@ -1893,12 +1942,23 @@ test("pairs are counted as git sees them: a reset on its header's line counts, a
 
 test("a relative GIT_CONFIG_GLOBAL names one file, the process directory's, for reads, edits and records alike", async () => {
   const config = scratchConfig("[credential]\n\thelper = cache\n");
+  // The process's directory on the scratch file's drive (a CI checkout on Windows may sit on another), below it.
+  const saved = process.cwd();
+  process.chdir(fs.mkdtempSync(path.join(path.dirname(config.file), "cwd-")));
+  try {
+    await relativeGlobal(config);
+  } finally {
+    process.chdir(saved);
+  }
+});
+
+async function relativeGlobal(config) {
   const relative = path.relative(process.cwd(), config.file);
-  assert.ok(!path.isAbsolute(relative));
+  assert.ok(!path.isAbsolute(relative), relative);
   const env = { ...config.env, GIT_CONFIG_GLOBAL: relative };
   const { service, resets } = makeService({ config: { ...config, env } }); // git runs in tmp, not the process's directory
   assert.deepStrictEqual((await service.setupGit()).added, ["gateway.bluestep.net"]);
-  assert.deepStrictEqual(Object.keys(await resets.all()), [config.file]);
+  assert.deepStrictEqual(Object.keys(byFile(await resets.all())), Object.keys(byFile({ [config.file]: {} })));
   assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), ["", GitCredential.DEFAULT_HELPER]);
   assert.strictEqual((await service.setupStatus()).configured, true);
   const repo = scratchRepo(config.env);
@@ -1909,7 +1969,7 @@ test("a relative GIT_CONFIG_GLOBAL names one file, the process directory's, for 
   );
   assert.deepStrictEqual(await service.removeGit(), { removed: ["https://gateway.bluestep.net"], keptResets: [] });
   assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), []);
-});
+}
 
 // ── the lock, git-style: no time-based takeover ───────────────────────
 

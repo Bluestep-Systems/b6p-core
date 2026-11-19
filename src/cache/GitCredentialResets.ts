@@ -1,3 +1,4 @@
+import { configPathKey, type ConfigPathStyle } from "../gitCredential/credentialConfig";
 import { exclusive, mutatePublic } from "../persistence/lockedMutation";
 import { PublicKeys } from "../persistence/PersistenceKeys";
 import type { Persistence } from "../providers";
@@ -38,8 +39,8 @@ export interface GitCredentialResetRecord {
 }
 
 /**
- * Every record: file path (as b6p wrote to it or git reported it) → exact config key (as written,
- * case kept) → record.
+ * Every record: file path (one spelling per file: the first b6p recorded, as git reported it) →
+ * exact config key (as written, case kept) → record.
  * @lastreviewed null
  */
 export type GitCredentialResetsByFile = Record<string, Record<string, GitCredentialResetRecord>>;
@@ -59,7 +60,14 @@ function isRecord(value: unknown): value is GitCredentialResetRecord {
     : r.pairsBefore === undefined;
 }
 
-function clean(stored: unknown): GitCredentialResetsByFile {
+// The spelling `file` is stored under in `all`: the one already there for the same file, else `file`.
+function spellingIn(all: GitCredentialResetsByFile, file: string, style: ConfigPathStyle): string {
+  const want = configPathKey(file, style);
+  return Object.keys(all).find((known) => configPathKey(known, style) === want) ?? file;
+}
+
+// The valid records, two spellings of one file (C:/Users/… and C:\Users\… on Windows) merged under the first.
+function clean(stored: unknown, style: ConfigPathStyle): GitCredentialResetsByFile {
   const out: GitCredentialResetsByFile = {};
   if (typeof stored !== "object" || stored === null || Array.isArray(stored)) {
     return out;
@@ -70,7 +78,8 @@ function clean(stored: unknown): GitCredentialResetsByFile {
     }
     for (const [key, record] of Object.entries(keys)) {
       if (isRecord(record)) {
-        (out[file] ??= {})[key] = record;
+        const spelling = spellingIn(out, file, style);
+        (out[spelling] ??= {})[key] ??= record;
       }
     }
   }
@@ -94,12 +103,19 @@ export const GIT_CONFIG_LOCK = "b6p:git_credential_config";
  * ({@link GitCredentialResetState}). Each write is a locked read-modify-write
  * ({@link mutatePublic}), and the whole of a setup or removal runs inside {@link exclusive}.
  *
+ * A file is recorded under one spelling: every write for another spelling of the same file (by
+ * `pathStyle`, as `configPathKey` compares them) goes to the one already recorded, so recording,
+ * settling and removal always meet the same entry.
+ *
  * The record outlives `clearSettings()` and `clearAll()` (see `B6PCore`), because the entries it
  * describes stay in the user's git config until a removal takes them out.
  * @lastreviewed null
  */
 export class GitCredentialResets {
-  constructor(private readonly persistence: Persistence) {}
+  constructor(
+    private readonly persistence: Persistence,
+    private readonly pathStyle: ConfigPathStyle = process.platform === "win32" ? "win32" : "posix"
+  ) {}
 
   /**
    * Every record, read under the record's lock, so a write of it (or `B6PCore`'s clear, which keeps
@@ -108,7 +124,7 @@ export class GitCredentialResets {
    */
   async all(): Promise<GitCredentialResetsByFile> {
     return exclusive(this.persistence, PublicKeys.GIT_CREDENTIAL_RESETS, async () =>
-      clean(await this.persistence.get<unknown>(PublicKeys.GIT_CREDENTIAL_RESETS))
+      clean(await this.persistence.get<unknown>(PublicKeys.GIT_CREDENTIAL_RESETS), this.pathStyle)
     );
   }
 
@@ -118,7 +134,8 @@ export class GitCredentialResets {
    */
   async put(file: string, key: string, record: GitCredentialResetRecord | undefined): Promise<void> {
     await mutatePublic(this.persistence, PublicKeys.GIT_CREDENTIAL_RESETS, (current) => {
-      const all = clean(current);
+      const all = clean(current, this.pathStyle);
+      file = spellingIn(all, file, this.pathStyle);
       const keys = { ...(all[file] ?? {}) };
       if (record === undefined) {
         delete keys[key];
