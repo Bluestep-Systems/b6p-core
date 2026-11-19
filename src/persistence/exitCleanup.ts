@@ -3,9 +3,10 @@ import * as fs from "fs";
 /**
  * Files this process created and must not leave behind if it stops: b6p's own lockfiles while held
  * (and any whose release was refused), and git's `<config>.lock` while b6p edits a config file. As
- * git's tempfile.c does, each is removed on exit, on SIGINT, SIGTERM and SIGHUP, and on an uncaught
- * exception that ends the process, but only while `stillMine` (a synchronous check: the stamp or the
- * inode b6p created) says the file is the one this process made.
+ * git's tempfile.c does, each is removed on exit, on SIGINT, SIGTERM and SIGHUP when no handler of
+ * the host's will deal with the signal, and on an uncaught exception that ends the process, but only
+ * while `stillMine` (a synchronous check: the inode b6p created, or its stamp) says the file is the
+ * one this process made.
  * @lastreviewed null
  */
 export interface ExitCleanupEntry {
@@ -35,13 +36,16 @@ export function runExitCleanup(): void {
 
 const SIGNALS: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
 
+// b6p's handler alone: clean up and stop as the signal's default would, so the exit status stays what it would have
+// been. With a handler of the host's, do nothing: if it exits, the `exit` listener cleans up; if it keeps the process
+// alive, the work in flight keeps its locks.
 function onSignal(signal: NodeJS.Signals): void {
-  runExitCleanup();
-  // Only listener: stop as the signal's default would, so the exit status stays what it would have been.
-  if (process.listenerCount(signal) === 1) {
-    process.removeListener(signal, onSignal);
-    process.kill(process.pid, signal);
+  if (process.listenerCount(signal) !== 1) {
+    return;
   }
+  runExitCleanup();
+  process.removeListener(signal, onSignal);
+  process.kill(process.pid, signal);
 }
 
 function install(): void {

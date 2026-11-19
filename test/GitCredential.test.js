@@ -2050,6 +2050,83 @@ test("a process stopped by SIGINT or SIGTERM removes its locks and git's config 
   }
 });
 
+/** A child holding `lock` inside withFileLock (after `prelude`), and a promise of its exit, once it is inside. */
+async function childHolding(lock, prelude) {
+  const fileLock = path.join(__dirname, "..", "dist", "persistence", "fileLock.js");
+  const ready = `${lock}.ready`;
+  const code =
+    `const fs = require("fs"); const { withFileLock } = require(${JSON.stringify(fileLock)});` +
+    `setInterval(() => {}, 1000); ${prelude}` +
+    `withFileLock(${JSON.stringify(lock)}, async () => {` +
+    `  fs.writeFileSync(${JSON.stringify(ready)}, "");` +
+    `  await new Promise(() => {});` +
+    `});`;
+  const proc = require("node:child_process").spawn(process.execPath, ["-e", code], { stdio: "inherit" });
+  const ended = new Promise((resolve) => proc.on("exit", (status, sig) => resolve({ status, sig })));
+  for (let i = 0; i < 100 && !fs.existsSync(ready); i++) {
+    await sleepMs(50);
+  }
+  assert.ok(fs.existsSync(lock), "the child holds the lock");
+  return { proc, ended };
+}
+
+test("SIGINT with a host handler that keeps the process alive leaves the lock held: no second holder gets in", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
+  const lock = path.join(fs.mkdtempSync(path.join(tmp, "sig-host-")), "state.lock");
+  const { withFileLock } = require("../dist/persistence/fileLock.js");
+  const { proc, ended } = await childHolding(lock, `process.on("SIGINT", () => {});`);
+  try {
+    proc.kill("SIGINT");
+    await sleepMs(300);
+    assert.ok(fs.existsSync(lock), "the lock is still there");
+    let entered = false;
+    await assert.rejects(
+      withFileLock(lock, async () => (entered = true), { timeoutMs: 300 }),
+      /Timed out waiting for the lock/
+    );
+    assert.ok(!entered, "no second holder");
+    proc.kill("SIGTERM");
+    assert.strictEqual((await ended).sig, "SIGTERM");
+    assert.ok(!fs.existsSync(lock), "removed once the process does stop");
+  } finally {
+    proc.kill("SIGKILL");
+  }
+});
+
+test("SIGINT with a host handler that calls process.exit removes the lock on the way out", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
+  const lock = path.join(fs.mkdtempSync(path.join(tmp, "sig-exit-")), "state.lock");
+  const { proc, ended } = await childHolding(lock, `process.on("SIGINT", () => process.exit(7));`);
+  try {
+    proc.kill("SIGINT");
+    assert.strictEqual((await ended).status, 7, "the host's handler decided the exit");
+    assert.ok(!fs.existsSync(lock));
+  } finally {
+    proc.kill("SIGKILL");
+  }
+});
+
+test("an exit between creating the lock and writing its stamp removes the empty lock", async () => {
+  const fileLock = path.join(__dirname, "..", "dist", "persistence", "fileLock.js");
+  const lock = path.join(fs.mkdtempSync(path.join(tmp, "empty-")), "state.lock");
+  const code =
+    `const fsp = require("fs/promises"); const { withFileLock } = require(${JSON.stringify(fileLock)});` +
+    `const open = fsp.open; fsp.open = async (...a) => { const h = await open(...a);` +
+    `  h.writeFile = () => process.exit(3); return h; };` +
+    `withFileLock(${JSON.stringify(lock)}, async () => {});`;
+  const status = await new Promise((resolve) =>
+    require("node:child_process")
+      .spawn(process.execPath, ["-e", code], { stdio: "inherit" })
+      .on("exit", (s) => resolve(s))
+  );
+  assert.strictEqual(status, 3, "stopped between create and write");
+  assert.ok(!fs.existsSync(lock), "the empty lock it made is gone");
+});
+
 test("a deleted ~/.b6p is created again: the next write succeeds instead of timing out", async () => {
   const dir = path.join(fs.mkdtempSync(path.join(tmp, "persist-")), "b6p");
   const p = new SharedFilePersistence(dir);

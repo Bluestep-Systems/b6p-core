@@ -54,13 +54,26 @@ const RETRY_DELAYS_MS = [20, 50, 100, 200, 400] as const;
  */
 const pendingRelease = new Map<string, Map<string, ExitCleanupEntry>>();
 
-const holds = (lockPath: string, stamp: string) => (): boolean => {
-  try {
-    return fsSync.readFileSync(lockPath, "utf8") === stamp;
-  } catch {
-    return false;
-  }
-};
+/**
+ * Whether the file at `lockPath` is still the lockfile this acquisition created: the same device and
+ * inode as the handle that created it, once known; before that (the instant between `open` and
+ * `stat`), a file holding nothing or this stamp, which no other process writes there.
+ * @lastreviewed null
+ */
+function isMine(lockPath: string, stamp: string, made: { dev?: number; ino?: number }): () => boolean {
+  return () => {
+    try {
+      if (made.ino !== undefined) {
+        const now = fsSync.statSync(lockPath);
+        return now.dev === made.dev && now.ino === made.ino;
+      }
+      const text = fsSync.readFileSync(lockPath, "utf8");
+      return text === "" || text === stamp;
+    } catch {
+      return false;
+    }
+  };
+}
 
 // Remove `lockPath` if it holds `stamp`, retrying a transient refusal. Resolves whether it is gone (or not ours).
 async function release(lockPath: string, stamp: string): Promise<boolean> {
@@ -108,8 +121,9 @@ async function retryPending(lockPath: string): Promise<void> {
  * - **Release** removes the lockfile only while it holds this acquisition's stamp, retrying a
  *   transient `EPERM`/`EBUSY`/`EACCES`. A release still refused is kept pending: this process
  *   removes that lock (and only this one may) on its next acquisition of it, and on exit.
- * - **Stopping.** While held, the lock is removed if the process exits, gets SIGINT, SIGTERM or
- *   SIGHUP, or dies of an uncaught exception (`exitCleanup.ts`, as git's tempfile.c does).
+ * - **Stopping.** From its creation (before the stamp is written), the lock is removed if the
+ *   process exits, gets SIGINT, SIGTERM or SIGHUP with no handler of the host's, or dies of an
+ *   uncaught exception (`exitCleanup.ts`, as git's tempfile.c does). Only a hard kill leaves one.
  * - **A missing directory** (a deleted `~/.b6p`) is created again (`ensureDir`) and the attempt
  *   retried.
  * - **Waiting.** Every failed attempt, whatever its error, sleeps `retryMs` and counts against
@@ -138,8 +152,13 @@ export async function withFileLock<T>(
     let again = false;
     try {
       const handle = await fs.open(lockPath, "wx");
-      entry = trackOnExit(lockPath, holds(lockPath, stamp));
+      // Tracked before the stamp is written, so an exit in between removes this empty lock too.
+      const made: { dev?: number; ino?: number } = {};
+      entry = trackOnExit(lockPath, isMine(lockPath, stamp, made));
       try {
+        const stat = await handle.stat();
+        made.dev = stat.dev;
+        made.ino = stat.ino;
         await handle.writeFile(stamp);
       } catch (error) {
         await handle.close().catch(() => undefined);

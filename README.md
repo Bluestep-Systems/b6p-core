@@ -535,8 +535,10 @@ await core.gitCredential.removeGit(); // { removed, keptResets: [{ url, file, re
   transient `EPERM`/`EBUSY`/`EACCES`; a release still refused stays pending, and this process (only this one) removes
   that lock on its next acquisition of it and on exit. As git's tempfile.c does, b6p removes the locks it holds, and
   git's `<config>.lock` while it is editing a config file (only while it is still the file it created), when the
-  process exits, gets SIGINT, SIGTERM or SIGHUP (then stopping with that signal when nothing else handles it), or dies
-  of an uncaught exception. A deleted `~/.b6p` is created again. After 10 s a waiter gives up with an error naming the
+  process exits, gets SIGINT, SIGTERM or SIGHUP while no handler of the host's is listening (then stopping with that
+  signal; a host handler decides instead, and if it exits the locks go with the exit), or dies of an uncaught
+  exception. A lock is tracked from the moment it is created, so only a hard kill (SIGKILL, power loss) can leave an
+  empty one. A deleted `~/.b6p` is created again. After 10 s a waiter gives up with an error naming the
   lockfile and its holder (or saying the lock is empty): "If no b6p or VS Code process is running, delete <path>." A pull whose host cannot be recorded still succeeds.
 - The helper command defaults to `GitCredential.DEFAULT_HELPER`; pass `{ helper }` to write another.
 - The token never reaches git's argv, a config file, a log line or an error message. Failures of `git config`, and
