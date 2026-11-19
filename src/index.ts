@@ -123,6 +123,41 @@ export type {
 export type { GatewayContext, GatewayFetch } from "./gateway/GatewayContext";
 export { gatewayTokenProblem, redactToken } from "./gateway/GatewayToken";
 
+// ─── git's credential helper ─────────────────────────────────────────
+export {
+  GIT_MATCHING_FLOOR,
+  GIT_SETUP_FLOOR,
+  GitCredentialService,
+  parseCredentialRequest,
+  parseGitVersion,
+} from "./gitCredential/GitCredentialService";
+export type {
+  GitCredentialCloneOptions,
+  GitCredentialHelperOptions,
+  GitCredentialHost,
+  GitCredentialHostSource,
+  GitCredentialHostStatus,
+  GitCredentialKeptReset,
+  GitCredentialKeptResetReason,
+  GitCredentialRemoveOptions,
+  GitCredentialRemoveResult,
+  GitCredentialSetupResult,
+  GitCredentialSetupStatus,
+  GitCredentialStatusScope,
+} from "./gitCredential/GitCredentialService";
+export type { GitCredentialContext } from "./gitCredential/GitCredentialContext";
+export { editConfigFile, gitConfigRunner, resolveSymlink } from "./gitCredential/GitConfigRunner";
+export type { GitConfigOutcome, GitConfigRunner, GitRunOptions } from "./gitCredential/GitConfigRunner";
+export { appendPair, keepsEntries, pairsIn, parseConfigFile, removePair } from "./gitCredential/configFile";
+export type { ConfigFileEntry } from "./gitCredential/configFile";
+export { credentialHostOf, requestedCredentialHost } from "./gitCredential/hosts";
+export { configPathKey, credentialContextMatch, patternApplies, patternIsHost } from "./gitCredential/credentialConfig";
+export type {
+  ConfigPathStyle,
+  CredentialContextMatch,
+  GitCredentialConfigEntry,
+} from "./gitCredential/credentialConfig";
+
 // ─── Constants ───────────────────────────────────────────────────────
 export {
   ApiEndpoints,
@@ -133,6 +168,7 @@ export {
   FileExtensions,
   FolderNames,
   Gateway,
+  GitCredential,
   GitHubUrls,
   Http,
   MimeTypes,
@@ -164,6 +200,13 @@ export { SharedFilePersistence } from "./persistence/SharedFilePersistence";
 // ─── Caches ──────────────────────────────────────────────────────────
 export { OrgCache } from "./cache/OrgCache";
 export { ScriptMetaDataStore } from "./cache/ScriptMetaDataStore";
+export { GitCredentialHosts } from "./cache/GitCredentialHosts";
+export { GIT_CONFIG_LOCK, GitCredentialResets } from "./cache/GitCredentialResets";
+export type {
+  GitCredentialResetRecord,
+  GitCredentialResetState,
+  GitCredentialResetsByFile,
+} from "./cache/GitCredentialResets";
 
 // ─── Update service ──────────────────────────────────────────────────
 export { UpdateService } from "./update/UpdateService";

@@ -110,6 +110,43 @@ are load-bearing rather than stylistic — each records something this repo undi
   it and adds its own confirmation; it does not rebuild the requests. `update` is one `PATCH` with `If-Match`
   (the `etag` from `detail`/`read`). `GatewayKnowledgeBaseAccess` keeps an exact kind match, treats an unknown
   kind as private, and never sends one back: setting access takes `public` or `private` only.
+- **`core.gitCredential` (`GitCredentialService`, `src/gitCredential/`) is git's credential helper, and answers
+  only an allowlist.** `GitCredentialContext` extends `PlatformContext` with the same non-prompting token source as
+  the gateway, `gatewayUrl()`, `hosts` (`GitCredentialHosts`, the tenant hosts a script pull reached with the token,
+  recorded by `ScriptService.pull` after the git half succeeds) and `gitConfig` (`GitConfigRunner`: git config, git, the global file, file edits). `get`
+  answers only `protocol=https` with a host exactly on the list (`host[:port]`, port only when not 443, never
+  normalized onto an allowed host), never a request naming another username or carrying `url=`; anything else is an empty answer so git
+  asks its other helpers. Never widen the list by a host rule (such as `*.bluestep.net`): a pull that worked is the
+  proof for a tenant. `store` and `erase` are no-ops, so a single 401 never deletes the one stored token. Setup
+  appends, per host, a new section holding an empty `credential.https://<host>.helper` (the reset, as gh does) then
+  b6p's command, as one edit of the file `git var GIT_CONFIG_GLOBAL` names (never computed from `HOME`/`USERPROFILE`)
+  under git's own `<file>.lock` (`GitConfigRunner.editFile`, `configFile.ts` parses as git 2.53's `config.c` does;
+  keep its real-git test agreeing), never doubling either line, and records every pair (`GitCredentialResets`: file
+  + exact key + state + helper, `adding` with the pair count before the edit, `installed` after). A count of empty
+  values is never ownership: a pair is b6p's only while its helper directly follows an empty value of that key in
+  that file. Removal deletes b6p's pair, both lines in one edit under git's lock, only when the file holds exactly
+  one; with several only the helpers go. Never remove a reset alone, never with `git config --unset` by value (it
+  sweeps in a reset another writer just added), and never delete a reset whose ownership is ambiguous: leave it
+  and report it (`keptResets`, with a reason). b6p's own non-empty helper entries are removed in any URL spelling
+  (git subsections are case-sensitive: group by the exact key) from the global file they came from, and file paths
+  compare with `configPathKey` (Windows: either slash, any case). Status follows git 2.53's credential contexts
+  exactly (`credentialContextMatch`, ported from `credential.c` and `urlmatch.c`, partial-URL fallback and the empty
+  subsection included; read git's source before changing it, and keep the real-git test agreeing): in doubt a
+  foreign helper (or an `includeIf`, whose file may add one elsewhere) counts as applying and a reset or b6p's own
+  entry as not, so `configured` means git certainly asks b6p alone. Status reads the config in effect in its `cwd`
+  (every scope, `GIT_CONFIG_COUNT` included) and says so in `scope`; it can never see another repository's local
+  config, which `cloneStatus(dir)` reads per clone. Setup decides from system and global scope only, the files it
+  can change. git 2.27 is the floor for matching and 2.42 for setup (`GIT_MATCHING_FLOOR`, `GIT_SETUP_FLOOR`). Never
+  move or delete the user's entries to fix that; report them (`others`). Each setup and removal runs whole under
+  `GitCredentialResets.exclusive` (one git config lock); host-list and reset-record changes go through
+  `mutatePublic`, and reads of the record take its lock; `SharedFilePersistence` holds one state-file lock for every
+  write. `withFileLock` works like git's `<file>.lock` (Brendan's ruling: no auto takeover): never let another
+  process remove a lock, by age, clock, pid or anything else; release only while the lock holds this acquisition's
+  token, keep a refused release pending for this process, and leave exit/signal cleanup to `exitCleanup.ts`. Config files are edited as bytes (latin1 in, latin1 out), with the lock created owner-only and set to
+  the file's mode read under the lock, and an append must leave every existing entry reading the same (`keepsEntries`). `clearSettings`/`clearAll` keep the reset
+  record in the same write (`clearPublicExcept`). A plain `git push` in a draft does not build or publish; do not add
+  a server hook or helper behaviour that pretends otherwise: that stays `core.script.push`. The token goes only to
+  the `get` answer: never into git's argv, a config file, a log line or an error.
 - **A prompt that overwrites or deletes puts its safe option first and passes
   `{ destructive: true, safeOption }`.** Prompt implementations answer `options[0]` on an empty
   answer and under auto-confirm (the CLI's `--yes`); with the destructive option first, `--yes`
@@ -133,7 +170,8 @@ as a git working tree, `GitIdentity` commit authors, `ServerCompile` reading the
 `schema/` (`SchemaService`, `core.schema`: super-only schema apply over the org's `/gql`, `SchemaContext` extends `PlatformContext`),
 `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit`, `GatewayTokenService`, `GatewayMarketplace`, `GatewayKb` —
 web-global's gateway over the `b6pt_` token, pure-JS git through it, the caller's own token
-management, marketplace clones and knowledge bases), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`),
+management, marketplace clones and knowledge bases), `gitCredential/` (`GitCredentialService`, git's credential
+helper over the same token), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`, `GitCredentialHosts`),
 `data/` (pure parsers and utilities, `ServerVersion`), `constants/`, `update/`, `testing/` (vscode-free doubles,
 including `FakeGateway`).
 

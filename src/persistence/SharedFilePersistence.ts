@@ -4,6 +4,7 @@ import * as os from "os";
 import * as crypto from "crypto";
 import type { Persistence, LockDiagnoser, LockHolder } from "../providers";
 import { lockdownDir } from "./dirLockdown";
+import { withFileLock } from "./fileLock";
 
 /**
  * Cross-platform shared persistence backed by files in `~/.b6p`.
@@ -24,15 +25,18 @@ import { lockdownDir } from "./dirLockdown";
  * opened above the U-folder, etc.), and `ScriptMetaDataStore` already keys
  * its contents by org+script internally, so a single global file is enough.
  *
- * Concurrency model: last-writer-wins. Reads always re-load from disk so a
- * change made by one process is visible to the other. Writes go to a temp
- * file and atomically rename into place to avoid partial-write corruption.
- * Within one process, mutations of each file (`set`/`delete`/`clearPublic` on
- * the state file; `setSecret`/`deleteSecret`/`clearSecrets` on the secrets file)
- * run one at a time, each re-loading inside that turn, so overlapping mutations
- * no longer drop each other's changes.
- * Across processes there is still no lock: a write by another process that
- * lands between this process's load and save is overwritten.
+ * Concurrency model. Reads always re-load from disk so a change made by one
+ * process is visible to the other. Writes go to a temp file and atomically
+ * rename into place to avoid partial-write corruption.
+ * Every write of the state file (`set`, `delete`, `clearPublic`, a seed) holds
+ * one lock for the whole file, `state.json.lock`, shared by every process: it
+ * re-loads the file under that lock and changes only its own key, so no write
+ * of any key (a setting, a cache entry, a record) is ever lost to another
+ * process's. Within one process those writes also queue, as do the secrets
+ * file's (`setSecret`/`deleteSecret`/`clearSecrets`, which take no
+ * cross-process lock and stay last-writer-wins across processes).
+ * A caller whose new value depends on the old one (a read-modify-write of one
+ * key) still wraps the read and the write in {@link withLock}.
  *
  * Threat model: encryption protects against accidental disclosure (backups,
  * git commits, file shares). It does not protect against an attacker with
@@ -102,6 +106,23 @@ export class SharedFilePersistence implements Persistence {
     await this.mutateState(() => ({}));
   }
 
+  /**
+   * Clear the public state file but `keep`'s keys, in one locked write.
+   * @lastreviewed null
+   */
+  async clearPublicExcept(keep: readonly string[]): Promise<void> {
+    await this.waitBootstrap();
+    await this.mutateState((state) => {
+      const kept: Record<string, unknown> = {};
+      for (const key of keep) {
+        if (key in state) {
+          kept[key] = state[key];
+        }
+      }
+      return kept;
+    });
+  }
+
   // ── Secret state ──────────────────────────────────────────────────
 
   async getSecret(key: string): Promise<string | undefined> {
@@ -146,7 +167,9 @@ export class SharedFilePersistence implements Persistence {
     if (seed.publicEntries && !(await fileExists(this.statePath))) {
       const entries = await seed.publicEntries();
       if (entries && Object.keys(entries).length > 0) {
-        await this.saveState(entries);
+        // Under the state lock, and only while the file is still missing, so a write another process made since the
+        // check above is not replaced.
+        await this.mutateState((state) => (Object.keys(state).length === 0 ? entries : state));
       }
     }
     if (seed.secretEntries && !(await fileExists(this.secretsPath))) {
@@ -161,13 +184,21 @@ export class SharedFilePersistence implements Persistence {
 
   /**
    * Run one load → change → save of the public state file as a single turn of that file's
-   * in-process queue (see {@link mutateSecrets}), so overlapping `set`/`delete`/`clearPublic` calls
-   * no longer drop each other's changes. In-process only; no cross-process lock.
+   * in-process queue, holding the state file's cross-process lock (`state.json.lock`) from the
+   * load to the save, so a write by another process is never overwritten with what this one
+   * loaded before it.
    * @lastreviewed null
    */
   private mutateState(change: (state: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
     return enqueueFileMutation(this.statePath, async () => {
-      await this.saveState(change(await this.loadState()));
+      await this.ensureDir();
+      await withFileLock(
+        `${this.statePath}.lock`,
+        async () => {
+          await this.saveState(change(await this.loadState()));
+        },
+        { ensureDir: () => this.recreateDir() }
+      );
     });
   }
 
@@ -236,7 +267,37 @@ export class SharedFilePersistence implements Persistence {
     await atomicWrite(this.secretsPath, JSON.stringify(blob), this.lockDiagnoser);
   }
 
+  /**
+   * Run `work` holding `<configDir>/<name>.lock`, created exclusively and removed after, so the CLI
+   * and the extension (and two CLI processes) take turns. Within this process the same lock is
+   * also queued, so two instances over the same directory do not poll each other. The lock is held
+   * for as long as `work` runs ({@link withFileLock}) and never removed by another process; waiting
+   * gives up after 10 s, naming the lockfile and saying to delete it if no b6p process is running.
+   * @lastreviewed null
+   */
+  async withLock<T>(name: string, work: () => Promise<T>): Promise<T> {
+    await this.waitBootstrap();
+    await this.ensureDir();
+    const lockPath = path.join(this.configDir, `${name.replace(/[^A-Za-z0-9_.-]/g, "_")}.lock`);
+    const tail = LOCK_QUEUES.get(lockPath) ?? Promise.resolve();
+    const run = tail.then(
+      () => withFileLock(lockPath, work, { ensureDir: () => this.recreateDir() }),
+      () => withFileLock(lockPath, work, { ensureDir: () => this.recreateDir() })
+    );
+    LOCK_QUEUES.set(
+      lockPath,
+      run.catch(() => undefined)
+    );
+    return run;
+  }
+
   // ── Internal: dir + key bootstrap ─────────────────────────────────
+
+  // The directory went away after it was made (a person deleted ~/.b6p): make it again, locked down.
+  private recreateDir(): Promise<void> {
+    this.dirReady = false;
+    return this.ensureDir();
+  }
 
   private async ensureDir(): Promise<void> {
     if (this.dirReady) {
@@ -283,6 +344,12 @@ export class SharedFilePersistence implements Persistence {
  * @lastreviewed null
  */
 const FILE_MUTATIONS = new Map<string, Promise<void>>();
+
+/**
+ * The tail of each lockfile's in-process queue ({@link SharedFilePersistence.withLock}), keyed by path.
+ * @lastreviewed null
+ */
+const LOCK_QUEUES = new Map<string, Promise<unknown>>();
 
 /**
  * Run `mutation` after every mutation already queued for `filePath`. A failed one does not stall

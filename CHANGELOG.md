@@ -5,6 +5,60 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.3.0] - 2026-11-19
+
+### Added
+
+- **`core.gitCredential`: b6p as git's credential helper** (ClickUp CU-1k5g91bqjd7). Plain `git pull` and `git push`
+  work in knowledge bases and script drafts with the stored token. A plain push in a draft lands the commit but does
+  not build or publish it; that still takes `b6p script push` or publish (`core.script.push`, unchanged).
+  `answer(action, input)` speaks git's credential-helper protocol: `get` answers `username=b6p` and the stored token
+  as `password` only for an https request whose host is exactly on the allowlist (the configured gateway's host when
+  it is https, and the tenant hosts script pulls reached), and nothing otherwise; `store` and `erase` do nothing (one
+  401 must not delete the token every b6p operation shares). `setupGit()` appends, per allowed host, a section holding
+  an empty `credential.https://<host>.helper` (a reset, like gh) followed by `!b6p auth git-credential`, as one edit
+  of the file git reports `--global` writes (`git var GIT_CONFIG_GLOBAL`), under git's own `<file>.lock` (bytes kept
+  exactly, the file's mode kept from the start, symlinks followed as git does), never doubling either; `setupStatus({ cwd })` reports per host whether git certainly asks b6p alone, reading the config in
+  effect there (system, global, command line and `GIT_CONFIG_COUNT`, and a repository's local and worktree config;
+  `scope: "global" | "global+here"`, never another repository's), matching entries exactly as git 2.53's credential
+  contexts do (`credentialContextMatch`: urlmatch normalization of case, ports and escapes, `*` labels, path
+  prefixes, and the partial-URL fallback, so `https://` and `[credential ""]` apply to every https host; in doubt a
+  foreign helper or an `includeIf` counts as asked and a reset or b6p's entry as not), with the other helpers and the
+  entries responsible; `cloneStatus(dir, { remote })` answers the same for one clone's remote host; `removeGit()`
+  takes out b6p's entries (any URL spelling) and only the pairs that are certainly b6p's (`GitCredentialResets`,
+  public state `b6p:git_credential_resets`), both lines in one edit under git's lock, so an interruption never leaves
+  b6p's helper without its reset and a reset another writer adds meanwhile is never swept in; one whose ownership is
+  ambiguous is kept and reported (`keptResets: [{ url, file, reason }]`). Each setup and removal holds one git config
+  lock throughout. The reset record survives `clearSettings()` and `clearAll()`, kept in the same write. Needs git
+  2.27.0 or later (the partial-URL fallback), and 2.42.0 for setup (`GIT_MATCHING_FLOOR`, `GIT_SETUP_FLOOR`). Exports
+  `GitCredentialService`, `GitCredentialHosts`, `GitCredentialResets`, `GIT_CONFIG_LOCK`, `GitCredential`,
+  `gitConfigRunner`, `editConfigFile`, `resolveSymlink`, `parseConfigFile`, `appendPair`, `pairsIn`, `removePair`,
+  `keepsEntries`, `parseGitVersion`,
+  `credentialContextMatch`, `patternApplies`, `patternIsHost`, `configPathKey`, `parseCredentialRequest`,
+  `credentialHostOf`, `requestedCredentialHost`, `Err.GitCredentialSetupError` and the result types.
+- **`Persistence.withLock(name, work)`** (optional): an exclusive lock across every process using the same store,
+  held for as long as `work` runs. `SharedFilePersistence` implements it with a lockfile in its directory that works
+  as git's `<file>.lock` does: never removed by another process; released only while it holds its own token (a
+  refused release stays pending and is finished by the same process); created, stamped and tracked in one synchronous
+  step, and removed on exit, on a fatal uncaught exception, and on SIGINT, SIGTERM or SIGHUP when the host has no
+  handler for them, while it is still the same file holding its stamp; a 10 s wait while another holds it (any other
+  refusal fails at once) that ends naming the lockfile and its holder. A deleted directory is created again. Core uses it for the git-credential host list, reset records and git
+  config changes; without it those are serialized within the process only.
+- **`Persistence.clearPublicExcept(keep)`** (optional): clear public state but the named keys in one write.
+  `SharedFilePersistence` implements it.
+
+### Fixed
+
+- **`SharedFilePersistence` no longer loses one process's write to another's.** Every write of the state file
+  (`set`, `delete`, `clearPublic`, a seed) holds one cross-process lock (`state.json.lock`), re-reads the file under it
+  and changes only its own key, so a setting or cache entry written by the CLI is no longer undone by the extension
+  writing another key at the same moment, or the other way round. The secrets file is unchanged.
+- **A script pull records its tenant host** (`core.gitCredentialHosts`, public state `b6p:git_credential_hosts`)
+  once the git half of the pull succeeded with the stored token, as a locked read-modify-write, so two processes or
+  instances lose nothing. A failure to record never fails the pull.
+
 ## [1.2.0] - 2026-11-18
 
 ### Added

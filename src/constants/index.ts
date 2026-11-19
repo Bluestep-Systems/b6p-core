@@ -14,6 +14,7 @@ export { ExtensionConfig } from "./ExtensionConfig";
 export { FileExtensions } from "./FileExtensions";
 export { FolderNames } from "./FolderNames";
 export { Gateway } from "./Gateway";
+export { GitCredential } from "./GitCredential";
 export { GitHubUrls } from "./GitHubUrls";
 export { Http } from "./Http";
 export { MimeTypes } from "./MimeTypes";

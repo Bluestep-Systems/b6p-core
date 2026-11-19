@@ -180,6 +180,19 @@ export class ScriptService {
    * Create a {@link ScriptUrlParser} wired to this service's session and logger.
    * @lastreviewed null
    */
+  /**
+   * Record the host a pull just reached with the stored token, so git's credential requests for it
+   * are answered. A failure here never fails the pull.
+   * @lastreviewed null
+   */
+  private async recordGitCredentialHost(url: URL): Promise<void> {
+    try {
+      await this.ctx.gitCredentialHosts.record(url);
+    } catch {
+      this.ctx.logger.warn("The pulled script's host could not be recorded for git's credential requests.");
+    }
+  }
+
   private createParser(url: string): ScriptUrlParser {
     return new ScriptUrlParser(url, this.ctx.sessionManager, this.ctx.logger, this.ctx.prompt);
   }
@@ -381,6 +394,7 @@ export class ScriptService {
       });
       keptLocalPaths.push(...drafted.keptLocalPaths);
       switchedToGit = drafted.switchedToGit;
+      await this.recordGitCredentialHost(parser.url);
     } catch (error) {
       if (error instanceof GitSwitchDeclinedError) {
         this.ctx.prompt.error(`Pull aborted: ${error.message}.`);

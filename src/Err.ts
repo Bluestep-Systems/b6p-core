@@ -1494,4 +1494,26 @@ export namespace Err {
       this.ref = ref;
     }
   }
+
+  // Git credential helper errors
+
+  /**
+   * Setting b6p up as git's credential helper, taking it out, or reading its status failed: git
+   * could not be run or is too old, `git config` refused, or a config file could not be locked,
+   * parsed or written. The message never contains the token, which never reaches git's arguments
+   * or a config file.
+   * @lastreviewed null
+   */
+  export class GitCredentialSetupError extends Error {
+    /**
+     * git's exit code, or `null` when git could not be run or the request was refused before it.
+     * @lastreviewed null
+     */
+    readonly exitCode: number | null;
+    constructor(message: string, exitCode: number | null) {
+      super(message);
+      this.name = "GitCredentialSetupError";
+      this.exitCode = exitCode;
+    }
+  }
 }

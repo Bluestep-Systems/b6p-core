@@ -36,4 +36,17 @@ export enum PublicKeys {
    * Key for persisted script metadata (replaces .b6p_metadata.json files)
    */
   SCRIPT_METADATA = "b6p:script_metadata",
+
+  /**
+   * Key for the tenant hosts a script pull reached with the stored token, which b6p answers git's
+   * credential requests for.
+   * @lastreviewed null
+   */
+  GIT_CREDENTIAL_HOSTS = "b6p:git_credential_hosts",
+
+  /**
+   * Key for the `helper =` resets b6p wrote into the user's git config, per file and exact key.
+   * @lastreviewed null
+   */
+  GIT_CREDENTIAL_RESETS = "b6p:git_credential_resets",
 }
