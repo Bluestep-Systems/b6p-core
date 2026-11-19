@@ -31,7 +31,6 @@ const logger = { debug: noop, info: noop, warn: noop, error: noop };
 const firstOption = (options) => options[0];
 const pick = (label) => () => label;
 
-
 /**
  * A Prompt that records every confirm() call and warning, and answers with `answer(options)`.
  */
@@ -62,7 +61,6 @@ function assertSafeFirst(call, safeOption, destructiveOption) {
   assert.strictEqual(call.options[0], safeOption, "the safe option must come first");
   assert.ok(call.options.includes(destructiveOption), `"${destructiveOption}" must still be offered`);
 }
-
 
 const ROOT_PATH = path.join(path.parse(process.cwd()).root, "ws", "U100001", "MyScript");
 const FILE_PATH = path.join(ROOT_PATH, "draft", "scripts", "app.ts");

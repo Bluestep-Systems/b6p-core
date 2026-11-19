@@ -239,6 +239,8 @@ Failures are typed, all extending `Err.GatewayError` (`status`, `code`):
 | `GatewayDirtyWorkingTreeError` (`paths`) | a pull would overwrite local changes (git layer) |
 | `GatewayCloneMismatchError` (`reason`, `dir`, `repo`) | a marketplace pull found a clone it must not update: `different-repo`, `different-ref`, `tag-moved` (the tag now names another commit) or `tag-gone` (the gateway no longer has it) |
 | `GatewayKnowledgeBaseError` (`reason`, `ref`, `candidates`) | a knowledge base address is `bad-ref`, `not-found`, `ambiguous`, `unsafe-name`, `wrong-branch` (a pull or push from a clone that is detached, off the live branch, or not tracking it; fields `branch`, `liveBranch`, `upstream`), or a clone is `not-a-kb` |
+| `GatewayPreconditionFailedError` / `GatewayPreconditionRequiredError` | a knowledge-base change whose `If-Match` is stale (`412`) or missing (`428`) |
+| `GatewayAccessRefusedError` | `400` on a create or change that named `access` (a `GatewayInvalidRequestError`) |
 | `GatewayKnowledgeBasePushNotPermittedError` (`ref`) | a push to a KB whose listing says `canPush: false` (a `GatewayNotPermittedError`) |
 | `GatewayInvalidArgumentError` | refused before sending: an empty alias or scope list, an expiry that is not a date, a pasted `b6pt_` secret where an id or alias belongs (token operations), or a relative path with no absolute `cwd` to resolve it against (core never reads `process.cwd()`) |
 | `GatewayWorkingCopyError` (`reason`) | the local folder cannot be used: `not-empty`, `not-a-clone`, `detached`, `no-upstream`, `diverged`, `ref-not-found`, `unsafe-target` (git layer), `wrong-repository` (knowledge-base pull) |
@@ -396,6 +398,29 @@ const pushed = await core.gateway.kb.push(pulled.dir); // { pushed, commit, ref 
 - `push` finds the KB from the clone's remote in a fresh listing and refuses a KB with
   `canPush: false` before sending anything, with `GatewayKnowledgeBasePushNotPermittedError` (`ref`).
   A clone not on the KB's live branch, not tracking it, or detached is refused the same way with `GatewayKnowledgeBaseError` (`wrong-branch`, `branch`, `liveBranch`). A gateway branch that moved on is `GatewayConflictError`.
+
+**Managing global knowledge bases** (token scope `kb:manage`; `read` also needs `kb:read`). Nothing here prompts:
+the consumer confirms, and words the confirmation from the `kb` that `read` returns (its `name`, `access`).
+
+```typescript
+const made = await core.gateway.kb.create({ name: "docs", title: "Docs", access: { kind: "public" } }); // access, title, liveBranch optional
+const { kb, etag } = await core.gateway.kb.read("docs"); // name -> id, then GET /{id}; kb.id, kb.name, kb.access
+const changed = await core.gateway.kb.update(kb.id, etag, { title: "Docs", access: { kind: "private" } }); // ONE PATCH with If-Match
+```
+
+- `create` (`POST`) sends only the fields given, so the gateway's defaults apply (title = name, live branch
+  `master`, private). `detail(id)` (`GET /{id}`) returns `{ kb, etag }`; `update(id, etag, changes)` (`PATCH`)
+  sends every given field in one request with `If-Match: etag`, and `access` only when given.
+- `access` is `{ kind: "public" } | { kind: "private" } | { kind: "unknown", rawKind, raw }`, matched exactly
+  (`"Public"` is unknown). An `unknown` access (a kind newer than this core) must be treated as private; it is
+  never sent back: `create`/`update` refuse it with `GatewayInvalidArgumentError` before sending. `access` is
+  absent from a detail or listing entry when the gateway did not report one. Making a knowledge base public
+  makes every commit reachable from its live branch, files since deleted included, readable by anyone.
+- Errors: `412` is `GatewayPreconditionFailedError` (changed since read; read again), `428`
+  `GatewayPreconditionRequiredError`, a missing `kb:manage` is `GatewayScopeError` (`scope`), a `400` on a request
+  that named `access` is `GatewayAccessRefusedError` (an older gateway; a `GatewayInvalidRequestError`), a taken
+  name is `GatewayConflictError` (`code` `name-taken`).
+- `client.requestDetailed(method, path, options)` is `request` plus the status and the `ETag` header.
 
 For specs, [`FakeGateway`](src/testing/FakeGateway.ts) is an in-process gateway on `127.0.0.1` that
 answers the contract's REST routes (the token routes included) and error codes, with `grantToken`

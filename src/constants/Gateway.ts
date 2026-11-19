@@ -70,6 +70,7 @@ export namespace Gateway {
   export namespace Scopes {
     export const KB_READ = "kb:read";
     export const KB_PUSH = "kb:push";
+    export const KB_MANAGE = "kb:manage";
     export const REGISTRY_READ = "registry:read";
     export const REGISTRY_PUSH = "registry:push";
     export const MCP = "mcp";

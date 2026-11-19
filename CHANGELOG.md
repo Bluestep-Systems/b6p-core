@@ -5,6 +5,25 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-11-18
+
+### Added
+
+- **`core.gateway.kb`: manage global knowledge bases** (ClickUp CU-1k5g91bqj91). `create({ name, title?, liveBranch?,
+  access? })`, `detail(id)` and `read(name)` (each returning `{ kb, etag }`) and `update(id, etag, { title?,
+  liveBranch?, access? })`, one `PATCH` with `If-Match`. Nothing prompts. Types `GatewayKnowledgeBaseDetail`,
+  `GatewayKnowledgeBaseVersion`, `GatewayKnowledgeBaseCreateRequest`, `GatewayKnowledgeBaseChanges`.
+- **`GatewayKnowledgeBaseAccess`**: `{ kind: "public" } | { kind: "private" } | { kind: "unknown", rawKind, raw }`,
+  matched exactly. Unknown is never public and is refused when set (`GatewayKnowledgeBaseAccessInput` is public or
+  private only). Listing entries carry `access` when the gateway reports it.
+- `GatewayClient.requestDetailed` (and `GatewaySequence.requestDetailed`): the status and `ETag` with the body.
+  `request` is unchanged.
+- Errors: `GatewayPreconditionFailedError` (`412`), `GatewayPreconditionRequiredError` (`428`) and
+  `GatewayAccessRefusedError` (`400` on a request naming `access`; a `GatewayInvalidRequestError`). Before, `gatewayErrorFor`
+  answered 412 and 428 with `GatewayUnexpectedResponseError`.
+- `Gateway.Scopes.KB_MANAGE`; `FakeGateway` serves the admin routes (`accessUnsupported` simulates an older gateway)
+  and records `If-Match`.
+
 ## [1.1.0] - 2026-11-17
 
 ### Added

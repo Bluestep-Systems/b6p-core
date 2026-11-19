@@ -135,16 +135,33 @@ test("list returns typed entries and sends the scope and tenant filters", async 
   await withKb(async ({ fake, kb }) => {
     const all = await kb.list();
     assert.strictEqual(all.length, 4);
-    assert.deepStrictEqual(
-      Object.keys(all[0]).sort(),
-      ["canPush", "gitUrl", "id", "liveBranch", "name", "ref", "scope", "status", "tenant", "title"]
-    );
+    assert.deepStrictEqual(Object.keys(all[0]).sort(), [
+      "canPush",
+      "gitUrl",
+      "id",
+      "liveBranch",
+      "name",
+      "ref",
+      "scope",
+      "status",
+      "tenant",
+      "title",
+    ]);
     assert.strictEqual(all[0].ref, "global/demo");
     assert.strictEqual(all[1].canPush, false);
 
-    assert.deepStrictEqual((await kb.list({ scope: "global" })).map((k) => k.ref), ["global/demo", "global/other"]);
-    assert.deepStrictEqual((await kb.list({ tenant: "U1" })).map((k) => k.ref), ["tenant/U1/handbook"]);
-    assert.deepStrictEqual((await kb.list({ scope: "tenant", tenant: "U2" })).map((k) => k.ref), ["tenant/U2/demo"]);
+    assert.deepStrictEqual(
+      (await kb.list({ scope: "global" })).map((k) => k.ref),
+      ["global/demo", "global/other"]
+    );
+    assert.deepStrictEqual(
+      (await kb.list({ tenant: "U1" })).map((k) => k.ref),
+      ["tenant/U1/handbook"]
+    );
+    assert.deepStrictEqual(
+      (await kb.list({ scope: "tenant", tenant: "U2" })).map((k) => k.ref),
+      ["tenant/U2/demo"]
+    );
     const last = fake.requests[fake.requests.length - 1];
     assert.deepStrictEqual(last.query, { scope: "tenant", tenant: "U2" });
     assert.strictEqual(last.authorization, `Bearer ${TOKEN}`);
@@ -152,7 +169,18 @@ test("list returns typed entries and sends the scope and tenant filters", async 
 });
 
 test("list refuses a body that is not the promised shape", async () => {
-  const good = { id: null, status: "ok", ref: "global/a", scope: "global", tenant: null, name: "a", title: "A", liveBranch: "master", canPush: true, gitUrl: "http://x/a.git" };
+  const good = {
+    id: null,
+    status: "ok",
+    ref: "global/a",
+    scope: "global",
+    tenant: null,
+    name: "a",
+    title: "A",
+    liveBranch: "master",
+    canPush: true,
+    gitUrl: "http://x/a.git",
+  };
   const cases = [
     "not json",
     [],
@@ -188,7 +216,10 @@ test("list: an unknown or invisible tenant is an empty list, not an error; globa
   await withKb(async ({ kb }) => {
     assert.deepStrictEqual(await kb.list({ tenant: "U999" }), []);
     assert.deepStrictEqual(await kb.list({ scope: "tenant", tenant: "U999" }), []);
-    assert.strictEqual((await kb.list({ scope: "global" })).every((k) => k.tenant === null), true);
+    assert.strictEqual(
+      (await kb.list({ scope: "global" })).every((k) => k.tenant === null),
+      true
+    );
   });
   const row = (name, tenant) => ({
     id: null,
@@ -204,20 +235,48 @@ test("list: an unknown or invisible tenant is an empty list, not an error; globa
   });
   const served = [row("zeta"), row("alpha"), row("b", "U9"), row("a", "U2")];
   await withBody({ knowledgeBases: served }, async (kb) => {
-    assert.deepStrictEqual((await kb.list()).map((k) => k.ref), served.map((k) => k.ref), "not re-sorted");
+    assert.deepStrictEqual(
+      (await kb.list()).map((k) => k.ref),
+      served.map((k) => k.ref),
+      "not re-sorted"
+    );
   });
 });
 
-test("list carries id and status per row; an unknown status is \"unknown\" with rawStatus; the known ones pass through", async () => {
-  const base = { ref: "global/a", scope: "global", tenant: null, name: "a", title: "A", liveBranch: "master", canPush: true, gitUrl: "http://x/a.git" };
+test('list carries id and status per row; an unknown status is "unknown" with rawStatus; the known ones pass through', async () => {
+  const base = {
+    ref: "global/a",
+    scope: "global",
+    tenant: null,
+    name: "a",
+    title: "A",
+    liveBranch: "master",
+    canPush: true,
+    gitUrl: "http://x/a.git",
+  };
   const statuses = ["ok", "branch-mismatch", "repo-only", "row-only", "unconfirmed", "undescribed"];
-  const rows = statuses.map((status, i) => ({ ...base, name: `n${i}`, ref: `global/n${i}`, status, id: i % 2 ? "7f1c2b9e-0000-4000-8000-000000000001" : null }));
+  const rows = statuses.map((status, i) => ({
+    ...base,
+    name: `n${i}`,
+    ref: `global/n${i}`,
+    status,
+    id: i % 2 ? "7f1c2b9e-0000-4000-8000-000000000001" : null,
+  }));
   rows.push({ ...base, name: "future", ref: "global/future", status: "quarantined", id: null });
   await withBody({ knowledgeBases: rows }, async (kb) => {
     const listed = await kb.list();
-    assert.deepStrictEqual(listed.slice(0, 6).map((k) => k.status), statuses);
-    assert.deepStrictEqual(listed.slice(0, 6).map((k) => k.id), rows.slice(0, 6).map((k) => k.id));
-    assert.strictEqual(listed.slice(0, 6).some((k) => "rawStatus" in k), false);
+    assert.deepStrictEqual(
+      listed.slice(0, 6).map((k) => k.status),
+      statuses
+    );
+    assert.deepStrictEqual(
+      listed.slice(0, 6).map((k) => k.id),
+      rows.slice(0, 6).map((k) => k.id)
+    );
+    assert.strictEqual(
+      listed.slice(0, 6).some((k) => "rawStatus" in k),
+      false
+    );
     assert.strictEqual(listed[6].status, "unknown");
     assert.strictEqual(listed[6].rawStatus, "quarantined");
   });
@@ -366,7 +425,10 @@ test("pull of a clone not on the live branch, detached, or on a retired live bra
     assert.strictEqual(error.ref, "global/demo");
     assert.strictEqual(error.branch, "side");
     assert.strictEqual(error.liveBranch, "master");
-    assert.deepStrictEqual(fake.requests.slice(before).map((r) => r.path), ["/api/v1/knowledge-bases"]);
+    assert.deepStrictEqual(
+      fake.requests.slice(before).map((r) => r.path),
+      ["/api/v1/knowledge-bases"]
+    );
 
     git(dir, "checkout", "-q", "--detach");
     error = await rejectsWith(kb.pull("demo", { cwd }), Err.GatewayKnowledgeBaseError);
@@ -379,7 +441,10 @@ test("pull of a clone not on the live branch, detached, or on a retired live bra
     error = await rejectsWith(kb.pull("demo", { cwd }), Err.GatewayKnowledgeBaseError);
     assert.strictEqual(error.branch, "master");
     assert.strictEqual(error.liveBranch, "next");
-    assert.deepStrictEqual(fake.requests.slice(before).map((r) => r.path), ["/api/v1/knowledge-bases"]);
+    assert.deepStrictEqual(
+      fake.requests.slice(before).map((r) => r.path),
+      ["/api/v1/knowledge-bases"]
+    );
     assert.strictEqual(git(demo, "rev-parse", "master"), git(dir, "rev-parse", "master"));
   });
 });
@@ -547,7 +612,18 @@ test("push resolves a relative dir against the cwd it is given, never process.cw
 });
 
 test("a listing entry with control or format characters in a text field is an invalid listing", async () => {
-  const good = { id: null, status: "ok", ref: "global/a", scope: "global", tenant: null, name: "a", title: "A", liveBranch: "master", canPush: true, gitUrl: "http://x/a.git" };
+  const good = {
+    id: null,
+    status: "ok",
+    ref: "global/a",
+    scope: "global",
+    tenant: null,
+    name: "a",
+    title: "A",
+    liveBranch: "master",
+    canPush: true,
+    gitUrl: "http://x/a.git",
+  };
   const bad = ["\u001b[31mred", "a\u0007b", "a\u200bb", "a\u202eb", "a\ufeffb", "a\u007fb"];
   for (const field of ["ref", "name", "title", "liveBranch"]) {
     for (const value of bad) {
@@ -641,7 +717,10 @@ test("push where canPush is false is refused early with the ref, and nothing rea
     assert.ok(error instanceof Err.GatewayNotPermittedError);
     assert.strictEqual(error.ref, "global/other");
     const sent = fake.requests.slice(before);
-    assert.deepStrictEqual(sent.map((r) => r.path), ["/api/v1/knowledge-bases"]);
+    assert.deepStrictEqual(
+      sent.map((r) => r.path),
+      ["/api/v1/knowledge-bases"]
+    );
   });
 });
 
@@ -671,14 +750,20 @@ test("push from a clone not on the live branch, or detached, is refused early wi
     assert.strictEqual(error.ref, "global/demo");
     assert.strictEqual(error.branch, "side");
     assert.strictEqual(error.liveBranch, "master");
-    assert.deepStrictEqual(fake.requests.slice(before).map((r) => r.path), ["/api/v1/knowledge-bases"]);
+    assert.deepStrictEqual(
+      fake.requests.slice(before).map((r) => r.path),
+      ["/api/v1/knowledge-bases"]
+    );
 
     git(dir, "checkout", "-q", "--detach");
     before = fake.requests.length;
     error = await rejectsWith(kb.push(dir), Err.GatewayKnowledgeBaseError);
     assert.strictEqual(error.reason, "wrong-branch");
     assert.strictEqual(error.branch, null);
-    assert.deepStrictEqual(fake.requests.slice(before).map((r) => r.path), ["/api/v1/knowledge-bases"]);
+    assert.deepStrictEqual(
+      fake.requests.slice(before).map((r) => r.path),
+      ["/api/v1/knowledge-bases"]
+    );
   });
 });
 
@@ -727,7 +812,9 @@ test("push from a folder that is not a clone, or a clone of an unlisted reposito
     failures++;
     console.error(`  ✗ the token never appears in a thrown message or log line\n    ${leaks.join("\n    ")}`);
   } else {
-    console.log(`  ✓ the token never appears in a thrown message or log line (${thrownMessages.length} errors, ${logLines.length} log lines)`);
+    console.log(
+      `  ✓ the token never appears in a thrown message or log line (${thrownMessages.length} errors, ${logLines.length} log lines)`
+    );
   }
 
   for (const dir of scratch) {

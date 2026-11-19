@@ -21,7 +21,7 @@ additionally ships vscode-free test doubles (e.g. `MockFileSystem`) for them to 
 
 `B6PUri.test.js` is the pattern to copy: it hardcodes no absolute path and no `file://` literal
 embedding one, building every case from `path.parse(process.cwd()).root` + `path.join` and deriving
-every expectation from Node's own `pathToFileURL` — so each assertion states a *relationship* rather
+every expectation from Node's own `pathToFileURL` — so each assertion states a _relationship_ rather
 than a spelling.
 
 Literals are fine where the code under test is pure URL parsing, which is platform-independent; that

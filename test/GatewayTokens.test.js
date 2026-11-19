@@ -199,7 +199,17 @@ test("a numeric id from the gateway is kept as a string", async () => {
     fake.failNext({
       status: 200,
       body: {
-        tokens: [{ id: 42, alias: "n", scopes: [], createdAt: "2026-01-01T00:00:00Z", expiresAt: null, lastUsedAt: null, current: true }],
+        tokens: [
+          {
+            id: 42,
+            alias: "n",
+            scopes: [],
+            createdAt: "2026-01-01T00:00:00Z",
+            expiresAt: null,
+            lastUsedAt: null,
+            current: true,
+          },
+        ],
       },
     });
     const [t] = await core.gateway.tokens.list();
@@ -210,42 +220,65 @@ test("a numeric id from the gateway is kept as a string", async () => {
 // ── create ──────────────────────────────────────────────────────────────
 
 test("create returns the secret once, with the default 90-day expiry when none is given", async () => {
-  await withCore(async (fake, core) => {
-    const minted = await core.gateway.tokens.create({ alias: "ci", scopes: [Gateway.Scopes.KB_READ] });
-    secrets.add(minted.token);
-    assert.ok(minted.token.startsWith(Gateway.TOKEN_PREFIX));
-    assert.strictEqual(minted.alias, "ci");
-    assert.deepStrictEqual(minted.scopes, [Gateway.Scopes.KB_READ]);
-    assert.strictEqual(minted.neverExpires, false);
-    const days = (Date.parse(minted.expiresAt) - Date.now()) / DAY_MS;
-    assert.ok(days > 89 && days <= 90, `expected ~90 days, got ${days}`);
-    const post = tokenRequests(fake).find((r) => r.method === "POST");
-    assert.deepStrictEqual(JSON.parse(post.body), { alias: "ci", scopes: [Gateway.Scopes.KB_READ] }, "expiresAt left out");
-    assert.strictEqual(minted.expiryCapped, null, "a never-expiring presenting token caps nothing");
-    assert.ok(fake.issuedTokens().some((t) => t.secret === minted.token), "the fake accepts the minted token");
-  }, ALL_SCOPES, { expiresAt: null });
+  await withCore(
+    async (fake, core) => {
+      const minted = await core.gateway.tokens.create({ alias: "ci", scopes: [Gateway.Scopes.KB_READ] });
+      secrets.add(minted.token);
+      assert.ok(minted.token.startsWith(Gateway.TOKEN_PREFIX));
+      assert.strictEqual(minted.alias, "ci");
+      assert.deepStrictEqual(minted.scopes, [Gateway.Scopes.KB_READ]);
+      assert.strictEqual(minted.neverExpires, false);
+      const days = (Date.parse(minted.expiresAt) - Date.now()) / DAY_MS;
+      assert.ok(days > 89 && days <= 90, `expected ~90 days, got ${days}`);
+      const post = tokenRequests(fake).find((r) => r.method === "POST");
+      assert.deepStrictEqual(
+        JSON.parse(post.body),
+        { alias: "ci", scopes: [Gateway.Scopes.KB_READ] },
+        "expiresAt left out"
+      );
+      assert.strictEqual(minted.expiryCapped, null, "a never-expiring presenting token caps nothing");
+      assert.ok(
+        fake.issuedTokens().some((t) => t.secret === minted.token),
+        "the fake accepts the minted token"
+      );
+    },
+    ALL_SCOPES,
+    { expiresAt: null }
+  );
 });
 
 test("create with expiresAt: null sends null and round-trips as neverExpires through list and rotate", async () => {
-  await withCore(async (fake, core) => {
-    const minted = await core.gateway.tokens.create({ alias: "forever", scopes: [Gateway.Scopes.KB_READ], expiresAt: null });
-    assert.strictEqual(minted.expiresAt, null);
-    assert.strictEqual(minted.neverExpires, true);
-    const post = tokenRequests(fake).find((r) => r.method === "POST");
-    assert.strictEqual(JSON.parse(post.body).expiresAt, null);
-    const listed = (await core.gateway.tokens.list()).find((t) => t.alias === "forever");
-    assert.strictEqual(listed.expiresAt, null);
-    assert.strictEqual(listed.neverExpires, true);
-    const rotated = await core.gateway.tokens.rotate("forever");
-    assert.strictEqual(rotated.token.expiresAt, null);
-    assert.strictEqual(rotated.token.neverExpires, true);
-  }, ALL_SCOPES, { expiresAt: null });
+  await withCore(
+    async (fake, core) => {
+      const minted = await core.gateway.tokens.create({
+        alias: "forever",
+        scopes: [Gateway.Scopes.KB_READ],
+        expiresAt: null,
+      });
+      assert.strictEqual(minted.expiresAt, null);
+      assert.strictEqual(minted.neverExpires, true);
+      const post = tokenRequests(fake).find((r) => r.method === "POST");
+      assert.strictEqual(JSON.parse(post.body).expiresAt, null);
+      const listed = (await core.gateway.tokens.list()).find((t) => t.alias === "forever");
+      assert.strictEqual(listed.expiresAt, null);
+      assert.strictEqual(listed.neverExpires, true);
+      const rotated = await core.gateway.tokens.rotate("forever");
+      assert.strictEqual(rotated.token.expiresAt, null);
+      assert.strictEqual(rotated.token.neverExpires, true);
+    },
+    ALL_SCOPES,
+    { expiresAt: null }
+  );
 });
 
 test("create with an explicit expiresAt sends it and gets it back", async () => {
   await withCore(async (_fake, core) => {
     const at = "2027-02-01T00:00:00.000Z";
-    const minted = await core.gateway.tokens.create({ alias: "dated", scopes: [Gateway.Scopes.KB_READ], expiresAt: at });
+    const minted = await core.gateway.tokens.create({
+      alias: "dated",
+      scopes: [Gateway.Scopes.KB_READ],
+      expiresAt: at,
+    });
     assert.strictEqual(minted.expiresAt, at);
     assert.strictEqual(minted.neverExpires, false);
   });
@@ -292,25 +325,44 @@ test("expiryCapped is reported only when the cap cuts more than 24 hours off the
 });
 
 test("expiryCapped is derived from the 201's expiresAt, not from anything the client read first", async () => {
-  await withCore(async (fake, core) => {
-    const cappedTo = new Date(Date.now() + 30 * DAY_MS).toISOString();
-    fake.failNext({
-      method: "POST",
-      status: 201,
-      body: JSON.stringify({ id: "tok_z", token: "b6pt_derived_cap_0001", alias: "d", scopes: ["kb:read"], expiresAt: cappedTo }),
-    });
-    secrets.add("b6pt_derived_cap_0001");
-    const minted = await core.gateway.tokens.create({ alias: "d", scopes: [Gateway.Scopes.KB_READ] });
-    assert.deepStrictEqual(minted.expiryCapped, { cappedTo, requested: "90d" });
-    assert.strictEqual(tokenRequests(fake).filter((r) => r.method === "GET").length, 0);
-    fake.failNext({
-      method: "POST",
-      status: 201,
-      body: JSON.stringify({ id: "tok_y", token: "b6pt_derived_cap_0002", alias: "e", scopes: ["kb:read"], expiresAt: new Date(Date.now() + 89.5 * DAY_MS).toISOString() }),
-    });
-    secrets.add("b6pt_derived_cap_0002");
-    assert.strictEqual((await core.gateway.tokens.create({ alias: "e", scopes: [Gateway.Scopes.KB_READ] })).expiryCapped, null);
-  }, ALL_SCOPES, { expiresAt: null });
+  await withCore(
+    async (fake, core) => {
+      const cappedTo = new Date(Date.now() + 30 * DAY_MS).toISOString();
+      fake.failNext({
+        method: "POST",
+        status: 201,
+        body: JSON.stringify({
+          id: "tok_z",
+          token: "b6pt_derived_cap_0001",
+          alias: "d",
+          scopes: ["kb:read"],
+          expiresAt: cappedTo,
+        }),
+      });
+      secrets.add("b6pt_derived_cap_0001");
+      const minted = await core.gateway.tokens.create({ alias: "d", scopes: [Gateway.Scopes.KB_READ] });
+      assert.deepStrictEqual(minted.expiryCapped, { cappedTo, requested: "90d" });
+      assert.strictEqual(tokenRequests(fake).filter((r) => r.method === "GET").length, 0);
+      fake.failNext({
+        method: "POST",
+        status: 201,
+        body: JSON.stringify({
+          id: "tok_y",
+          token: "b6pt_derived_cap_0002",
+          alias: "e",
+          scopes: ["kb:read"],
+          expiresAt: new Date(Date.now() + 89.5 * DAY_MS).toISOString(),
+        }),
+      });
+      secrets.add("b6pt_derived_cap_0002");
+      assert.strictEqual(
+        (await core.gateway.tokens.create({ alias: "e", scopes: [Gateway.Scopes.KB_READ] })).expiryCapped,
+        null
+      );
+    },
+    ALL_SCOPES,
+    { expiresAt: null }
+  );
 });
 
 test("create with no expiry and a presenting token past 90 days sends no expiry and reports no cap", async () => {
@@ -332,7 +384,11 @@ test("create with an explicit expiry or never is sent as asked, never capped", a
   const within = new Date(Date.now() + 5 * DAY_MS).toISOString();
   await withCore(
     async (fake, core) => {
-      const minted = await core.gateway.tokens.create({ alias: "w", scopes: [Gateway.Scopes.KB_READ], expiresAt: within });
+      const minted = await core.gateway.tokens.create({
+        alias: "w",
+        scopes: [Gateway.Scopes.KB_READ],
+        expiresAt: within,
+      });
       secrets.add(minted.token);
       assert.strictEqual(minted.expiresAt, within);
       assert.strictEqual(minted.expiryCapped, null);
@@ -395,7 +451,10 @@ test("403 not-permitted reason restricted-mints-disabled → GatewayRestrictedMi
       assert.strictEqual(error.reason, "restricted-mints-disabled");
       assert.ok(!(error instanceof Err.GatewayTokenExpiryRefusedError));
       await rejectsWith(core.gateway.tokens.rotate("laptop"), Err.GatewayRestrictedMintsDisabledError);
-      assert.ok(fake.issuedTokens().some((t) => t.secret === TOKEN), "the refused rotate revoked nothing");
+      assert.ok(
+        fake.issuedTokens().some((t) => t.secret === TOKEN),
+        "the refused rotate revoked nothing"
+      );
     },
     ALL_SCOPES,
     { expiresAt: null }
@@ -417,7 +476,11 @@ test("403 not-permitted reason rewrite-not-permitted → GatewayRewriteNotPermit
       assert.strictEqual(error.status, 403);
       assert.ok(!/flag|administrator|--/.test(error.message), "the message says what happened, not how to respond");
       await rejectsWith(core.gateway.tokens.rotate("rw"), Err.GatewayRewriteNotPermittedError);
-      const plain = await core.gateway.tokens.create({ alias: "plain", scopes: [Gateway.Scopes.KB_READ], expiresAt: null });
+      const plain = await core.gateway.tokens.create({
+        alias: "plain",
+        scopes: [Gateway.Scopes.KB_READ],
+        expiresAt: null,
+      });
       assert.ok(plain.token, "a token without kb:rewrite is still mintable");
     },
     [...ALL_SCOPES, "kb:rewrite"],
@@ -430,7 +493,11 @@ test("rotate refused for expiry carries no requested expiry", async () => {
     fake.failNext({
       method: "POST",
       status: 403,
-      body: { error: "not-permitted", reason: "expiry-exceeds-presenting", presentingExpiresAt: "2031-01-01T00:00:00Z" },
+      body: {
+        error: "not-permitted",
+        reason: "expiry-exceeds-presenting",
+        presentingExpiresAt: "2031-01-01T00:00:00Z",
+      },
     });
     const error = await rejectsWith(core.gateway.tokens.rotate("laptop"), Err.GatewayTokenExpiryRefusedError);
     assert.strictEqual(error.requestedExpiresAt, undefined);
@@ -456,17 +523,21 @@ test("a 403 not-permitted with an unknown or missing reason stays a plain Gatewa
 });
 
 test("409 token-limit on a mint → GatewayTokenLimitError carrying the limit", async () => {
-  await withCore(async (fake, core) => {
-    for (let n = 0; n < 49; n++) {
-      fake.grantToken(`b6pt_filler_${n}`, [Gateway.Scopes.KB_READ], { alias: `filler-${n}`, expiresAt: null });
-    }
-    const error = await rejectsWith(
-      core.gateway.tokens.create({ alias: "one-too-many", scopes: [Gateway.Scopes.KB_READ], expiresAt: null }),
-      Err.GatewayTokenLimitError
-    );
-    assert.strictEqual(error.limit, 50);
-    assert.strictEqual(error.status, 409);
-  }, ALL_SCOPES, { expiresAt: null });
+  await withCore(
+    async (fake, core) => {
+      for (let n = 0; n < 49; n++) {
+        fake.grantToken(`b6pt_filler_${n}`, [Gateway.Scopes.KB_READ], { alias: `filler-${n}`, expiresAt: null });
+      }
+      const error = await rejectsWith(
+        core.gateway.tokens.create({ alias: "one-too-many", scopes: [Gateway.Scopes.KB_READ], expiresAt: null }),
+        Err.GatewayTokenLimitError
+      );
+      assert.strictEqual(error.limit, 50);
+      assert.strictEqual(error.status, 409);
+    },
+    ALL_SCOPES,
+    { expiresAt: null }
+  );
 });
 
 test("kb:rewrite is not refused client-side: it is sent to the gateway on mint and rotate", async () => {
@@ -511,7 +582,9 @@ test("list derives expired, accepts a null createdAt, and keeps expired tokens",
     // A listing that leaves createdAt out altogether reads as null too.
     fake.failNext({
       status: 200,
-      body: JSON.stringify({ tokens: [{ id: "t1", alias: "a", scopes: [], expiresAt: null, lastUsedAt: null, current: true }] }),
+      body: JSON.stringify({
+        tokens: [{ id: "t1", alias: "a", scopes: [], expiresAt: null, lastUsedAt: null, current: true }],
+      }),
     });
     const [only] = await core.gateway.tokens.list();
     assert.strictEqual(only.createdAt, null);
@@ -640,7 +713,10 @@ test("an id or alias resolves to exactly one token; none → GatewayNotFoundErro
       await rejectsWith(core.gateway.tokens.revoke(missing), Err.GatewayNotFoundError);
       await rejectsWith(core.gateway.tokens.rotate(missing), Err.GatewayNotFoundError);
     }
-    assert.ok(tokenRequests(fake).every((r) => r.method === "GET"), "only list() was sent");
+    assert.ok(
+      tokenRequests(fake).every((r) => r.method === "GET"),
+      "only list() was sent"
+    );
     assert.strictEqual(fake.issuedTokens().length, 2);
   });
 });
@@ -674,9 +750,14 @@ test("revoke by alias or by id deletes that token by id", async () => {
     assert.deepStrictEqual(byAlias, { id: "tok/ci", alias: "ci", revokedCurrent: false });
     const byId = await core.gateway.tokens.revoke("tok_old");
     assert.deepStrictEqual(byId, { id: "tok_old", alias: "old", revokedCurrent: false });
-    const deletes = tokenRequests(fake).filter((r) => r.method === "DELETE").map((r) => r.path);
+    const deletes = tokenRequests(fake)
+      .filter((r) => r.method === "DELETE")
+      .map((r) => r.path);
     assert.deepStrictEqual(deletes, [`${Gateway.Paths.TOKENS}/tok%2Fci`, `${Gateway.Paths.TOKENS}/tok_old`]);
-    assert.deepStrictEqual(fake.issuedTokens().map((t) => t.alias), ["laptop"]);
+    assert.deepStrictEqual(
+      fake.issuedTokens().map((t) => t.alias),
+      ["laptop"]
+    );
   });
 });
 
@@ -709,7 +790,9 @@ test("rotating another token keeps its alias, scopes and end date, revokes the o
     const secretsNow = fake.issuedTokens().map((t) => t.secret);
     assert.ok(!secretsNow.includes("b6pt_ci_old"), "the old token is revoked");
     assert.ok(secretsNow.includes(result.token.token));
-    assert.ok(tokenRequests(fake).some((r) => r.method === "POST" && r.path === `${Gateway.Paths.TOKENS}/tok_ci/rotate`));
+    assert.ok(
+      tokenRequests(fake).some((r) => r.method === "POST" && r.path === `${Gateway.Paths.TOKENS}/tok_ci/rotate`)
+    );
   });
 });
 
@@ -720,7 +803,10 @@ test("rotating the stored token stores the replacement, and the next request pre
     assert.deepStrictEqual(result.replaced, { id: "tok_laptop", alias: "laptop" });
     assert.strictEqual(env.storedToken(), result.token.token, "the replacement is the stored token");
     const tokens = await core.gateway.tokens.list();
-    assert.deepStrictEqual(tokens.map((t) => [t.alias, t.current]), [["laptop", true]]);
+    assert.deepStrictEqual(
+      tokens.map((t) => [t.alias, t.current]),
+      [["laptop", true]]
+    );
     assert.strictEqual(fake.requests.at(-1).authorization, `Bearer ${result.token.token}`);
   });
 });
@@ -733,7 +819,10 @@ test("a store failure after the stored token rotated throws GatewayTokenStoreErr
     secrets.add(replacement.token);
     assert.strictEqual(error.code, "store-failed");
     assert.strictEqual(replacement.alias, "laptop");
-    assert.ok(fake.issuedTokens().some((t) => t.secret === replacement.token), "the carried secret is the live token");
+    assert.ok(
+      fake.issuedTokens().some((t) => t.secret === replacement.token),
+      "the carried secret is the live token"
+    );
     assert.ok(!fake.issuedTokens().some((t) => t.secret === TOKEN), "the old token is revoked");
     assert.strictEqual(env.storedToken(), TOKEN, "the stored value is unchanged");
     assert.ok(!Object.keys(error).includes("replacement"), "the secret is non-enumerable on the error");
@@ -817,7 +906,10 @@ test("P0: an off-contract rotate answer of the stored token keeps the secret and
       const error = await rejectsWith(core.gateway.tokens.rotate("laptop"), Err.GatewayOffContractTokenError);
       assert.strictEqual(error.operation, "rotate");
       assert.strictEqual(typeof error.secret, "string");
-      assert.ok(fake.issuedTokens().some((t) => t.secret === error.secret), "the carried secret is the live token");
+      assert.ok(
+        fake.issuedTokens().some((t) => t.secret === error.secret),
+        "the carried secret is the live token"
+      );
       assert.strictEqual(error.stored, true);
       assert.strictEqual(env.storedToken(), error.secret, "the replacement was still stored");
       assert.ok(!Object.keys(error).includes("secret"), "the secret is non-enumerable on the error");
@@ -945,7 +1037,10 @@ test("P3: the fake honours expiresAt: an expired token is 401 token-invalid", as
       assert.strictEqual(error.reason, "token-invalid");
     },
     ALL_SCOPES,
-    { createdAt: new Date(Date.now() - 2 * DAY_MS).toISOString(), expiresAt: new Date(Date.now() - DAY_MS).toISOString() }
+    {
+      createdAt: new Date(Date.now() - 2 * DAY_MS).toISOString(),
+      expiresAt: new Date(Date.now() - DAY_MS).toISOString(),
+    }
   );
 });
 
@@ -978,15 +1073,31 @@ test("rev2 P1: a foreign overwrite right after the store's write → GatewayToke
   await withCore(async (fake, core, env) => {
     env.state.foreignOverwrite = true;
     const error = await rejectsWith(core.gateway.tokens.rotate("laptop"), Err.GatewayTokenStoreError);
-    assert.ok(fake.issuedTokens().some((t) => t.secret === error.replacement.token), "the carried secret is the live token");
-    assert.strictEqual(env.storedToken(), TOKEN, "the foreign write won; the store reports it instead of claiming success");
+    assert.ok(
+      fake.issuedTokens().some((t) => t.secret === error.replacement.token),
+      "the carried secret is the live token"
+    );
+    assert.strictEqual(
+      env.storedToken(),
+      TOKEN,
+      "the foreign write won; the store reports it instead of claiming success"
+    );
   });
 });
 
 test("rev2 P3: create accepts a strict ISO 8601 date-time with Z or an offset", async () => {
   await withCore(async (_fake, core) => {
-    for (const at of ["2027-02-01T00:00:00Z", "2027-02-01T00:00:00.123Z", "2027-02-01T08:30:00+05:30", "2027-02-01T00:00Z"]) {
-      const minted = await core.gateway.tokens.create({ alias: `a${at.length}${at.slice(-3)}`, scopes: [Gateway.Scopes.KB_READ], expiresAt: at });
+    for (const at of [
+      "2027-02-01T00:00:00Z",
+      "2027-02-01T00:00:00.123Z",
+      "2027-02-01T08:30:00+05:30",
+      "2027-02-01T00:00Z",
+    ]) {
+      const minted = await core.gateway.tokens.create({
+        alias: `a${at.length}${at.slice(-3)}`,
+        scopes: [Gateway.Scopes.KB_READ],
+        expiresAt: at,
+      });
       assert.strictEqual(minted.expiresAt, at);
     }
   });
@@ -1040,7 +1151,10 @@ for (const [label, misbehave] of [
     const fake = await FakeGateway.start();
     try {
       fake.grantToken(TOKEN, ALL_SCOPES, { id: "tok_laptop", alias: "laptop" });
-      const error = await rejectsWith(serviceWith(fake, isRotate, misbehave).rotate("laptop"), Err.GatewayOutcomeUnknownError);
+      const error = await rejectsWith(
+        serviceWith(fake, isRotate, misbehave).rotate("laptop"),
+        Err.GatewayOutcomeUnknownError
+      );
       assert.ok(error instanceof Err.GatewayUnavailableError, "still an unavailable error for generic handlers");
       assert.strictEqual(error.operation, "rotate");
       assert.strictEqual(error.code, "outcome-unknown");
@@ -1074,9 +1188,13 @@ test("rev2 P2: a request that never reached the gateway stays a plain GatewayUna
   const fake = await FakeGateway.start();
   try {
     fake.grantToken(TOKEN, ALL_SCOPES, { id: "tok_laptop", alias: "laptop" });
-    const service = serviceWith(fake, () => true, async () => {
-      throw new TypeError("fetch failed: ECONNREFUSED");
-    });
+    const service = serviceWith(
+      fake,
+      () => true,
+      async () => {
+        throw new TypeError("fetch failed: ECONNREFUSED");
+      }
+    );
     const error = await rejectsWith(service.list(), Err.GatewayUnavailableError);
     assert.ok(!(error instanceof Err.GatewayOutcomeUnknownError));
   } finally {
@@ -1096,7 +1214,10 @@ test("rotate sends an Idempotency-Key: a UUID, fresh per call", async () => {
     await core.gateway.tokens.rotate("ci");
     const keys = rotatePosts(fake).map((r) => r.idempotencyKey);
     assert.strictEqual(keys.length, 2);
-    assert.ok(keys.every((k) => UUID.test(k)), `UUIDs, got ${keys.join(", ")}`);
+    assert.ok(
+      keys.every((k) => UUID.test(k)),
+      `UUIDs, got ${keys.join(", ")}`
+    );
     assert.notStrictEqual(keys[0], keys[1], "a new key per call");
     assert.strictEqual(fake.rotations, 2);
     assert.ok(!logLines.some((line) => keys.some((k) => line.includes(k))), "the key is never logged");
@@ -1187,7 +1308,11 @@ test("any other error on the retry passes through (here a 403 expiry refusal, st
     fake.failNext({
       method: "POST",
       status: 403,
-      body: { error: "not-permitted", reason: "expiry-exceeds-presenting", presentingExpiresAt: "2031-01-01T00:00:00Z" },
+      body: {
+        error: "not-permitted",
+        reason: "expiry-exceeds-presenting",
+        presentingExpiresAt: "2031-01-01T00:00:00Z",
+      },
     });
     await rejectsWith(core.gateway.tokens.rotate("laptop"), Err.GatewayTokenExpiryRefusedError);
     assert.strictEqual(rotatePosts(fake).length, 2);
@@ -1229,8 +1354,14 @@ test("GatewayRequestOptions.headers: extra headers are sent; Authorization, Cook
       );
       assert.ok(!error.message.includes("b6pt_overridden"), "the value is never quoted");
     }
-    await rejectsWith(client.request("GET", Gateway.Paths.TOKENS, { headers: { "X-Bad": "a\r\nb" } }), Err.GatewayConfigError);
-    await rejectsWith(client.request("GET", Gateway.Paths.TOKENS, { headers: { "Bad Name": "x" } }), Err.GatewayConfigError);
+    await rejectsWith(
+      client.request("GET", Gateway.Paths.TOKENS, { headers: { "X-Bad": "a\r\nb" } }),
+      Err.GatewayConfigError
+    );
+    await rejectsWith(
+      client.request("GET", Gateway.Paths.TOKENS, { headers: { "Bad Name": "x" } }),
+      Err.GatewayConfigError
+    );
     assert.strictEqual(fake.requests.length, before, "nothing was sent");
   });
 });

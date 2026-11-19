@@ -101,6 +101,33 @@ export interface GatewaySequence {
    * @lastreviewed null
    */
   request(method: string, path: string, options?: GatewayRequestOptions): Promise<JsonValue | undefined>;
+  /**
+   * Like {@link request}, but also returns the status and the `ETag` header.
+   * @lastreviewed null
+   */
+  requestDetailed(method: string, path: string, options?: GatewayRequestOptions): Promise<GatewayResponse>;
+}
+
+/**
+ * One REST answer with what a caller may need besides the body.
+ * @lastreviewed null
+ */
+export interface GatewayResponse {
+  /**
+   * The HTTP status (a 2xx; anything else is thrown).
+   * @lastreviewed null
+   */
+  status: number;
+  /**
+   * The parsed JSON body, `undefined` when it was empty.
+   * @lastreviewed null
+   */
+  body: JsonValue | undefined;
+  /**
+   * The `ETag` response header exactly as sent, `null` when there was none.
+   * @lastreviewed null
+   */
+  etag: string | null;
 }
 
 /**
@@ -266,6 +293,16 @@ export function gatewayErrorFor(status: number, bodyText: string, what: string, 
         return new Err.GatewayConflictError(msg("the update does not build on the current branch head"), code);
       }
       return new Err.GatewayConflictError(msg("the request conflicts with the current state"), code);
+    case 412:
+      return new Err.GatewayPreconditionFailedError(
+        msg("the knowledge base changed after it was read, so nothing was changed"),
+        code
+      );
+    case 428:
+      return new Err.GatewayPreconditionRequiredError(
+        msg("the change did not say which version it was made against"),
+        code
+      );
     case 413:
       return new Err.GatewayTooLargeError(msg("the request is larger than the gateway accepts"), code);
     case 503:
@@ -374,6 +411,15 @@ export class GatewayClient {
   }
 
   /**
+   * {@link request}, returning the status and `ETag` header with the body. Same queue, same rules (gateway
+   * origin only, no redirects, timeout, token redaction).
+   * @lastreviewed null
+   */
+  requestDetailed(method: string, path: string, options: GatewayRequestOptions = {}): Promise<GatewayResponse> {
+    return this.sequence((seq) => seq.requestDetailed(method, path, options));
+  }
+
+  /**
    * Run `unit` as ONE entry in this client's one-at-a-time queue, behind any request or unit
    * already in flight. Nothing else on this client runs until `unit` settles. The git layer wraps
    * a whole operation (several HTTP requests) in this so git traffic and REST calls never overlap
@@ -395,6 +441,12 @@ export class GatewayClient {
       const seq: GatewaySequence = {
         token,
         request: async (method, path, options = {}) => {
+          if (!open) {
+            throw new Err.GatewayConfigError("A gateway request was sent through a sequence that has ended.");
+          }
+          return (await this.send(method, path, options, token)).body;
+        },
+        requestDetailed: async (method, path, options = {}) => {
           if (!open) {
             throw new Err.GatewayConfigError("A gateway request was sent through a sequence that has ended.");
           }
@@ -429,7 +481,7 @@ export class GatewayClient {
     path: string,
     options: GatewayRequestOptions,
     readToken: () => Promise<string>
-  ): Promise<JsonValue | undefined> {
+  ): Promise<GatewayResponse> {
     const origin = await this.origin();
     // Neither message quotes the path: it may carry caller or server input.
     if (!path.startsWith("/") || path.startsWith("//")) {
@@ -497,11 +549,12 @@ export class GatewayClient {
     if (!response.ok) {
       throw gatewayErrorFor(response.status, text, what, token);
     }
+    const etag = response.headers.get("ETag");
     if (text.length === 0) {
-      return undefined;
+      return { status: response.status, body: undefined, etag };
     }
     try {
-      return JSON.parse(text) as JsonValue;
+      return { status: response.status, body: JSON.parse(text) as JsonValue, etag };
     } catch {
       throw new Err.GatewayUnexpectedResponseError(
         `${what}: the gateway answered ${response.status} with a body that is not JSON.`,

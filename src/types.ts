@@ -830,6 +830,98 @@ export interface GatewayKnowledgeBase {
    * @lastreviewed null
    */
   gitUrl: string;
+  /**
+   * Who may read the knowledge base. Absent when the gateway did not say (one that predates public
+   * knowledge bases); never assume `public` from an absent or unknown value.
+   * @lastreviewed null
+   */
+  access?: GatewayKnowledgeBaseAccess;
+}
+
+/**
+ * A knowledge base's access, as the gateway reports it: `{ kind: "public" }` (anyone may read it with no
+ * sign-in), `{ kind: "private" }`, or a kind this version of core does not know. The kind is matched exactly
+ * (`"public"` and `"private"`, lower case); anything else, including `"Public"`, is `unknown`, which must be
+ * treated as private. `rawKind` is the kind as sent (`null` when it was not a string) and `raw` the whole value.
+ * A kind that carries a permission object may follow, which is why this is a union and not a boolean.
+ * @lastreviewed null
+ */
+export type GatewayKnowledgeBaseAccess =
+  | { kind: "public" }
+  | { kind: "private" }
+  | { kind: "unknown"; rawKind: string | null; raw: JsonValue };
+
+/**
+ * An access a caller may set: public or private. An `unknown` access read from the gateway is never accepted
+ * here, so it can never be sent back.
+ * @lastreviewed null
+ */
+export type GatewayKnowledgeBaseAccessInput = { kind: "public" } | { kind: "private" };
+
+/**
+ * A global knowledge base as the admin routes (`POST`, `GET /{id}`, `PATCH /{id}`) describe it.
+ * @lastreviewed null
+ */
+export interface GatewayKnowledgeBaseDetail {
+  /**
+   * web-global's id (a uuid), the path segment of `GET`/`PATCH /api/v1/knowledge-bases/{id}`.
+   * @lastreviewed null
+   */
+  id: string;
+  /**
+   * The CLI address, `global/<name>`.
+   * @lastreviewed null
+   */
+  ref: string;
+  name: string;
+  title: string;
+  liveBranch: string;
+  /**
+   * Absolute smart-HTTP URL, server-built.
+   * @lastreviewed null
+   */
+  gitUrl: string;
+  /**
+   * `undefined` when the gateway did not report one (it predates public knowledge bases).
+   * @lastreviewed null
+   */
+  access?: GatewayKnowledgeBaseAccess;
+}
+
+/**
+ * A knowledge base read with the version a change must name: the `ETag` of `GET /{id}`, sent back as `If-Match`.
+ * @lastreviewed null
+ */
+export interface GatewayKnowledgeBaseVersion {
+  kb: GatewayKnowledgeBaseDetail;
+  /**
+   * The `ETag` exactly as the gateway sent it (quotes included). Opaque: pass it to `update` unchanged.
+   * @lastreviewed null
+   */
+  etag: string;
+}
+
+/**
+ * Body of `POST /api/v1/knowledge-bases`: register a global knowledge base (which creates its repository).
+ * Only what is given is sent, so the gateway's defaults apply (title = name, live branch `master`, private).
+ * @lastreviewed null
+ */
+export interface GatewayKnowledgeBaseCreateRequest {
+  name: string;
+  title?: string;
+  liveBranch?: string;
+  access?: GatewayKnowledgeBaseAccessInput;
+}
+
+/**
+ * Body of `PATCH /api/v1/knowledge-bases/{id}`: every field given changes in one request; an absent one is
+ * left as it is. At least one is required.
+ * @lastreviewed null
+ */
+export interface GatewayKnowledgeBaseChanges {
+  title?: string;
+  liveBranch?: string;
+  access?: GatewayKnowledgeBaseAccessInput;
 }
 
 /**

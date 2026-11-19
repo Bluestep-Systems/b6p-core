@@ -114,7 +114,12 @@ export type {
   GatewayKbPushResult,
 } from "./gateway/GatewayKb";
 export { GatewayClient, gatewayErrorFor, parseGatewayOrigin } from "./gateway/GatewayClient";
-export type { GatewayClientOptions, GatewayRequestOptions, GatewaySequence } from "./gateway/GatewayClient";
+export type {
+  GatewayClientOptions,
+  GatewayRequestOptions,
+  GatewayResponse,
+  GatewaySequence,
+} from "./gateway/GatewayClient";
 export type { GatewayContext, GatewayFetch } from "./gateway/GatewayContext";
 export { gatewayTokenProblem, redactToken } from "./gateway/GatewayToken";
 
@@ -223,6 +228,12 @@ export type {
   GatewayKnowledgeBase,
   GatewayKnowledgeBaseStatus,
   GatewayKnowledgeBaseList,
+  GatewayKnowledgeBaseAccess,
+  GatewayKnowledgeBaseAccessInput,
+  GatewayKnowledgeBaseDetail,
+  GatewayKnowledgeBaseVersion,
+  GatewayKnowledgeBaseCreateRequest,
+  GatewayKnowledgeBaseChanges,
   GatewayMarketplaceRepo,
   GatewayMarketplaceRepoList,
   GatewayCreatedToken,
