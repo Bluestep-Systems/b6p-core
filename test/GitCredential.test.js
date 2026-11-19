@@ -2230,6 +2230,35 @@ test("a host's once or self-removing signal handler registered first gets to fin
   }
 });
 
+test("a host's once handler that does not exit uses up the first SIGINT; a second one stops the process", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
+  const dir = fs.mkdtempSync(path.join(tmp, "sig-twice-"));
+  const lock = path.join(dir, "state.lock");
+  const ran = path.join(dir, "host-ran");
+  const { proc, ended } = await childHolding(
+    lock,
+    `process.once("SIGINT", () => fs.writeFileSync(${JSON.stringify(ran)}, ""));`
+  );
+  try {
+    proc.kill("SIGINT");
+    for (let i = 0; i < 40 && !fs.existsSync(ran); i++) {
+      await sleepMs(25);
+    }
+    assert.ok(fs.existsSync(ran), "the host's handler took the first SIGINT");
+    await sleepMs(100);
+    assert.ok(fs.existsSync(lock), "b6p stood aside for it: the lock is still held");
+    proc.kill("SIGINT");
+    const outcome = await Promise.race([ended, sleepMs(2000).then(() => "still running")]);
+    assert.notStrictEqual(outcome, "still running", "the second SIGINT was swallowed");
+    assert.strictEqual(outcome.sig, "SIGINT", "stopped by the signal");
+    assert.ok(!fs.existsSync(lock), "the lock went with it");
+  } finally {
+    proc.kill("SIGKILL");
+  }
+});
+
 test("an uncaught exception caught by a capture callback leaves the work its lock", async () => {
   const fileLock = path.join(__dirname, "..", "dist", "persistence", "fileLock.js");
   const lock = path.join(fs.mkdtempSync(path.join(tmp, "capture-")), "state.lock");

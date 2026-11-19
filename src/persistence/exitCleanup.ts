@@ -16,9 +16,9 @@ export interface ExitCleanupEntry {
 
 const entries = new Set<ExitCleanupEntry>();
 let installed = false;
-// Signals a handler of the host's was seen removed from (a `once` handler that ran, one that removed itself): it may
-// still be finishing, so b6p never re-raises them.
-const hostSeen = new Set<string | symbol>();
+// Signals a handler of the host's was removed from in the current turn of the event loop: a `once` handler (or one
+// that removes itself) taking this very signal, before b6p's own handler runs. Cleared on the next turn.
+const hostJustRemoved = new Set<string | symbol>();
 
 /**
  * A `stillMine` check for a file this process created: the same device and inode (as bigints, so no
@@ -60,10 +60,11 @@ export function runExitCleanup(): void {
 const SIGNALS: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
 
 // b6p's handler alone: clean up and stop as the signal's default would, so the exit status stays what it would have
-// been. With a handler of the host's (listening now, or seen removed since b6p's was installed), do nothing: if it
-// exits, the `exit` listener cleans up; if it keeps the process alive, the work in flight keeps its locks.
+// been. With a handler of the host's listening, do nothing: if it exits, the `exit` listener cleans up; if it keeps
+// the process alive, the work in flight keeps its locks. When the host's `once` handler took this same signal, stand
+// aside for this one: it is running its shutdown. A later signal, with b6p's handler alone again, stops the process.
 function onSignal(signal: NodeJS.Signals): void {
-  if (process.listenerCount(signal) !== 1 || hostSeen.has(signal)) {
+  if (process.listenerCount(signal) !== 1 || hostJustRemoved.has(signal)) {
     return;
   }
   runExitCleanup();
@@ -78,7 +79,8 @@ function install(): void {
   installed = true;
   process.on("removeListener", (event, listener) => {
     if (listener !== onSignal && (SIGNALS as readonly (string | symbol)[]).includes(event)) {
-      hostSeen.add(event);
+      hostJustRemoved.add(event);
+      setImmediate(() => hostJustRemoved.delete(event)).unref();
     }
   });
   process.on("exit", runExitCleanup);
