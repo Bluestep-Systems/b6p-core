@@ -2,8 +2,19 @@ import * as nodeFs from "node:fs";
 import * as path from "node:path";
 import { Gateway } from "../constants/Gateway";
 import { Err } from "../Err";
-import type { GatewayKnowledgeBase, GatewayKnowledgeBaseStatus } from "../types";
-import type { GatewayClient } from "./GatewayClient";
+import { Http } from "../constants/Http";
+import type {
+  GatewayKnowledgeBase,
+  GatewayKnowledgeBaseAccess,
+  GatewayKnowledgeBaseAccessInput,
+  GatewayKnowledgeBaseChanges,
+  GatewayKnowledgeBaseCreateRequest,
+  GatewayKnowledgeBaseDetail,
+  GatewayKnowledgeBaseStatus,
+  GatewayKnowledgeBaseVersion,
+  JsonValue,
+} from "../types";
+import type { GatewayClient, GatewayResponse } from "./GatewayClient";
 import type { GatewayGit } from "./GatewayGit";
 
 /**
@@ -218,6 +229,7 @@ function knowledgeBaseFrom(entry: unknown, index: number): GatewayKnowledgeBase 
   }
   const known = KNOWN_STATUSES.has(rawStatus);
   const status: GatewayKnowledgeBaseStatus = known ? (rawStatus as GatewayKnowledgeBaseStatus) : "unknown";
+  const access = entry.access === undefined ? undefined : accessFrom(entry.access);
   return {
     id: idField,
     status,
@@ -230,7 +242,83 @@ function knowledgeBaseFrom(entry: unknown, index: number): GatewayKnowledgeBase 
     liveBranch: text("liveBranch"),
     canPush: entry.canPush,
     gitUrl: text("gitUrl"),
+    ...(access === undefined ? {} : { access }),
   };
+}
+
+/**
+ * Read an `access` value from the gateway. Exact match: only the strings `"public"` and `"private"` name those
+ * kinds; anything else (another kind, another case, no kind, not an object) is `unknown`, which callers treat as
+ * private. Never throws, so a newer gateway's kind cannot break a listing.
+ * @lastreviewed null
+ */
+function accessFrom(value: unknown): GatewayKnowledgeBaseAccess {
+  if (isRecord(value)) {
+    if (value.kind === "public" || value.kind === "private") {
+      // A member that carries more than its kind is a newer shape than this version knows: fail closed.
+      return Object.keys(value).length === 1 ? { kind: value.kind } : unknownAccess(value);
+    }
+    return unknownAccess(value);
+  }
+  return unknownAccess(value);
+}
+
+function unknownAccess(value: unknown): GatewayKnowledgeBaseAccess {
+  const rawKind = isRecord(value) && typeof value.kind === "string" ? value.kind : null;
+  return { kind: "unknown", rawKind, raw: value as JsonValue };
+}
+
+/**
+ * The detail of a global knowledge base from an admin route's body. Throws `GatewayUnexpectedResponseError`
+ * naming the field, never echoing a value.
+ * @lastreviewed null
+ */
+function detailFrom(body: unknown, what: string, status: number): GatewayKnowledgeBaseDetail {
+  const bad = (field: string): Err.GatewayUnexpectedResponseError =>
+    new Err.GatewayUnexpectedResponseError(`${what}: the answer has a missing or malformed "${field}".`, status, null);
+  if (!isRecord(body)) {
+    throw bad("body");
+  }
+  const text = (field: string): string => {
+    const value = body[field];
+    if (typeof value !== "string" || value.length === 0 || HIDDEN_CHARACTERS.test(value)) {
+      throw bad(field);
+    }
+    return value;
+  };
+  return {
+    id: text("id"),
+    ref: text("ref"),
+    name: text("name"),
+    title: text("title"),
+    liveBranch: text("liveBranch"),
+    gitUrl: text("gitUrl"),
+    ...(body.access === undefined ? {} : { access: accessFrom(body.access) }),
+  };
+}
+
+/**
+ * The access a caller may send: exactly `public` or `private`. An `unknown` one read from the gateway, or
+ * anything else, is refused before anything is sent, so it can never be written back.
+ * @lastreviewed null
+ */
+function accessBody(access: GatewayKnowledgeBaseAccessInput): { kind: "public" | "private" } {
+  const kind: unknown = (access as { kind?: unknown } | null)?.kind;
+  // Exactly one key, `kind`: a permission object or any other member is not something this version can send.
+  const keys = typeof access === "object" && access !== null ? Reflect.ownKeys(access) : [];
+  if ((kind !== "public" && kind !== "private") || keys.length !== 1) {
+    throw new Err.GatewayInvalidArgumentError(
+      'A knowledge base\'s access to set must be exactly {kind: "public"} or {kind: "private"}.'
+    );
+  }
+  return { kind };
+}
+
+function requireText(value: unknown, what: string): string {
+  if (typeof value !== "string" || value.trim().length === 0 || HIDDEN_CHARACTERS.test(value)) {
+    throw new Err.GatewayInvalidArgumentError(`The knowledge base ${what} must be non-empty text.`);
+  }
+  return value;
 }
 
 /**
@@ -478,6 +566,163 @@ export class GatewayKb {
     await this.requireLiveBranch(dir, kb);
     const pushed = await this.git.push(dir);
     return { pushed: pushed.pushed, commit: pushed.head, ref: kb.ref };
+  }
+
+  /**
+   * Register a global knowledge base (`POST /api/v1/knowledge-bases`, scope `kb:manage`), which creates its
+   * repository too. Only the fields given are sent, so the gateway's defaults apply (title = name, live branch
+   * `main`, private). Nothing prompts: making a knowledge base public is the caller's decision, and the
+   * consumer should confirm it first (every commit reachable from the live branch, files since deleted
+   * included, becomes readable by anyone).
+   *
+   * @throws {Err.GatewayInvalidArgumentError} a field is empty, or `access` is not `public` or `private`; nothing sent
+   * @throws {Err.GatewayScopeError} the token lacks `kb:manage` (`scope`)
+   * @throws {Err.GatewayAccessRefusedError} `400` on a request that named `access`
+   * @throws {Err.GatewayConflictError} `409` (`code` `name-taken`)
+   * @throws {Err.GatewayError} a subclass for any other gateway failure
+   * @lastreviewed null
+   */
+  async create(request: GatewayKnowledgeBaseCreateRequest): Promise<GatewayKnowledgeBaseDetail> {
+    const body: Record<string, JsonValue> = { name: requireText(request.name, "name") };
+    if (request.title !== undefined) {
+      body.title = requireText(request.title, "title");
+    }
+    if (request.liveBranch !== undefined) {
+      body.liveBranch = requireText(request.liveBranch, "live branch");
+    }
+    if (request.access !== undefined) {
+      body.access = accessBody(request.access);
+    }
+    const what = `POST ${Gateway.Paths.KNOWLEDGE_BASES}`;
+    const answer = await this.sendAdmin(Http.Methods.POST, Gateway.Paths.KNOWLEDGE_BASES, body);
+    return detailFrom(answer.body, what, answer.status);
+  }
+
+  /**
+   * One global knowledge base by id (`GET /api/v1/knowledge-bases/{id}`, scope `kb:read`) with the `ETag`
+   * a change to it must name.
+   *
+   * @throws {Err.GatewayInvalidArgumentError} `id` is empty or contains `b6pt_`; nothing sent
+   * @throws {Err.GatewayNotFoundError} no such knowledge base, or not visible to this user
+   * @throws {Err.GatewayUnexpectedResponseError} the answer is not a knowledge base, or carries no `ETag`
+   * @throws {Err.GatewayError} a subclass for any other gateway failure
+   * @lastreviewed null
+   */
+  async detail(id: string): Promise<GatewayKnowledgeBaseVersion> {
+    const path = this.pathOf(id);
+    const answer = await this.sendAdmin(Http.Methods.GET, path);
+    const what = `GET ${path}`;
+    if (answer.etag === null || answer.etag.length === 0) {
+      throw new Err.GatewayUnexpectedResponseError(
+        `${what}: the answer carries no ETag to change it against.`,
+        answer.status,
+        null
+      );
+    }
+    const kb = detailFrom(answer.body, what, answer.status);
+    if (kb.id !== id) {
+      throw new Err.GatewayUnexpectedResponseError(
+        `${what}: the answer is for a different knowledge base.`,
+        answer.status,
+        null
+      );
+    }
+    return { kb, etag: answer.etag };
+  }
+
+  /**
+   * Find a global knowledge base by its name (`<name>` or `global/<name>`, case-insensitive like
+   * {@link resolve}) and read it with its `ETag`: what an update needs, and the name and current access a
+   * consumer words its confirmation from. Resolving uses the listing and the detail read, so the token needs `kb:read`
+   * only (the change itself needs `kb:manage`). A ref containing `b6pt_` is refused before anything is built.
+   *
+   * @throws {Err.GatewayKnowledgeBaseError} `bad-ref`, `not-found` or `ambiguous`; a global name only
+   * @throws {Err.GatewayError} a subclass for any gateway failure
+   * @lastreviewed null
+   */
+  async read(ref: string): Promise<GatewayKnowledgeBaseVersion> {
+    if (typeof ref === "string" && ref.includes(Gateway.TOKEN_PREFIX)) {
+      // Never quoted: it may be a pasted secret.
+      throw new Err.GatewayInvalidArgumentError("A knowledge base address must not contain an access token.");
+    }
+    const parsed = parseRef(ref);
+    if (parsed.tenant !== null) {
+      throw new Err.GatewayKnowledgeBaseError(
+        `"${ref}" is a tenant knowledge base; only global knowledge bases are managed here.`,
+        "bad-ref",
+        ref
+      );
+    }
+    const found = await this.resolve(ref);
+    if (found.id === null) {
+      throw new Err.GatewayKnowledgeBaseError(`Knowledge base "${ref}" has no record to manage.`, "not-found", ref);
+    }
+    return this.detail(found.id);
+  }
+
+  /**
+   * Change a global knowledge base (`PATCH /api/v1/knowledge-bases/{id}`, scope `kb:manage`): every given field
+   * in ONE request, made as of `etag` (the `If-Match`). `access` is sent only when given; an access read from
+   * the gateway as `unknown` is refused, never written back.
+   *
+   * @param etag the `etag` of the {@link detail} or {@link read} this change is decided from
+   * @throws {Err.GatewayInvalidArgumentError} nothing to change, a field is empty, `access` is not `public` or
+   *   `private`, or `etag` is empty; nothing sent
+   * @throws {Err.GatewayPreconditionFailedError} `412`: it changed since `etag`; read it again
+   * @throws {Err.GatewayPreconditionRequiredError} `428`: the gateway did not get an `If-Match`
+   * @throws {Err.GatewayScopeError} the token lacks `kb:manage` (`scope`)
+   * @throws {Err.GatewayAccessRefusedError} `400` on a request that named `access`
+   * @throws {Err.GatewayError} a subclass for any other gateway failure
+   * @lastreviewed null
+   */
+  async update(id: string, etag: string, changes: GatewayKnowledgeBaseChanges): Promise<GatewayKnowledgeBaseDetail> {
+    const path = this.pathOf(id);
+    if (typeof etag !== "string" || etag.trim().length === 0) {
+      throw new Err.GatewayInvalidArgumentError("A knowledge base change needs the ETag it was read at.");
+    }
+    const body: Record<string, JsonValue> = {};
+    if (changes.title !== undefined) {
+      body.title = requireText(changes.title, "title");
+    }
+    if (changes.liveBranch !== undefined) {
+      body.liveBranch = requireText(changes.liveBranch, "live branch");
+    }
+    if (changes.access !== undefined) {
+      body.access = accessBody(changes.access);
+    }
+    if (Object.keys(body).length === 0) {
+      throw new Err.GatewayInvalidArgumentError("A knowledge base change names nothing to change.");
+    }
+    const answer = await this.sendAdmin(Http.Methods.PATCH, path, body, { "If-Match": etag });
+    return detailFrom(answer.body, `PATCH ${path}`, answer.status);
+  }
+
+  private pathOf(id: string): string {
+    if (typeof id !== "string" || id.length === 0 || HIDDEN_CHARACTERS.test(id)) {
+      throw new Err.GatewayInvalidArgumentError("A knowledge base id must be non-empty text.");
+    }
+    if (id.includes(Gateway.TOKEN_PREFIX)) {
+      // Never quoted, put in a path or logged: it may be a pasted secret.
+      throw new Err.GatewayInvalidArgumentError("A knowledge base id must not contain an access token.");
+    }
+    return `${Gateway.Paths.KNOWLEDGE_BASES}/${encodeURIComponent(id)}`;
+  }
+
+  // One admin request. A plain 400 on a body that named `access` becomes GatewayAccessRefusedError.
+  private async sendAdmin(
+    method: string,
+    path: string,
+    body?: Record<string, JsonValue>,
+    headers?: Record<string, string>
+  ): Promise<GatewayResponse> {
+    try {
+      return await this.client.requestDetailed(method, path, { body, headers });
+    } catch (error) {
+      if (body?.access !== undefined && error instanceof Err.GatewayInvalidRequestError) {
+        throw new Err.GatewayAccessRefusedError(error.message, error.code);
+      }
+      throw error;
+    }
   }
 
   // Refuse, from what is on disk alone, a clone that is detached or not on the KB's current live branch.

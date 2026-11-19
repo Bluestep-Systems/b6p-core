@@ -106,6 +106,10 @@ are load-bearing rather than stylistic — each records something this repo undi
   `{ destructive: true, safeOption }` prompt, safe option first. A listed `name` or tenant used as a
   default folder must be one plain path segment: no leading or trailing `.` (so never `.git`), no
   `GIT~1`, control characters or Windows device names.
+- **Knowledge-base admin (`create`, `detail`/`read`, `update`) is core's, never a consumer's.** A consumer wires
+  it and adds its own confirmation; it does not rebuild the requests. `update` is one `PATCH` with `If-Match`
+  (the `etag` from `detail`/`read`). `GatewayKnowledgeBaseAccess` keeps an exact kind match, treats an unknown
+  kind as private, and never sends one back: setting access takes `public` or `private` only.
 - **A prompt that overwrites or deletes puts its safe option first and passes
   `{ destructive: true, safeOption }`.** Prompt implementations answer `options[0]` on an empty
   answer and under auto-confirm (the CLI's `--yes`); with the destructive option first, `--yes`

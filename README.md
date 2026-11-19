@@ -58,26 +58,26 @@ beside it rather than onto `B6PCore` itself.
 `core.script` ([`ScriptService`](src/script/ScriptService.ts)) — everything that moves a script tree
 between the local filesystem and the platform (the draft over git, `declarations/` over WebDAV):
 
-| Method | Purpose |
-| --- | --- |
+| Method                 | Purpose                                                                |
+| ---------------------- | ---------------------------------------------------------------------- |
 | `push` / `pushCurrent` | Commit and push the draft folder (optionally publish it as a snapshot) |
-| `pull` / `pullCurrent` | Clone or fast-forward the draft into a workspace |
-| `audit` / `auditPull` | Compare local vs. server; optionally pull differences |
-| `deploy` | Multi-target deploy driven by a config file |
-| `getSetupUrl` | Resolve a pulled script's web-UI setup page |
-| `deriveWorkspacePath` | Recover the workspace folder from a path inside a script root |
-| `getFactory` | The `ScriptFactory` for entering the script tree from a bare path |
+| `pull` / `pullCurrent` | Clone or fast-forward the draft into a workspace                       |
+| `audit` / `auditPull`  | Compare local vs. server; optionally pull differences                  |
+| `deploy`               | Multi-target deploy driven by a config file                            |
+| `getSetupUrl`          | Resolve a pulled script's web-UI setup page                            |
+| `deriveWorkspacePath`  | Recover the workspace folder from a path inside a script root          |
+| `getFactory`           | The `ScriptFactory` for entering the script tree from a bare path      |
 
 `core.schema` ([`SchemaService`](src/schema/SchemaService.ts)) — declarative schema apply against one org
 (super users only; every method takes any URL on the org):
 
-| Method | Purpose |
-| --- | --- |
-| `generate` | The manifest (YAML) describing the named objects as they stand, optionally `closure` / `portable` |
-| `recipe` | Run a recipe (`LINK_VIEW_GRANTS`): its manifest plus the findings it met |
-| `test` | Dry-run a manifest as the caller: the plan, any refusals, and a one-use key when it passes (`verbose` adds same-name warnings) |
-| `apply` | Apply the plan a `test` approved: the same manifest string and its key; never retried |
-| `testThenApply` | `test`, ask `confirm` with the result, then `apply` with the same manifest and key |
+| Method          | Purpose                                                                                                                        |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `generate`      | The manifest (YAML) describing the named objects as they stand, optionally `closure` / `portable`                              |
+| `recipe`        | Run a recipe (`LINK_VIEW_GRANTS`): its manifest plus the findings it met                                                       |
+| `test`          | Dry-run a manifest as the caller: the plan, any refusals, and a one-use key when it passes (`verbose` adds same-name warnings) |
+| `apply`         | Apply the plan a `test` approved: the same manifest string and its key; never retried                                          |
+| `testThenApply` | `test`, ask `confirm` with the result, then `apply` with the same manifest and key                                             |
 
 `core.gateway` ([`GatewayService`](src/gateway/GatewayService.ts)) — web-global's gateway
 (`https://gateway.bluestep.net`), the origin for knowledge bases and marketplace repos. It
@@ -120,7 +120,7 @@ written over WebDAV any more (only `declarations/` and the root `.gitignore` sti
   auto-confirm declines and the pull returns `null`) unless `enableGit: true` is passed. After the switch the script's
   draft and snapshot refuse WebDAV writes.
 - **The commit author is never invented.** It is the `author` option of `push`/`pushCurrent`/`deploy`, else `git config
-  user.name`/`user.email` for the draft folder (global config included), else `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`
+user.name`/`user.email` for the draft folder (global config included), else `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`
   (then `GIT_COMMITTER_*`) from the environment, else a `GitIdentityError` before the platform is touched.
 - `B6PProviders.gitFs` (default `node:fs`) is the Node-style file system git works on; it must read and write the same
   disk as the `fs` provider.
@@ -130,26 +130,26 @@ written over WebDAV any more (only `declarations/` and the root `.gitignore` sti
 `push` / `pushCurrent` resolve to a [`PushResult`](src/script/push.ts) (or `null` when no target was
 given). Read `pushed` first: `false` means nothing was pushed.
 
-| Field | Meaning |
-| --- | --- |
-| `pushed` | The draft is on the platform. `false` when the draft folder is missing or empty |
-| `commitSha` | The draft commit this push made, or the one already there; `null` when `pushed` is `false` |
-| `route` | Which route ran: `{ mode: "server-build" \| "push-only", reason, serverVersion, required }`, `reason` one of `dev`, `at-or-above-floor`, `below-floor`, `unknown`, `floor-unset`. `null` when the push stopped before asking |
-| `snapshotRefused` | Set when a snapshot was asked for on a server that does not build git drafts: `{ reason: "too-old" \| "unknown" \| "floor-unset", serverVersion, required }`. The draft was pushed; nothing was built or published |
-| `build` | The platform's compile of the pushed draft (`compileDraft`): `status` (`COMPILED`, `GATE_TRIPPED`, `EMIT_WITHHELD`, `NOTHING_TO_COMPILE`, `SKIPPED_EXTERNALLY_BUILT`, …, or `UNKNOWN` with `rawStatus`), `errors` / `warnings`, `diagnostics` (+ `diagnosticsOmitted`), `gate`. `null` when no build ran or the request failed |
-| `buildCommitSha` | The platform's build commit (output, and the manifest when it vouched); the folder was moved to it unless `buildFastForward` says otherwise. `null` when it made none (already built, nothing to build) |
-| `buildFastForward` | How the folder was moved to the build: `{ state, blockedPaths, error }`, `state` `fast-forwarded`, `unchanged`, `blocked` (local files the build changes match neither side, listed; nothing was changed, nothing published) or `failed`. `null` when no build answer came |
-| `buildIncomplete` | The build ended in a status after which the draft does not publish (`BUSY` / `INPUT_INCOMPLETE` once retries ran out, `COMPILER_UNAVAILABLE`, `NOT_PERMITTED`, `WRITE_FAILED`, `OUTPUT_UPLOAD`, `SKIPPED_GIT_MANAGED`, `GATE_TRIPPED`, `EMIT_WITHHELD`, `UNKNOWN`): `{ status, rawStatus, description }`. `null` otherwise |
-| `buildVouched` | `true`: the build is clean and its manifest committed, or the draft needs none (externally built, nothing to build). `false`: unclean, output committed without a manifest, so a publish is refused until it builds cleanly. `null`: no build ran |
-| `buildError` / `buildErrorKind` | Why no build answer came after a successful push, and whether a build was `not-requested` (the platform's draft was no longer the pushed commit) or the `request-failed` (it may have run); otherwise `null` |
-| `publishedSha` | The commit the platform published on a snapshot push (the build commit); `null` on a plain push, when nothing was published, or on a failed publish. A caller that asked for a snapshot treats `null` as a failure |
-| `publishError` / `publishRefusal` | Why the platform refused or failed the publish (the draft stays pushed), and the structured `{ reason, withheld }` (`BUILD_STALE`, `BUILD_MANIFEST_MISSING`, `DRAFT_MOVED`, `ENTRYPOINT_MISSING`, …) |
-| `switchedToGit` | This push switched a WebDAV script to git, which cannot be undone |
-| `typeCheckDiagnostics` | The platform build's whole count of `ERROR` and `WARNING` diagnostics; `null` when no build ran |
-| `typeCheckErrors` | Those in the script's own sources (never a `.d.ts`), as listed by the platform, which lists at most 20: `{ file, line, column, code, message, severity }`, a type-checker finding being a `WARNING`. Empty when none or no build ran |
-| `liveVerified` | `true`: the platform's `master` is at `publishedSha`. `false`: it is at another commit. `null`: not proven either way |
-| `liveMismatches` | Draft-relative paths that differ between `publishedSha` and `master` when `liveVerified` is `false` |
-| `keptPlatformOnly` | Platform-only files kept because deleting them was not confirmed (they are part of the pushed commit) |
+| Field                             | Meaning                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pushed`                          | The draft is on the platform. `false` when the draft folder is missing or empty                                                                                                                                                                                                                                                |
+| `commitSha`                       | The draft commit this push made, or the one already there; `null` when `pushed` is `false`                                                                                                                                                                                                                                     |
+| `route`                           | Which route ran: `{ mode: "server-build" \| "push-only", reason, serverVersion, required }`, `reason` one of `dev`, `at-or-above-floor`, `below-floor`, `unknown`, `floor-unset`. `null` when the push stopped before asking                                                                                                   |
+| `snapshotRefused`                 | Set when a snapshot was asked for on a server that does not build git drafts: `{ reason: "too-old" \| "unknown" \| "floor-unset", serverVersion, required }`. The draft was pushed; nothing was built or published                                                                                                             |
+| `build`                           | The platform's compile of the pushed draft (`compileDraft`): `status` (`COMPILED`, `GATE_TRIPPED`, `EMIT_WITHHELD`, `NOTHING_TO_COMPILE`, `SKIPPED_EXTERNALLY_BUILT`, …, or `UNKNOWN` with `rawStatus`), `errors` / `warnings`, `diagnostics` (+ `diagnosticsOmitted`), `gate`. `null` when no build ran or the request failed |
+| `buildCommitSha`                  | The platform's build commit (output, and the manifest when it vouched); the folder was moved to it unless `buildFastForward` says otherwise. `null` when it made none (already built, nothing to build)                                                                                                                        |
+| `buildFastForward`                | How the folder was moved to the build: `{ state, blockedPaths, error }`, `state` `fast-forwarded`, `unchanged`, `blocked` (local files the build changes match neither side, listed; nothing was changed, nothing published) or `failed`. `null` when no build answer came                                                     |
+| `buildIncomplete`                 | The build ended in a status after which the draft does not publish (`BUSY` / `INPUT_INCOMPLETE` once retries ran out, `COMPILER_UNAVAILABLE`, `NOT_PERMITTED`, `WRITE_FAILED`, `OUTPUT_UPLOAD`, `SKIPPED_GIT_MANAGED`, `GATE_TRIPPED`, `EMIT_WITHHELD`, `UNKNOWN`): `{ status, rawStatus, description }`. `null` otherwise     |
+| `buildVouched`                    | `true`: the build is clean and its manifest committed, or the draft needs none (externally built, nothing to build). `false`: unclean, output committed without a manifest, so a publish is refused until it builds cleanly. `null`: no build ran                                                                              |
+| `buildError` / `buildErrorKind`   | Why no build answer came after a successful push, and whether a build was `not-requested` (the platform's draft was no longer the pushed commit) or the `request-failed` (it may have run); otherwise `null`                                                                                                                   |
+| `publishedSha`                    | The commit the platform published on a snapshot push (the build commit); `null` on a plain push, when nothing was published, or on a failed publish. A caller that asked for a snapshot treats `null` as a failure                                                                                                             |
+| `publishError` / `publishRefusal` | Why the platform refused or failed the publish (the draft stays pushed), and the structured `{ reason, withheld }` (`BUILD_STALE`, `BUILD_MANIFEST_MISSING`, `DRAFT_MOVED`, `ENTRYPOINT_MISSING`, …)                                                                                                                           |
+| `switchedToGit`                   | This push switched a WebDAV script to git, which cannot be undone                                                                                                                                                                                                                                                              |
+| `typeCheckDiagnostics`            | The platform build's whole count of `ERROR` and `WARNING` diagnostics; `null` when no build ran                                                                                                                                                                                                                                |
+| `typeCheckErrors`                 | Those in the script's own sources (never a `.d.ts`), as listed by the platform, which lists at most 20: `{ file, line, column, code, message, severity }`, a type-checker finding being a `WARNING`. Empty when none or no build ran                                                                                           |
+| `liveVerified`                    | `true`: the platform's `master` is at `publishedSha`. `false`: it is at another commit. `null`: not proven either way                                                                                                                                                                                                          |
+| `liveMismatches`                  | Draft-relative paths that differ between `publishedSha` and `master` when `liveVerified` is `false`                                                                                                                                                                                                                            |
+| `keptPlatformOnly`                | Platform-only files kept because deleting them was not confirmed (they are part of the pushed commit)                                                                                                                                                                                                                          |
 
 ### How a push builds (since 1.0.0)
 
@@ -223,25 +223,27 @@ const headers = await core.gateway.client.authHeadersFor(gitUrl); // for a git c
 
 Failures are typed, all extending `Err.GatewayError` (`status`, `code`):
 
-| Error | When |
-| --- | --- |
-| `GatewayAuthError` (`reason`) | `token-missing` (none stored; thrown before sending), `token-invalid` (401), `token-malformed` (not a `b6pt_` token; nothing sent) |
-| `GatewayScopeError` (`scope`) | `403 scope-missing` |
-| `GatewayNotPermittedError` | `403 not-permitted` |
-| `GatewayNotFoundError` | `404` (also for something that exists but is not visible) |
-| `GatewayScopeEscalationError` | `403 scope-escalation` (a new token asked for a scope the presenting one lacks) |
-| `GatewayConflictError` | `409 non-fast-forward` |
-| `GatewayAliasTakenError` | `409 alias-taken` |
-| `GatewayTooLargeError` | `413 too-large` |
-| `GatewayUnavailableError` | `502`/`503`/`504`, a network failure or a timeout |
-| `GatewayUnexpectedResponseError` | any other status, a redirect (`code: "redirect-refused"`, not followed), or a 2xx body that is not JSON |
-| `GatewayConfigError` | an unusable `gatewayUrl`, or a URL or request path that resolves off the gateway's origin |
-| `GatewayDirtyWorkingTreeError` (`paths`) | a pull would overwrite local changes (git layer) |
-| `GatewayCloneMismatchError` (`reason`, `dir`, `repo`) | a marketplace pull found a clone it must not update: `different-repo`, `different-ref`, `tag-moved` (the tag now names another commit) or `tag-gone` (the gateway no longer has it) |
-| `GatewayKnowledgeBaseError` (`reason`, `ref`, `candidates`) | a knowledge base address is `bad-ref`, `not-found`, `ambiguous`, `unsafe-name`, `wrong-branch` (a pull or push from a clone that is detached, off the live branch, or not tracking it; fields `branch`, `liveBranch`, `upstream`), or a clone is `not-a-kb` |
-| `GatewayKnowledgeBasePushNotPermittedError` (`ref`) | a push to a KB whose listing says `canPush: false` (a `GatewayNotPermittedError`) |
-| `GatewayInvalidArgumentError` | refused before sending: an empty alias or scope list, an expiry that is not a date, a pasted `b6pt_` secret where an id or alias belongs (token operations), or a relative path with no absolute `cwd` to resolve it against (core never reads `process.cwd()`) |
-| `GatewayWorkingCopyError` (`reason`) | the local folder cannot be used: `not-empty`, `not-a-clone`, `detached`, `no-upstream`, `diverged`, `ref-not-found`, `unsafe-target` (git layer), `wrong-repository` (knowledge-base pull) |
+| Error                                                                 | When                                                                                                                                                                                                                                                            |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GatewayAuthError` (`reason`)                                         | `token-missing` (none stored; thrown before sending), `token-invalid` (401), `token-malformed` (not a `b6pt_` token; nothing sent)                                                                                                                              |
+| `GatewayScopeError` (`scope`)                                         | `403 scope-missing`                                                                                                                                                                                                                                             |
+| `GatewayNotPermittedError`                                            | `403 not-permitted`                                                                                                                                                                                                                                             |
+| `GatewayNotFoundError`                                                | `404` (also for something that exists but is not visible)                                                                                                                                                                                                       |
+| `GatewayScopeEscalationError`                                         | `403 scope-escalation` (a new token asked for a scope the presenting one lacks)                                                                                                                                                                                 |
+| `GatewayConflictError`                                                | `409 non-fast-forward`                                                                                                                                                                                                                                          |
+| `GatewayAliasTakenError`                                              | `409 alias-taken`                                                                                                                                                                                                                                               |
+| `GatewayTooLargeError`                                                | `413 too-large`                                                                                                                                                                                                                                                 |
+| `GatewayUnavailableError`                                             | `502`/`503`/`504`, a network failure or a timeout                                                                                                                                                                                                               |
+| `GatewayUnexpectedResponseError`                                      | any other status, a redirect (`code: "redirect-refused"`, not followed), or a 2xx body that is not JSON                                                                                                                                                         |
+| `GatewayConfigError`                                                  | an unusable `gatewayUrl`, or a URL or request path that resolves off the gateway's origin                                                                                                                                                                       |
+| `GatewayDirtyWorkingTreeError` (`paths`)                              | a pull would overwrite local changes (git layer)                                                                                                                                                                                                                |
+| `GatewayCloneMismatchError` (`reason`, `dir`, `repo`)                 | a marketplace pull found a clone it must not update: `different-repo`, `different-ref`, `tag-moved` (the tag now names another commit) or `tag-gone` (the gateway no longer has it)                                                                             |
+| `GatewayKnowledgeBaseError` (`reason`, `ref`, `candidates`)           | a knowledge base address is `bad-ref`, `not-found`, `ambiguous`, `unsafe-name`, `wrong-branch` (a pull or push from a clone that is detached, off the live branch, or not tracking it; fields `branch`, `liveBranch`, `upstream`), or a clone is `not-a-kb`     |
+| `GatewayPreconditionFailedError` / `GatewayPreconditionRequiredError` | a knowledge-base change whose `If-Match` is stale (`412`) or missing (`428`)                                                                                                                                                                                    |
+| `GatewayAccessRefusedError`                                           | `400` on a create or change that named `access` (a `GatewayInvalidRequestError`)                                                                                                                                                                                |
+| `GatewayKnowledgeBasePushNotPermittedError` (`ref`)                   | a push to a KB whose listing says `canPush: false` (a `GatewayNotPermittedError`)                                                                                                                                                                               |
+| `GatewayInvalidArgumentError`                                         | refused before sending: an empty alias or scope list, an expiry that is not a date, a pasted `b6pt_` secret where an id or alias belongs (token operations), or a relative path with no absolute `cwd` to resolve it against (core never reads `process.cwd()`) |
+| `GatewayWorkingCopyError` (`reason`)                                  | the local folder cannot be used: `not-empty`, `not-a-clone`, `detached`, `no-upstream`, `diverged`, `ref-not-found`, `unsafe-target` (git layer), `wrong-repository` (knowledge-base pull)                                                                      |
 
 `core.gateway.client.sequence((seq) => …)` runs a unit as one queue entry: nothing else on the
 client runs until it settles. `seq.token()` reads the token once, and `seq.request` presents that
@@ -396,6 +398,29 @@ const pushed = await core.gateway.kb.push(pulled.dir); // { pushed, commit, ref 
 - `push` finds the KB from the clone's remote in a fresh listing and refuses a KB with
   `canPush: false` before sending anything, with `GatewayKnowledgeBasePushNotPermittedError` (`ref`).
   A clone not on the KB's live branch, not tracking it, or detached is refused the same way with `GatewayKnowledgeBaseError` (`wrong-branch`, `branch`, `liveBranch`). A gateway branch that moved on is `GatewayConflictError`.
+
+**Managing global knowledge bases** (scopes: `create` and `update` need `kb:manage`; `detail` and `read` need `kb:read`, as the gateway's content read does for a private knowledge base). Nothing here prompts:
+the consumer confirms, and words the confirmation from the `kb` that `read` returns (its `name`, `access`).
+
+```typescript
+const made = await core.gateway.kb.create({ name: "docs", title: "Docs", access: { kind: "public" } }); // access, title, liveBranch optional
+const { kb, etag } = await core.gateway.kb.read("docs"); // name -> id, then GET /{id}; kb.id, kb.name, kb.access
+const changed = await core.gateway.kb.update(kb.id, etag, { title: "Docs", access: { kind: "private" } }); // ONE PATCH with If-Match
+```
+
+- `create` (`POST`) sends only the fields given, so the gateway's defaults apply (title = name, live branch
+  `main`, private). `detail(id)` (`GET /{id}`) returns `{ kb, etag }`; `update(id, etag, changes)` (`PATCH`)
+  sends every given field in one request with `If-Match: etag`, and `access` only when given.
+- `access` is `{ kind: "public" } | { kind: "private" } | { kind: "unknown", rawKind, raw }`, matched exactly
+  (`"Public"` is unknown). An `unknown` access (a kind newer than this core) must be treated as private; it is
+  never sent back: `create`/`update` refuse it, and any access with a key beyond `kind` (a permission object, say), with `GatewayInvalidArgumentError` before sending. `detail`, `update` and `read` also refuse an id or ref that contains `b6pt_` (taken for a pasted token) before any request or message. `access` is
+  absent from a detail or listing entry when the gateway did not report one. Making a knowledge base public
+  makes every commit reachable from its live branch, files since deleted included, readable by anyone.
+- Errors: `412` is `GatewayPreconditionFailedError` (changed since read; read again), `428`
+  `GatewayPreconditionRequiredError`, a missing scope is `GatewayScopeError` (`scope`: `kb:manage` for a write, `kb:read` for a read), a `400` on a request
+  that named `access` is `GatewayAccessRefusedError` (an older gateway; a `GatewayInvalidRequestError`), a taken
+  name is `GatewayConflictError` (`code` `name-taken`).
+- `client.requestDetailed(method, path, options)` is `request` plus the status and the `ETag` header.
 
 For specs, [`FakeGateway`](src/testing/FakeGateway.ts) is an in-process gateway on `127.0.0.1` that
 answers the contract's REST routes (the token routes included) and error codes, with `grantToken`

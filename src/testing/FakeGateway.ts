@@ -5,6 +5,7 @@ import { Gateway } from "../constants/Gateway";
 import type {
   GatewayErrorBody,
   GatewayKnowledgeBase,
+  GatewayKnowledgeBaseAccess,
   GatewayKnowledgeBaseList,
   GatewayMarketplaceRepo,
   GatewayMarketplaceRepoList,
@@ -136,6 +137,11 @@ export interface FakeGatewayRequest {
    * @lastreviewed null
    */
   idempotencyKey: string | undefined;
+  /**
+   * The raw `If-Match` header, if any.
+   * @lastreviewed null
+   */
+  ifMatch: string | undefined;
 }
 
 /**
@@ -183,6 +189,10 @@ export interface FakeGatewayRoute {
  * (via {@link route}) to a git client that brings its own HTTP stack.
  *
  * Built in: `GET /api/v1/knowledge-bases` (scope `kb:read`, `?scope=` and `?tenant=` filters),
+ * the global knowledge-base admin routes (`POST /api/v1/knowledge-bases` and `PATCH /api/v1/knowledge-bases/{id}`
+ * need `kb:manage`; `GET /api/v1/knowledge-bases/{id}` needs `kb:read`, as the content read does for a private KB),
+ * with an `ETag` and a mandatory `If-Match`, `428`/`412`, a strict
+ * `access` of `{"kind":"public"|"private"}`, `409 name-taken`; see {@link accessUnsupported}),
  * `GET /api/v1/registry/repos` (scope `registry:read`), the self-service token routes
  * (`GET`/`POST /api/v1/tokens`, `DELETE /api/v1/tokens/{id}`, `POST /api/v1/tokens/{id}/rotate`,
  * scope `tokens:self`, with `scope-escalation` and `alias-taken`), and `404 not-found` for anything else.
@@ -214,6 +224,13 @@ export class FakeGateway {
    * @lastreviewed null
    */
   selfRotationRetryRefused = false;
+
+  /**
+   * When `true`, simulates a gateway that predates public knowledge bases: a create or change that names
+   * `access` is `400 invalid-request`, and no answer carries `access`.
+   * @lastreviewed null
+   */
+  accessUnsupported = false;
 
   /**
    * How many rotations actually happened (a replay does not count).
@@ -255,6 +272,8 @@ export class FakeGateway {
   readonly issuedSecrets: string[] = [];
 
   private inFlight = 0;
+  private readonly kbVersions = new Map<string, number>();
+  private kbSerial = 0;
   private readonly tokens = new Map<string, FakeGatewayToken>();
   private tokenSerial = 0;
   private readonly failures: FakeGatewayFailure[] = [];
@@ -397,6 +416,7 @@ export class FakeGateway {
         authorization: req.headers.authorization,
         body,
         idempotencyKey: headerOf(req, "idempotency-key"),
+        ifMatch: headerOf(req, "if-match"),
       });
 
       const at = this.failures.findIndex((f) => f.method === undefined || f.method === req.method);
@@ -431,6 +451,12 @@ export class FakeGateway {
         sendJson(res, 200, list);
         return;
       }
+      if (url.pathname === Gateway.Paths.KNOWLEDGE_BASES ? method === "POST" : this.adminIdOf(url.pathname) !== null) {
+        if (this.authorize(req, res, method === "GET" ? Gateway.Scopes.KB_READ : Gateway.Scopes.KB_MANAGE)) {
+          this.handleKbAdmin(method, url.pathname, body, req, res);
+        }
+        return;
+      }
       if (method === "GET" && url.pathname === Gateway.Paths.REGISTRY_REPOS) {
         if (!this.authorize(req, res, Gateway.Scopes.REGISTRY_READ)) {
           return;
@@ -455,6 +481,175 @@ export class FakeGateway {
     } finally {
       this.inFlight--;
     }
+  }
+
+  private adminIdOf(path: string): string | null {
+    const prefix = `${Gateway.Paths.KNOWLEDGE_BASES}/`;
+    if (!path.startsWith(prefix)) {
+      return null;
+    }
+    const rest = path.slice(prefix.length);
+    return rest.length > 0 && !rest.includes("/") ? decodeURIComponent(rest) : null;
+  }
+
+  /**
+   * The global knowledge-base admin routes, for a request already authorised for its scope (`kb:read` for `GET`, `kb:manage` otherwise). The knowledge
+   * bases are the entries of {@link knowledgeBases}; a version starts at 1 and every change bumps it.
+   * @lastreviewed null
+   */
+  private handleKbAdmin(
+    method: string,
+    path: string,
+    body: string,
+    req: http.IncomingMessage,
+    res: http.ServerResponse
+  ): void {
+    const invalid = (message: string): void => sendJson(res, 400, { error: "invalid-request", message });
+    const detail = (kb: GatewayKnowledgeBase): Record<string, unknown> => ({
+      id: kb.id,
+      ref: kb.ref,
+      scope: "global",
+      name: kb.name,
+      title: kb.title,
+      liveBranch: kb.liveBranch,
+      gitUrl: kb.gitUrl,
+      ...(this.accessUnsupported || kb.access === undefined ? {} : { access: kb.access }),
+    });
+    const send = (status: number, kb: GatewayKnowledgeBase): void => {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (kb.id !== null) {
+        headers.ETag = `"${this.kbVersions.get(kb.id) ?? 1}"`;
+      }
+      res.writeHead(status, headers);
+      res.end(JSON.stringify(detail(kb)));
+    };
+    let parsed: unknown;
+    try {
+      parsed = body.length === 0 ? {} : JSON.parse(body);
+    } catch {
+      invalid("The body is not JSON.");
+      return;
+    }
+    const fields = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : undefined;
+    const record = (fields ?? {}) as Record<string, unknown>;
+    // access is strict: exactly {"kind":"public"|"private"}, and refused outright by an older gateway.
+    const checkAccess = (): GatewayKnowledgeBaseAccess | undefined | null => {
+      if (record.access === undefined) {
+        return undefined;
+      }
+      const access = record.access as Record<string, unknown> | null;
+      if (
+        this.accessUnsupported ||
+        typeof access !== "object" ||
+        access === null ||
+        Object.keys(access).length !== 1 ||
+        (access.kind !== "public" && access.kind !== "private")
+      ) {
+        invalid('access must be {"kind":"public"} or {"kind":"private"}.');
+        return null;
+      }
+      return { kind: access.kind };
+    };
+    const text = (field: string): string | undefined | null => {
+      const value = record[field];
+      if (value === undefined) {
+        return undefined;
+      }
+      if (typeof value !== "string" || value.trim().length === 0) {
+        invalid(`${field} must be non-empty text.`);
+        return null;
+      }
+      return value;
+    };
+
+    if (fields === undefined) {
+      invalid("The body must be a JSON object.");
+      return;
+    }
+    if (method === "POST" && path === Gateway.Paths.KNOWLEDGE_BASES) {
+      const name = text("name");
+      const title = text("title");
+      const liveBranch = text("liveBranch");
+      const access = checkAccess();
+      if (name === null || title === null || liveBranch === null || access === null) {
+        return;
+      }
+      if (name === undefined) {
+        invalid("name is required.");
+        return;
+      }
+      if (this.knowledgeBases.some((kb) => kb.scope === "global" && kb.name.toLowerCase() === name.toLowerCase())) {
+        sendJson(res, 409, { error: "name-taken", message: "A knowledge base has that name." });
+        return;
+      }
+      const id = `00000000-0000-4000-8000-${String(++this.kbSerial).padStart(12, "0")}`;
+      const kb: GatewayKnowledgeBase = {
+        id,
+        status: "ok",
+        ref: `global/${name}`,
+        scope: "global",
+        tenant: null,
+        name,
+        title: title ?? name,
+        liveBranch: liveBranch ?? "main",
+        canPush: true,
+        gitUrl: `${this.url}/git/global/${name}.git`,
+        access: access ?? { kind: "private" },
+      };
+      this.knowledgeBases.push(kb);
+      this.kbVersions.set(id, 1);
+      send(201, kb);
+      return;
+    }
+    const id = this.adminIdOf(path);
+    const kb = this.knowledgeBases.find((candidate) => candidate.scope === "global" && candidate.id === id);
+    if (kb === undefined) {
+      sendJson(res, 404, { error: "not-found", message: "Not found." });
+      return;
+    }
+    if (method === "GET") {
+      send(200, kb);
+      return;
+    }
+    if (method === "PATCH") {
+      const ifMatch = headerOf(req, "if-match");
+      if (ifMatch === undefined) {
+        sendJson(res, 428, { error: "precondition-required", message: "This change needs an If-Match header." });
+        return;
+      }
+      if (
+        kb.id !== null &&
+        ifMatch.replace(/^W\//, "").replace(/^"|"$/g, "") !== String(this.kbVersions.get(kb.id) ?? 1)
+      ) {
+        sendJson(res, 412, { error: "precondition-failed", message: "The knowledge base changed since it was read." });
+        return;
+      }
+      const title = text("title");
+      const liveBranch = text("liveBranch");
+      const access = checkAccess();
+      if (title === null || liveBranch === null || access === null) {
+        return;
+      }
+      if (Object.keys(record).some((key) => key !== "title" && key !== "liveBranch" && key !== "access")) {
+        invalid("An unknown field was sent.");
+        return;
+      }
+      if (title !== undefined) {
+        kb.title = title;
+      }
+      if (liveBranch !== undefined) {
+        kb.liveBranch = liveBranch;
+      }
+      if (access !== undefined) {
+        kb.access = access;
+      }
+      if (kb.id !== null) {
+        this.kbVersions.set(kb.id, (this.kbVersions.get(kb.id) ?? 1) + 1);
+      }
+      send(200, kb);
+      return;
+    }
+    sendJson(res, 404, { error: "not-found", message: "Not found." });
   }
 
   /**

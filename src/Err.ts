@@ -1037,6 +1037,43 @@ export namespace Err {
   }
 
   /**
+   * `400` on a request that named an `access` (a knowledge-base create or update): the gateway refused it. A
+   * gateway or web-global that predates public knowledge bases answers this way, but so does any other
+   * malformed field, so the message and `code` are the gateway's. Nothing was changed.
+   * @lastreviewed null
+   */
+  export class GatewayAccessRefusedError extends GatewayInvalidRequestError {
+    constructor(message: string, code: string | null) {
+      super(message, code);
+      this.name = "GatewayAccessRefusedError";
+    }
+  }
+
+  /**
+   * `412 precondition-failed`: the `If-Match` named a version of the knowledge base that is no longer the
+   * current one, so nothing was changed. Read it again and decide again.
+   * @lastreviewed null
+   */
+  export class GatewayPreconditionFailedError extends GatewayError {
+    constructor(message: string, code: string | null) {
+      super(message, 412, code);
+      this.name = "GatewayPreconditionFailedError";
+    }
+  }
+
+  /**
+   * `428 precondition-required`: the change carried no `If-Match`. Core always sends one, so this is a bug
+   * or an `etag` that was empty.
+   * @lastreviewed null
+   */
+  export class GatewayPreconditionRequiredError extends GatewayError {
+    constructor(message: string, code: string | null) {
+      super(message, 428, code);
+      this.name = "GatewayPreconditionRequiredError";
+    }
+  }
+
+  /**
    * `409 token-limit`: the user already holds the maximum number of live tokens.
    * @lastreviewed null
    */
