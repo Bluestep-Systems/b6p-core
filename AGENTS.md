@@ -118,10 +118,15 @@ are load-bearing rather than stylistic — each records something this repo undi
   normalized onto an allowed host), never a request naming another username or carrying `url=`; anything else is an empty answer so git
   asks its other helpers. Never widen the list by a host rule (such as `*.bluestep.net`): a pull that worked is the
   proof for a tenant. `store` and `erase` are no-ops, so a single 401 never deletes the one stored token. Setup writes,
-  per host, an empty `credential.https://<host>.helper` (the reset, as gh does) then b6p's command, and never doubles
-  either; removal takes out b6p's entries and only the reset immediately before each (same URL, same file), never one
-  the user wrote. Reads cover every global file (`--includes --show-scope`, not `--global`, which reads only the
-  file it writes) and removals edit the origin file (`--file`). A plain `git push` in a draft does not build or
+  per host, an empty `credential.https://<host>.helper` (the reset, as gh does) then b6p's command, never doubling
+  either, and records every reset it writes (`GitCredentialResets`, file + exact key + count, written before and after
+  each change); removal takes out only recorded resets, never one the user wrote, and b6p's entries in any URL
+  spelling (git subsections are case-sensitive: group by the exact key). Status follows git's credential contexts
+  (`patternApplies`): every matching entry applies, and anything it cannot decide from the host counts as applying,
+  so a host is never "configured" while another helper may be asked. Never move or delete the user's entries to fix
+  that; report them (`others`). Reads cover every global file (`--includes --show-scope`, not `--global`, which reads
+  only the file it writes) and removals edit the origin file (`--file`). Host-list and reset-record changes go
+  through `mutatePublic` (`Persistence.withLock` across processes). A plain `git push` in a draft does not build or
   publish; do not add a server hook or helper behaviour that pretends otherwise: that stays `core.script.push`. The token goes only to the `get` answer: never into git
   config's argv, a log line or an error.
 - **A prompt that overwrites or deletes puts its safe option first and passes

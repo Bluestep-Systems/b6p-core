@@ -1,6 +1,7 @@
 import { credentialHostOf } from "../gitCredential/hosts";
 import { PublicKeys } from "../persistence/PersistenceKeys";
 import type { Persistence } from "../providers";
+import { mutatePublic } from "../persistence/lockedMutation";
 
 /**
  * One recorded tenant host: when a script pull last reached its git proxy with the stored token.
@@ -31,18 +32,13 @@ function isRecordedHosts(value: unknown): value is RecordedHosts {
  * `*.bluestep.net`") is taken on faith: a pull that worked is the proof.
  *
  * Every read and write goes to persistence, never to a copy held in memory, so a recording made by
- * another process (the extension beside the CLI, say) is seen and kept. Mutations through one
- * instance run one at a time; across processes the write is still last-writer-wins.
+ * another process (the extension beside the CLI, say) is seen and kept. Each record or forget is
+ * one locked read-modify-write ({@link mutatePublic}), so neither loses the other's change: within
+ * the process always, and across processes where the persistence has a lock
+ * (`SharedFilePersistence` does).
  * @lastreviewed null
  */
 export class GitCredentialHosts {
-  /**
-   * The tail of this instance's mutations: each read-modify-write runs after the one before it, so two in flight
-   * cannot each write over the other's change.
-   * @lastreviewed null
-   */
-  private tail: Promise<unknown> = Promise.resolve();
-
   constructor(private readonly persistence: Persistence) {}
 
   /**
@@ -50,7 +46,7 @@ export class GitCredentialHosts {
    * @lastreviewed null
    */
   async hosts(): Promise<string[]> {
-    return [...(await this.read()).keys()].sort();
+    return [...toMap(await this.persistence.get<unknown>(PublicKeys.GIT_CREDENTIAL_HOSTS)).keys()].sort();
   }
 
   /**
@@ -70,7 +66,7 @@ export class GitCredentialHosts {
     if (host === null) {
       return false;
     }
-    return this.mutate(async (recorded) => {
+    return this.mutate((recorded) => {
       recorded.set(host, { recordedAt: Date.now() });
       return true;
     });
@@ -82,33 +78,24 @@ export class GitCredentialHosts {
    * @lastreviewed null
    */
   async forget(host: string): Promise<boolean> {
-    return this.mutate(async (recorded) => recorded.delete(host));
+    return this.mutate((recorded) => recorded.delete(host));
   }
 
   /**
-   * Runs one read-modify-write behind every earlier one on this instance, writing only when `change` reports a change.
+   * One read-modify-write of the stored map through {@link mutatePublic}: queued in this process
+   * across every instance on the same persistence, and under the persistence's lock across
+   * processes when it has one.
    * @lastreviewed null
    */
-  private mutate(change: (recorded: Map<string, RecordedHost>) => Promise<boolean>): Promise<boolean> {
-    const run = this.tail.then(async () => {
-      const recorded = await this.read();
-      const changed = await change(recorded);
-      if (changed) {
-        await this.write(recorded);
-      }
-      return changed;
+  private mutate(change: (recorded: Map<string, RecordedHost>) => boolean): Promise<boolean> {
+    return mutatePublic(this.persistence, PublicKeys.GIT_CREDENTIAL_HOSTS, (current) => {
+      const recorded = toMap(current);
+      const changed = change(recorded);
+      return { changed, next: Object.fromEntries(recorded) as RecordedHosts, result: changed };
     });
-    this.tail = run.catch(() => undefined);
-    return run;
   }
+}
 
-  private async read(): Promise<Map<string, RecordedHost>> {
-    const stored = await this.persistence.get<unknown>(PublicKeys.GIT_CREDENTIAL_HOSTS);
-    return new Map(isRecordedHosts(stored) ? Object.entries(stored) : []);
-  }
-
-  private async write(recorded: Map<string, RecordedHost>): Promise<void> {
-    const value: RecordedHosts = Object.fromEntries(recorded);
-    await this.persistence.set(PublicKeys.GIT_CREDENTIAL_HOSTS, value);
-  }
+function toMap(stored: unknown): Map<string, RecordedHost> {
+  return new Map(isRecordedHosts(stored) ? Object.entries(stored) : []);
 }

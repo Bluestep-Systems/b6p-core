@@ -57,6 +57,15 @@ export interface Persistence {
   clearPublic(): Promise<void>;
   /** Clear all secret state. */
   clearSecrets(): Promise<void>;
+
+  /**
+   * Run `work` while holding the exclusive lock called `name`, shared by every process using the
+   * same store (for example a lockfile beside it). Optional: without it, core serializes the
+   * read-modify-writes that need it within the process only, and across processes they stay
+   * last-writer-wins.
+   * @lastreviewed null
+   */
+  withLock?<T>(name: string, work: () => Promise<T>): Promise<T>;
 }
 
 // ── User Interaction ────────────────────────────────────────────────

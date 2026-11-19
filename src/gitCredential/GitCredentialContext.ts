@@ -1,4 +1,5 @@
 import type { GitCredentialHosts } from "../cache/GitCredentialHosts";
+import type { GitCredentialResets } from "../cache/GitCredentialResets";
 import type { PlatformContext } from "../PlatformContext";
 import type { GatewayTokenSource } from "../providers";
 import type { GitConfigRunner } from "./GitConfigRunner";
@@ -25,6 +26,11 @@ export interface GitCredentialContext extends PlatformContext {
    * @lastreviewed null
    */
   readonly hosts: GitCredentialHosts;
+  /**
+   * The resets b6p wrote into the user's git config, so it removes only its own.
+   * @lastreviewed null
+   */
+  readonly resets: GitCredentialResets;
   /**
    * Runs `git config`, for reading, setting up and taking out the helper in the user's global config.
    * @lastreviewed null

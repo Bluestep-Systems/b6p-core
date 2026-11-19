@@ -461,19 +461,34 @@ await core.gitCredential.removeGit(); // { removed, keptResets }: takes those en
   or carrying a `url=` (git never sends one to a helper) gets an empty answer, so git asks its other helpers.
 - **`store` and `erase` do nothing.** The token enters only through the consumer's sign-in. git sends `erase` after
   any 401, and one tenant refusing the token (or an outage answered with a 401) must not sign b6p out everywhere.
-- **Setup resets, like gh.** For each allowed host it writes `credential.https://<host>.helper` twice, an empty value
-  (git's reset, so no generic helper such as `store` or `cache` answers that host or is told to keep the token) and
-  then b6p's command. A host git already asks b6p first is left alone, so a second run changes nothing; otherwise
-  b6p's old entries are taken out first, so neither line is ever doubled. A tenant recorded later needs another run.
-  `setupStatus()` works out, per host, which helpers git will actually ask, resets included: `configured` is whether
-  b6p comes first, and `alsoAsked` lists helpers git still asks after it (a generic `credential.helper` that appears
-  later in the config than b6p's reset). `otherHelpers` lists the generic helpers.
+- **Setup resets, like gh.** For each allowed host it appends `credential.https://<host>.helper` twice to the file
+  `git config --global` writes: an empty value (git's reset, so no earlier helper such as `store` or `cache` answers
+  that host or is told to keep the token) and then b6p's command. A host already set up is left alone, so a second
+  run changes nothing; otherwise b6p's own entries and recorded resets for it are taken out first, so neither line is
+  ever doubled and a run that stopped halfway is finished cleanly. If the command cannot be added after its reset,
+  the reset is taken out again in the same call. A tenant recorded later needs another run.
+- **Status follows git's credential contexts.** `setupStatus()` works out, per host, every entry git applies to it,
+  as git does (gitcredentials(7)): https only, matching port (443 when absent), each host label equal or a `*`
+  wildcard, and every matching entry in config order, resets included, not only the most specific. Where git's answer
+  depends on more than the host (an entry scoped to a path, one naming a user, a partial wildcard, a pattern with no
+  scheme) the entry counts as applying, so a host is never reported set up while another helper may be asked.
+  `configured` means b6p is the only helper git asks; `alsoAsked` lists the others and `others` the config entries
+  responsible (key, value, file). Setup never moves or deletes the user's entries, so the consumer tells the user to
+  move such an entry before b6p's section or remove it. `otherHelpers` lists the generic helpers.
 - **Every global config file.** Entries are read from `~/.gitconfig`, `$XDG_CONFIG_HOME/git/config` and the files
-  they `[include]`, and each removal edits the file the entry came from (`git config --file <origin>`).
-- **Removal** takes out every entry whose value is b6p's command and the reset setup wrote: the empty value
-  immediately before it, for the same URL, in the same file. A reset the user wrote stays. `git config` can only
-  remove by value, so when that file has another empty value for the same URL, b6p's reset is left too and the URL is
-  reported in `keptResets`.
+  they `[include]` (`git config --includes --show-scope --show-origin`, so git 2.26 or later; an older git fails as
+  `Err.GitCredentialSetupError`), and each removal edits the file the entry came from (`--file <origin>`).
+- **b6p removes only resets it recorded.** Each reset setup writes is recorded in public state
+  `b6p:git_credential_resets` as `{ "<file>": { "<exact key>": { installed, pending? } } }`, written before the
+  config change (`pending: { op, emptiesBefore }`) and after it, so a run that stopped in between is settled from the
+  file by the next one. Removal takes out every entry whose value is b6p's command, in any spelling of the URL, and the
+  resets recorded for it; a reset b6p did not record is never removed, whatever sits next to it. `git config` removes
+  by value only, so when the same key in the same file holds more empty values than b6p recorded, b6p's are left too
+  and the URL is reported in `keptResets`.
+- **The host list is locked.** Each record or forget of a tenant host is one read-modify-write under
+  `Persistence.withLock` (`SharedFilePersistence` takes a lockfile in its directory; a lock older than 30 s is
+  treated as stale, a wait gives up after 10 s), so two processes or instances lose nothing. A pull whose host cannot
+  be recorded still succeeds.
 - The helper command defaults to `GitCredential.DEFAULT_HELPER`; pass `{ helper }` to write another.
 - The token never reaches git config's argv, a log line or an error message. Failures of `git config` are
   `Err.GitCredentialSetupError` (`exitCode`).

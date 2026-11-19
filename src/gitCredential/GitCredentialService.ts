@@ -1,7 +1,20 @@
+import type { GitCredentialResetRecord, GitCredentialResetsByFile } from "../cache/GitCredentialResets";
 import { GitCredential } from "../constants/GitCredential";
 import { Err } from "../Err";
 import { parseGatewayOrigin } from "../gateway/GatewayClient";
 import { gatewayTokenProblem } from "../gateway/GatewayToken";
+import {
+  askedFor,
+  emptiesOf,
+  exactValuePattern,
+  helperKeyFor,
+  LIST_CREDENTIAL_ENTRIES,
+  parseHelperEntries,
+  patternApplies,
+  urlOfKey,
+  type GitCredentialConfigEntry,
+  type HelperEntry,
+} from "./credentialConfig";
 import type { GitCredentialContext } from "./GitCredentialContext";
 import type { GitConfigOutcome } from "./GitConfigRunner";
 import { credentialHostOf, requestedCredentialHost } from "./hosts";
@@ -29,22 +42,30 @@ export interface GitCredentialHost {
 }
 
 /**
- * An allowed host and what git does with its credential requests, given the user's global git config.
+ * An allowed host and what git does with its credential requests, given the user's global git
+ * config (see {@link GitCredentialService.setupStatus}).
  * @lastreviewed null
  */
 export interface GitCredentialHostStatus extends GitCredentialHost {
   /**
-   * Whether git asks b6p's helper first for this host (after every `helper =` reset that applies to it).
+   * Whether b6p is the only helper git asks for this host, so no other helper sees the token or is
+   * told to store it.
    * @lastreviewed null
    */
   readonly configured: boolean;
   /**
-   * The other helpers git asks for this host, in order, and tells to store a credential that worked. Empty after
-   * {@link GitCredentialService.setupGit} unless a generic `credential.helper` comes later in the config than
-   * b6p's reset: a storing helper (such as `store`) listed here would keep a copy of the token.
+   * The other helpers git asks for this host, in order. A storing helper (such as `store`) here
+   * would keep a copy of the token.
    * @lastreviewed null
    */
   readonly alsoAsked: string[];
+  /**
+   * The config entries that keep b6p from being the only helper: each other helper git asks, and
+   * the reset that clears b6p's entry when one comes after it. Setup never moves or deletes the
+   * user's entries, so these stay until the user moves them before b6p's reset or removes them.
+   * @lastreviewed null
+   */
+  readonly others: GitCredentialConfigEntry[];
 }
 
 /**
@@ -64,7 +85,7 @@ export interface GitCredentialSetupStatus {
   readonly configured: boolean;
   /**
    * The generic helpers (`credential.helper`) in the global git config, which apply to every
-   * https host that has no reset of its own.
+   * https host that has no reset of its own after them.
    * @lastreviewed null
    */
   readonly otherHelpers: string[];
@@ -76,7 +97,7 @@ export interface GitCredentialSetupStatus {
  */
 export interface GitCredentialSetupResult {
   /**
-   * The hosts whose credential requests now go to b6p.
+   * The hosts b6p's reset and helper were written for.
    * @lastreviewed null
    */
   readonly added: string[];
@@ -86,7 +107,9 @@ export interface GitCredentialSetupResult {
    */
   readonly alreadyConfigured: string[];
   /**
-   * Every allowed host as it stands after the setup.
+   * Every allowed host as it stands after the setup. A host written for can still be
+   * `configured: false` when a later entry of the user's applies to it (see
+   * {@link GitCredentialHostStatus.others}).
    * @lastreviewed null
    */
   readonly hosts: GitCredentialHostStatus[];
@@ -103,13 +126,15 @@ export interface GitCredentialSetupResult {
  */
 export interface GitCredentialRemoveResult {
   /**
-   * The URL each removed entry was for (`https://host`), whether or not that host is still allowed.
+   * The URL patterns b6p's entries were removed for (`https://host`, as written), whether or not
+   * that host is still allowed.
    * @lastreviewed null
    */
   readonly removed: string[];
   /**
-   * The URLs whose reset before b6p's entry was left in place, because the same file has another
-   * `helper =` for that URL that `git config` cannot tell apart from it. The entry itself was removed.
+   * The URL patterns where a reset b6p wrote was left in place, because the same key in the same
+   * file now has more empty values than b6p recorded and `git config` (which removes by value only)
+   * cannot take out b6p's alone. The record of it is kept.
    * @lastreviewed null
    */
   readonly keptResets: string[];
@@ -139,66 +164,6 @@ export interface GitCredentialRemoveOptions {
    * @lastreviewed null
    */
   readonly helpers?: readonly string[];
-}
-
-const HELPER_KEY = /^credential\.(.+)\.helper$/i;
-const GENERIC_HELPER_KEY = "credential.helper";
-const FILE_ORIGIN = "file:";
-
-/**
- * One `credential.*.helper` (or `credential.helper`) entry of the global config (`~/.gitconfig`,
- * `$XDG_CONFIG_HOME/git/config` and what they include), as git read it, in git's order.
- * @lastreviewed null
- */
-interface HelperEntry {
-  /**
-   * The key, as git prints it (section and name lowercase, the URL as written).
-   * @lastreviewed null
-   */
-  readonly key: string;
-  readonly value: string;
-  /**
-   * The file it came from, or `null` when it did not come from a file.
-   * @lastreviewed null
-   */
-  readonly file: string | null;
-}
-
-function sameKey(a: string, b: string): boolean {
-  return a.toLowerCase() === b.toLowerCase();
-}
-
-/**
- * The helpers git asks for `host`, in order: the generic and the host's own entries in config
- * order, each empty value clearing the list so far (gitcredentials(7)).
- * @lastreviewed null
- */
-function effectiveHelpers(entries: readonly HelperEntry[], host: string): string[] {
-  const own = helperKeyFor(host);
-  const list: string[] = [];
-  for (const entry of entries) {
-    if (!sameKey(entry.key, GENERIC_HELPER_KEY) && !sameKey(entry.key, own)) {
-      continue;
-    }
-    if (entry.value === "") {
-      list.length = 0;
-    } else {
-      list.push(entry.value);
-    }
-  }
-  return list;
-}
-
-function helperKeyFor(host: string): string {
-  return `credential.https://${host}.helper`;
-}
-
-/**
- * The value as a POSIX extended regex matching exactly it (git's value-pattern).
- * @lastreviewed null
- */
-function exactValuePattern(value: string): string {
-  return `^${value.replace(/[.[\]{}()\\*+?^$|]/g, "\\$&")}$`;
 }
 
 function checkedHelper(helper: string | undefined): string {
@@ -300,37 +265,44 @@ export class GitCredentialService {
   }
 
   /**
-   * Every allowed host, whether git asks `helper` first for it, the other helpers it also asks, and
-   * the generic helpers in the global config. Read with includes followed, from every file git
-   * reads as global config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`).
+   * Every allowed host and whether b6p is the only helper git asks for it, with the other helpers
+   * and the entries responsible when it is not, plus the generic helpers. Read from every file git
+   * reads as global config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`, what they include),
+   * matching entries as git's credential contexts do ({@link patternApplies}); where that cannot be
+   * decided from the host alone (an entry scoped to a path, say) the entry counts as applying, so a
+   * host is never reported set up when another helper may still be asked. Changes nothing.
+   *
+   * Needs git 2.26 or later (`--show-scope`); an older git fails as {@link Err.GitCredentialSetupError}.
    * @lastreviewed null
    */
   async setupStatus(options: GitCredentialHelperOptions = {}): Promise<GitCredentialSetupStatus> {
     const helper = checkedHelper(options.helper);
-    const entries = await this.helperEntries();
-    const hosts = (await this.allowedHosts()).map((allowed) => this.hostStatus(allowed, entries, helper));
-    return {
-      hosts,
-      configured: hosts.length > 0 && hosts.every((host) => host.configured),
-      otherHelpers: otherHelpersOf(entries),
-    };
+    return this.statusOf(await this.helperEntries(), new Set([helper]));
   }
 
   /**
    * Make b6p the helper git asks for every allowed host, in the user's global git config, the way
    * `gh auth setup-git` does: `credential.https://<host>.helper` gets an empty value (a reset, so
-   * no generic helper such as `store` or `cache` answers that host or keeps the token) followed by
-   * `helper`. A host git already asks b6p first is left as it is, so a second run changes nothing;
-   * for any other host b6p's own entries are taken out first (see {@link removeGit}), so neither
-   * line is ever doubled. Other helpers' entries stay. A tenant host recorded later needs another
-   * run.
+   * no earlier helper such as `store` or `cache` answers that host or keeps the token) followed by
+   * `helper`, both appended to the file `git config --global` writes.
    *
-   * @throws {Err.GitCredentialSetupError} when git is missing or `git config` fails.
+   * A host already set up is left alone, so a second run changes nothing. For any other host,
+   * b6p's own entries for it, and the resets b6p recorded for it, are taken out first, so neither
+   * line is ever doubled, and a run that stopped halfway is finished cleanly. Every reset written
+   * is recorded ({@link GitCredentialResets}) before and after the write; when the helper cannot
+   * be added after its reset, the reset is taken out again in the same call. The user's entries
+   * are never moved or deleted: one that still applies after b6p's (a `*.bluestep.net` helper
+   * later in the config, say) leaves the host `configured: false`, with the entry in `others`.
+   *
+   * @throws {Err.GitCredentialSetupError} when git is missing or older than 2.26, or `git config` fails.
    * @lastreviewed null
    */
   async setupGit(options: GitCredentialHelperOptions = {}): Promise<GitCredentialSetupResult> {
     const helper = checkedHelper(options.helper);
-    const before = await this.setupStatus({ helper });
+    const helpers = new Set([helper]);
+    let entries = await this.helperEntries();
+    await this.settleResets(entries);
+    const before = await this.statusOf(entries, helpers);
     const added: string[] = [];
     const alreadyConfigured: string[] = [];
     for (const host of before.hosts) {
@@ -338,92 +310,192 @@ export class GitCredentialService {
         alreadyConfigured.push(host.host);
         continue;
       }
-      const key = helperKeyFor(host.host);
-      await this.removeEntries(new Set([helper]), (entryKey) => sameKey(entryKey, key));
-      requireSuccess(await this.ctx.gitConfig(["--global", "--add", key, ""]), "add");
-      requireSuccess(await this.ctx.gitConfig(["--global", "--add", key, helper]), "add");
+      await this.removeFor(entries, await this.ctx.resets.all(), helpers, (url) => patternIsHost(url, host.host));
+      entries = await this.helperEntries();
+      await this.install(entries, host.host, helper);
+      entries = await this.helperEntries();
       added.push(host.host);
     }
-    const after = added.length === 0 ? before : await this.setupStatus({ helper });
+    const after = added.length === 0 ? before : await this.statusOf(entries, helpers);
     return { added, alreadyConfigured, hosts: after.hosts, otherHelpers: after.otherHelpers };
   }
 
   /**
    * Take b6p out of the user's global git config: every `credential.<url>.helper` entry whose value
-   * is one of `helpers`, for any URL (a host no longer allowed included), each from the file it
-   * came from (an included file or `$XDG_CONFIG_HOME/git/config` too), and with it the reset setup
-   * wrote: the empty `helper =` immediately before it, for the same URL in the same file. Any other
-   * reset, and every other helper, stays.
+   * is one of `helpers`, for any URL and in any spelling (a host no longer allowed included), each
+   * from the file it came from, and every reset b6p recorded writing. A reset b6p did not record is
+   * never removed, whatever sits next to it.
    *
-   * @throws {Err.GitCredentialSetupError} when git is missing or `git config` fails.
+   * @throws {Err.GitCredentialSetupError} when git is missing or older than 2.26, or `git config` fails.
    * @lastreviewed null
    */
   async removeGit(options: GitCredentialRemoveOptions = {}): Promise<GitCredentialRemoveResult> {
     const helpers = new Set((options.helpers ?? [GitCredential.DEFAULT_HELPER]).map((h) => checkedHelper(h)));
-    return this.removeEntries(helpers, () => true);
+    const entries = await this.helperEntries();
+    const records = await this.settleResets(entries);
+    return this.removeFor(entries, records, helpers, () => true);
   }
 
-  private hostStatus(
-    allowed: GitCredentialHost,
+  private async statusOf(
     entries: readonly HelperEntry[],
-    helper: string
-  ): GitCredentialHostStatus {
-    const asked = effectiveHelpers(entries, allowed.host);
-    const configured = asked[0] === helper;
-    return { ...allowed, configured, alsoAsked: configured ? asked.slice(1) : asked };
+    helpers: ReadonlySet<string>
+  ): Promise<GitCredentialSetupStatus> {
+    const hosts = (await this.allowedHosts()).map((allowed) => ({
+      ...allowed,
+      ...askedFor(entries, allowed.host, helpers),
+    }));
+    return {
+      hosts,
+      configured: hosts.length > 0 && hosts.every((host) => host.configured),
+      otherHelpers: [...new Set(entries.filter((e) => e.url === null && e.value !== "").map((e) => e.value))],
+    };
   }
 
   /**
-   * Removes the URL-scoped entries whose value is in `helpers` and whose key passes `keyFilter`,
-   * with the reset immediately before each (same file, same key). `git config` can only remove by
-   * value, so a reset is removed only when every empty value of that key in that file is such a
-   * reset; otherwise it is kept and reported.
+   * Append b6p's reset and `helper` for `host` to the global write file. The reset is skipped when
+   * b6p already has one recorded there (a reset it could not take out); a failure to add the helper
+   * takes this call's reset out again before throwing.
    * @lastreviewed null
    */
-  private async removeEntries(
+  private async install(entries: readonly HelperEntry[], host: string, helper: string): Promise<void> {
+    const file = this.ctx.gitConfig.globalFile();
+    const key = helperKeyFor(host);
+    const recorded = (await this.ctx.resets.all())[file]?.[key]?.installed ?? 0;
+    let addedReset = false;
+    if (recorded === 0) {
+      await this.addReset(entries, file, key, 0);
+      addedReset = true;
+    }
+    const outcome = await this.ctx.gitConfig.run(["--file", file, "--add", key, helper]);
+    if (outcome.code !== 0) {
+      if (addedReset) {
+        const now = await this.helperEntries();
+        await this.removeResets(now, file, key, emptiesOf(now, file, key) > 0 ? 1 : 0);
+      }
+      requireSuccess(outcome, "add");
+    }
+  }
+
+  /**
+   * Add one reset to `key` in `file`, recorded before (`pending`) and after (`installed + 1`).
+   * @lastreviewed null
+   */
+  private async addReset(entries: readonly HelperEntry[], file: string, key: string, installed: number): Promise<void> {
+    const emptiesBefore = emptiesOf(entries, file, key);
+    await this.ctx.resets.put(file, key, { installed, pending: { op: "add", emptiesBefore } });
+    const outcome = await this.ctx.gitConfig.run(["--file", file, "--add", key, ""]);
+    if (outcome.code !== 0) {
+      await this.ctx.resets.put(file, key, { installed });
+      requireSuccess(outcome, "add");
+    }
+    await this.ctx.resets.put(file, key, { installed: installed + 1 });
+  }
+
+  /**
+   * Remove b6p's `installed` resets of `key` in `file`, recorded before (`pending`) and after. Only
+   * when they are all the empty values the key has there: `git config` removes by value, so with
+   * one of the user's beside them nothing is removed and `false` is returned.
+   * @lastreviewed null
+   */
+  private async removeResets(
+    entries: readonly HelperEntry[],
+    file: string,
+    key: string,
+    installed: number
+  ): Promise<boolean> {
+    if (installed === 0) {
+      await this.ctx.resets.put(file, key, undefined);
+      return true;
+    }
+    const emptiesBefore = emptiesOf(entries, file, key);
+    if (emptiesBefore !== installed) {
+      return false;
+    }
+    await this.ctx.resets.put(file, key, { installed, pending: { op: "remove", emptiesBefore } });
+    const outcome = await this.ctx.gitConfig.run(["--file", file, "--unset-all", key, "^$"]);
+    if (outcome.code !== 0) {
+      await this.ctx.resets.put(file, key, { installed });
+      requireSuccess(outcome, "remove");
+    }
+    await this.ctx.resets.put(file, key, undefined);
+    return true;
+  }
+
+  /**
+   * Remove b6p's helper entries whose URL passes `urls` (each spelling, from its own file) and the
+   * resets b6p recorded under such URLs.
+   * @lastreviewed null
+   */
+  private async removeFor(
+    entries: readonly HelperEntry[],
+    records: GitCredentialResetsByFile,
     helpers: ReadonlySet<string>,
-    keyFilter: (key: string) => boolean
+    urls: (url: string) => boolean
   ): Promise<GitCredentialRemoveResult> {
-    const entries = await this.helperEntries();
-    const groups = new Map<string, { file: string; key: string; url: string; values: Set<string>; resets: number }>();
-    entries.forEach((entry, i) => {
-      const url = HELPER_KEY.exec(entry.key)?.[1];
-      if (url === undefined || entry.file === null || !helpers.has(entry.value) || !keyFilter(entry.key)) {
-        return;
-      }
-      const id = `${entry.file}\0${entry.key.toLowerCase()}`;
-      const group = groups.get(id) ?? { file: entry.file, key: entry.key, url, values: new Set(), resets: 0 };
-      group.values.add(entry.value);
-      const previous = entries[i - 1];
-      if (previous && previous.file === entry.file && sameKey(previous.key, entry.key) && previous.value === "") {
-        group.resets += 1;
-      }
-      groups.set(id, group);
-    });
     const removed: string[] = [];
     const keptResets: string[] = [];
-    for (const group of groups.values()) {
-      for (const value of group.values) {
-        requireSuccess(
-          await this.ctx.gitConfig(["--file", group.file, "--unset-all", group.key, exactValuePattern(value)]),
-          "remove"
-        );
+    const done = new Set<string>();
+    for (const entry of entries) {
+      if (entry.url === null || entry.file === null || !helpers.has(entry.value) || !urls(entry.url)) {
+        continue;
       }
-      if (group.resets > 0) {
-        const empties = entries.filter(
-          (e) => e.file === group.file && sameKey(e.key, group.key) && e.value === ""
-        ).length;
-        if (empties === group.resets) {
-          requireSuccess(await this.ctx.gitConfig(["--file", group.file, "--unset-all", group.key, "^$"]), "remove");
-        } else if (!keptResets.includes(group.url)) {
-          keptResets.push(group.url);
+      const once = `${entry.file}\0${entry.key}\0${entry.value}`;
+      if (done.has(once)) {
+        continue;
+      }
+      done.add(once);
+      requireSuccess(
+        await this.ctx.gitConfig.run(["--file", entry.file, "--unset-all", entry.key, exactValuePattern(entry.value)]),
+        "remove"
+      );
+      if (!removed.includes(entry.url)) {
+        removed.push(entry.url);
+      }
+    }
+    const now = done.size > 0 ? await this.helperEntries() : entries;
+    for (const [file, keys] of Object.entries(records)) {
+      for (const [key, record] of Object.entries(keys)) {
+        const url = urlOfKey(key);
+        if (url === null || !urls(url)) {
+          continue;
         }
-      }
-      if (!removed.includes(group.url)) {
-        removed.push(group.url);
+        if (!(await this.removeResets(now, file, key, record.installed)) && !keptResets.includes(url)) {
+          keptResets.push(url);
+        }
       }
     }
     return { removed, keptResets };
+  }
+
+  /**
+   * Settle every reset record against the config as it is now: a pending change counts as done
+   * when the key's empty values moved the way it would have moved them, and no record claims more
+   * resets than the key has. Records that hold nothing are dropped.
+   * @lastreviewed null
+   */
+  private async settleResets(entries: readonly HelperEntry[]): Promise<GitCredentialResetsByFile> {
+    const records = await this.ctx.resets.all();
+    const settled: GitCredentialResetsByFile = {};
+    for (const [file, keys] of Object.entries(records)) {
+      for (const [key, record] of Object.entries(keys)) {
+        const empties = emptiesOf(entries, file, key);
+        let installed = record.installed;
+        if (record.pending?.op === "add" && empties > record.pending.emptiesBefore) {
+          installed += 1;
+        } else if (record.pending?.op === "remove" && empties < record.pending.emptiesBefore) {
+          installed = 0;
+        }
+        installed = Math.min(installed, empties);
+        const next: GitCredentialResetRecord = { installed };
+        if (installed !== record.installed || record.pending !== undefined) {
+          await this.ctx.resets.put(file, key, next);
+        }
+        if (installed > 0) {
+          (settled[file] ??= {})[key] = next;
+        }
+      }
+    }
+    return settled;
   }
 
   private async get(fields: Map<string, string>): Promise<string> {
@@ -460,49 +532,30 @@ export class GitCredentialService {
     }
   }
 
-  /**
-   * The global config's credential helper entries, in git's order. Read without `--global`, which
-   * (git 2.53) reads only the file it would write and so misses `$XDG_CONFIG_HOME/git/config`
-   * beside `~/.gitconfig`; every scope is read and only `global` entries kept. Includes are followed.
-   * @lastreviewed null
-   */
   private async helperEntries(): Promise<HelperEntry[]> {
-    const outcome = await this.ctx.gitConfig([
-      "--includes",
-      "--show-scope",
-      "--show-origin",
-      "--null",
-      "--get-regexp",
-      "^credential\\.",
-    ]);
+    const outcome = await this.ctx.gitConfig.run(LIST_CREDENTIAL_ENTRIES);
     if (outcome.code === 1) {
       return [];
     }
-    requireSuccess(outcome, "read");
-    // Each entry is `<scope>\0<origin>\0<key>\n<value>\0` (no `\n` for a key with no value).
-    const fields = outcome.stdout.split("\0");
-    const entries: HelperEntry[] = [];
-    for (let i = 0; i + 2 < fields.length; i += 3) {
-      const [scope, origin, record] = [fields[i], fields[i + 1], fields[i + 2]];
-      const newline = record.indexOf("\n");
-      const key = newline === -1 ? record : record.slice(0, newline);
-      const value = newline === -1 ? "" : record.slice(newline + 1);
-      if (scope === "global" && (HELPER_KEY.test(key) || sameKey(key, GENERIC_HELPER_KEY))) {
-        entries.push({ key, value, file: origin.startsWith(FILE_ORIGIN) ? origin.slice(FILE_ORIGIN.length) : null });
-      }
+    if (outcome.code === 129) {
+      throw new Err.GitCredentialSetupError(
+        "git is too old to read its config with scope and origin (git 2.26 or later is needed).",
+        outcome.code
+      );
     }
-    return entries;
+    requireSuccess(outcome, "read");
+    return parseHelperEntries(outcome.stdout);
   }
 }
 
-function otherHelpersOf(entries: readonly HelperEntry[]): string[] {
-  const others: string[] = [];
-  for (const entry of entries) {
-    if (sameKey(entry.key, GENERIC_HELPER_KEY) && entry.value !== "" && !others.includes(entry.value)) {
-      others.push(entry.value);
-    }
-  }
-  return others;
+/**
+ * Whether a URL pattern names exactly `https://<host>` (the forms setup writes, any spelling): no
+ * wildcard, path, user or other port.
+ * @lastreviewed null
+ */
+function patternIsHost(url: string, host: string): boolean {
+  const lowered = url.toLowerCase().replace(/\/$/, "");
+  return !lowered.includes("*") && patternApplies(url, host) && /^https:\/\/[^/@]+$/.test(lowered);
 }
 
 function requireSuccess(outcome: GitConfigOutcome, what: "read" | "add" | "remove"): void {

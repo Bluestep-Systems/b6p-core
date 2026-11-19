@@ -17,13 +17,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it is https, and the tenant hosts script pulls reached), and nothing otherwise; `store` and `erase` do nothing (one
   401 must not delete the token every b6p operation shares). `setupGit()` writes, per allowed host, an empty
   `credential.https://<host>.helper` (a reset, like gh) followed by `!b6p auth git-credential`, never doubling either;
-  `setupStatus()` reports per host whether git asks b6p first and what it still asks after; `removeGit()` takes out
-  b6p's entries and the reset before each, from the file each came from (`~/.gitconfig`,
-  `$XDG_CONFIG_HOME/git/config`, included files), and never a reset the user wrote. Exports `GitCredentialService`,
-  `GitCredentialHosts`, `GitCredential`, `gitConfigRunner`, `parseCredentialRequest`, `credentialHostOf`,
-  `requestedCredentialHost`, `Err.GitCredentialSetupError` and the result types.
+  `setupStatus()` reports per host whether b6p is the only helper git asks, matching entries as git's credential
+  contexts do (wildcards, ports, paths; anything undecidable counts as applying), with the other helpers and the
+  entries responsible; `removeGit()` takes out b6p's entries (any URL spelling) and only the resets b6p recorded
+  writing (`GitCredentialResets`, public state `b6p:git_credential_resets`), each from the file it came from
+  (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`, included files). A setup that fails or stops halfway is rolled back
+  or settled by the next run. Needs git 2.26 or later. Exports `GitCredentialService`, `GitCredentialHosts`,
+  `GitCredentialResets`, `GitCredential`, `gitConfigRunner`, `patternApplies`, `parseCredentialRequest`,
+  `credentialHostOf`, `requestedCredentialHost`, `Err.GitCredentialSetupError` and the result types.
+- **`Persistence.withLock(name, work)`** (optional): an exclusive lock across every process using the same store.
+  `SharedFilePersistence` implements it with a lockfile in its directory (stale after 30 s, a 10 s wait). Core uses it
+  for the git-credential host list and reset records; without it those are serialized within the process only.
 - **A script pull records its tenant host** (`core.gitCredentialHosts`, public state `b6p:git_credential_hosts`)
-  once the git half of the pull succeeded with the stored token. A failure to record never fails the pull.
+  once the git half of the pull succeeded with the stored token, as a locked read-modify-write, so two processes or
+  instances lose nothing. A failure to record never fails the pull.
 
 ## [1.2.0] - 2026-11-18
 

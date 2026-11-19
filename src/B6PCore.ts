@@ -7,6 +7,7 @@ import type { AuthParams } from "./types";
 import { ScriptMetaDataStore } from "./cache/ScriptMetaDataStore";
 import { OrgCache, type OrgCacheSettings } from "./cache/OrgCache";
 import { GitCredentialHosts } from "./cache/GitCredentialHosts";
+import { GitCredentialResets } from "./cache/GitCredentialResets";
 import { GitCredentialService } from "./gitCredential/GitCredentialService";
 import { gitConfigRunner } from "./gitCredential/GitConfigRunner";
 import type { PlatformContext } from "./PlatformContext";
@@ -221,6 +222,7 @@ export class B6PCore {
       token: gatewayTokenFrom(this.auth),
       gatewayUrl,
       hosts: this.gitCredentialHosts,
+      resets: new GitCredentialResets(this.persistence),
       gitConfig: gitConfigRunner(),
     });
 

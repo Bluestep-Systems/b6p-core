@@ -6,7 +6,7 @@
 // persistence (where GitCredentialHosts keeps the recorded tenant hosts).
 
 const fs = require("node:fs");
-const { GitCredentialService, GitCredentialHosts } = require("../../dist/index.js");
+const { GitCredentialService, GitCredentialHosts, GitCredentialResets } = require("../../dist/index.js");
 
 const [stateFile, action] = process.argv.slice(2);
 const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
@@ -22,8 +22,14 @@ const service = new GitCredentialService({
   token: { token: async () => state.token },
   gatewayUrl: async () => state.gatewayUrl,
   hosts: new GitCredentialHosts(persistence),
-  gitConfig: async () => {
-    throw new Error("the helper never runs git config");
+  resets: new GitCredentialResets(persistence),
+  gitConfig: {
+    run: async () => {
+      throw new Error("the helper never runs git config");
+    },
+    globalFile: () => {
+      throw new Error("the helper never runs git config");
+    },
   },
 });
 

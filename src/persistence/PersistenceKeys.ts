@@ -43,4 +43,10 @@ export enum PublicKeys {
    * @lastreviewed null
    */
   GIT_CREDENTIAL_HOSTS = "b6p:git_credential_hosts",
+
+  /**
+   * Key for the `helper =` resets b6p wrote into the user's git config, per file and exact key.
+   * @lastreviewed null
+   */
+  GIT_CREDENTIAL_RESETS = "b6p:git_credential_resets",
 }
