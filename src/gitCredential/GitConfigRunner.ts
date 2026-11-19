@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { ConfigPathStyle } from "./credentialConfig";
 
 /**
  * What one `git config …` run printed and how it ended.
@@ -38,6 +39,13 @@ export interface GitConfigRunner {
    * @lastreviewed null
    */
   globalFile(): string;
+  /**
+   * How config file paths are compared (see `configPathKey`): `win32` on Windows, where git
+   * reports `C:/Users/…` for a file b6p names `C:\\Users\\…`, and `posix` elsewhere. Absent, the
+   * platform's.
+   * @lastreviewed null
+   */
+  readonly pathStyle?: ConfigPathStyle;
 }
 
 /**
@@ -49,6 +57,7 @@ export interface GitConfigRunner {
 export function gitConfigRunner(env?: NodeJS.ProcessEnv): GitConfigRunner {
   const vars = env ?? process.env;
   return {
+    pathStyle: process.platform === "win32" ? "win32" : "posix",
     run: (args) =>
       new Promise((resolve) => {
         execFile(

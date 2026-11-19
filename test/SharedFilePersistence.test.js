@@ -22,7 +22,8 @@ const fsp = require("fs/promises");
 // references it live. `renameImpl` is what each test configures.
 const realRename = fsp.rename.bind(fsp);
 let renameImpl = realRename;
-fsp.rename = (...args) => renameImpl(...args);
+// The state file's lock (`state.json.lock`) is released by a rename of its own; only the writes' renames are counted.
+fsp.rename = (...args) => (String(args[0]).endsWith(".lock") ? realRename(...args) : renameImpl(...args));
 
 const { SharedFilePersistence } = require("../dist/persistence/SharedFilePersistence.js");
 const { BearerAuthProvider } = require("../dist/auth/BearerAuthProvider.js");

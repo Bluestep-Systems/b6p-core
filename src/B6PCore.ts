@@ -8,6 +8,8 @@ import { ScriptMetaDataStore } from "./cache/ScriptMetaDataStore";
 import { OrgCache, type OrgCacheSettings } from "./cache/OrgCache";
 import { GitCredentialHosts } from "./cache/GitCredentialHosts";
 import { GitCredentialResets } from "./cache/GitCredentialResets";
+import { exclusive } from "./persistence/lockedMutation";
+import { PublicKeys } from "./persistence/PersistenceKeys";
 import { GitCredentialService } from "./gitCredential/GitCredentialService";
 import { gitConfigRunner } from "./gitCredential/GitConfigRunner";
 import type { PlatformContext } from "./PlatformContext";
@@ -258,14 +260,32 @@ export class B6PCore {
 
   async clearSettings(): Promise<void> {
     this.prompt.info("Reverting to default settings");
-    await this.persistence.clearPublic();
+    await this.clearPublicState();
   }
 
   async clearAll(): Promise<void> {
     this.prompt.info("Clearing sessions, auth, and settings");
-    await this.persistence.clearPublic();
+    await this.clearPublicState();
     await this.sessionManager.clearAll();
     await this.auth.clear();
+  }
+
+  /**
+   * Clear public state, all but the record of the resets b6p wrote into the user's git config
+   * ({@link GitCredentialResets}): those entries stay in the git config until `removeGit` takes them
+   * out, and without the record it could not tell them from the user's. Done under that record's
+   * lock, so a setup or removal writing it meanwhile is not lost.
+   * @lastreviewed null
+   */
+  private async clearPublicState(): Promise<void> {
+    const key = PublicKeys.GIT_CREDENTIAL_RESETS;
+    await exclusive(this.persistence, key, async () => {
+      const kept = await this.persistence.get<unknown>(key);
+      await this.persistence.clearPublic();
+      if (kept !== undefined) {
+        await this.persistence.set(key, kept);
+      }
+    });
   }
 
   // ── State ─────────────────────────────────────────────────────────

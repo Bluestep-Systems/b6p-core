@@ -119,14 +119,20 @@ are load-bearing rather than stylistic — each records something this repo undi
   asks its other helpers. Never widen the list by a host rule (such as `*.bluestep.net`): a pull that worked is the
   proof for a tenant. `store` and `erase` are no-ops, so a single 401 never deletes the one stored token. Setup writes,
   per host, an empty `credential.https://<host>.helper` (the reset, as gh does) then b6p's command, never doubling
-  either, and records every reset it writes (`GitCredentialResets`, file + exact key + count, written before and after
-  each change); removal takes out only recorded resets, never one the user wrote, and b6p's entries in any URL
-  spelling (git subsections are case-sensitive: group by the exact key). Status follows git's credential contexts
-  (`patternApplies`): every matching entry applies, and anything it cannot decide from the host counts as applying,
-  so a host is never "configured" while another helper may be asked. Never move or delete the user's entries to fix
-  that; report them (`others`). Reads cover every global file (`--includes --show-scope`, not `--global`, which reads
-  only the file it writes) and removals edit the origin file (`--file`). Host-list and reset-record changes go
-  through `mutatePublic` (`Persistence.withLock` across processes). A plain `git push` in a draft does not build or
+  either, and records every reset it writes (`GitCredentialResets`: file + exact key + state + the helper after it,
+  written before and after each change). A count is never ownership: a recorded reset is b6p's only while its helper
+  directly follows an empty value of that key in that file, and a pending change that left the file in any state but
+  the two it predicts is `unconfirmed`. Never delete a reset whose ownership is ambiguous: leave it and report it
+  (`keptResets`, with a reason). Removal takes b6p's entries out in any URL spelling (git subsections are
+  case-sensitive: group by the exact key) and compares file paths with `configPathKey` (Windows: either slash, any
+  case). Status follows git 2.53's credential contexts exactly (`credentialContextMatch`, ported from `credential.c`
+  and `urlmatch.c`, partial-URL fallback included; read git's source before changing it, and keep the real-git test
+  agreeing): in doubt a foreign helper counts as applying and a reset or b6p's own entry as not, so `configured` means
+  git certainly asks b6p alone. Never move or delete the user's entries to fix that; report them (`others`). Reads
+  cover every global file (`--includes --show-scope`, not `--global`, which reads only the file it writes) and
+  removals edit the origin file (`--file`). Each setup and removal runs whole under `GitCredentialResets.exclusive`
+  (one git config lock); host-list and reset-record changes go through `mutatePublic`; `SharedFilePersistence` holds
+  one state-file lock for every write. `clearSettings`/`clearAll` keep the reset record. A plain `git push` in a draft does not build or
   publish; do not add a server hook or helper behaviour that pretends otherwise: that stays `core.script.push`. The token goes only to the `get` answer: never into git
   config's argv, a log line or an error.
 - **A prompt that overwrites or deletes puts its safe option first and passes

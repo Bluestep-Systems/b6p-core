@@ -1,3 +1,6 @@
+import * as path from "node:path";
+import { GitCredential } from "../constants/GitCredential";
+
 /**
  * One `credential.helper` or `credential.<url>.helper` entry of the user's global git config
  * (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config` and what they include), as git read it, in git's
@@ -92,62 +95,361 @@ function splitPort(authority: string): { host: string; port: string } {
 }
 
 /**
- * Whether git may use a `credential.<url>.*` entry (`url` the subsection, `null` for the generic
- * entry) for an https request to `host` (`host[:port]`, as on the allowlist), following git's
- * credential contexts (gitcredentials(7), "CREDENTIAL CONTEXTS"; git's urlmatch rules): the
- * scheme must be https, the port must match (443 when absent), each host label must match or be
- * a `*` wildcard, and every matching entry applies (git selects all, in config order, not only
- * the most specific).
+ * Whether a `credential.<url>.*` entry applies to the requests b6p answers for one allowed host:
  *
- * Where git's answer cannot be known from the host alone, this says yes, so status errs towards
- * "another helper may be asked" and never towards "only b6p": an entry scoped to a path (it applies
- * to the repos under it), one naming a user, a label with a partial wildcard (`gate*`), a percent
- * escape, and a pattern with no scheme (git's partial-URL fallback) all count as applying when
- * their host could be this one.
+ * - `yes`: to every one of them, whatever the repository path, the spelling of the host or the
+ *   username in the remote URL;
+ * - `no`: to none;
+ * - `maybe`: to some (an entry scoped to a path, one naming the `b6p` user, a partial-URL entry
+ *   whose host git compares as written).
+ * @lastreviewed null
+ */
+export type CredentialContextMatch = "yes" | "no" | "maybe";
+
+// git 2.53 urlmatch.c: the character classes of url_normalize_1 and append_normalized_escapes.
+const URL_SCHEME_CHARS = /^[A-Za-z0-9+.-]*/;
+const URL_HOST_CHARS = /^[A-Za-z0-9.\-_[:\]*]*/;
+const URL_UNSAFE_CHARS = ' <>"%{}|\\^`';
+const URL_RESERVED = ":/?#[]@!$&'()*+,;=";
+
+// git's hex2chr: the byte two hex digits spell, or -1.
+function hexByte(text: string, at: number): number {
+  const pair = text.slice(at, at + 2);
+  return /^[0-9A-Fa-f]{2}$/.test(pair) ? parseInt(pair, 16) : -1;
+}
+
+/**
+ * git's append_normalized_escapes with no extra escapes and the reserved delimiters left as found:
+ * `%XX` of an unreserved byte is decoded, an unsafe byte is escaped, every escape is uppercase.
+ * `null` for a `%` not followed by two hex digits (git then rejects the URL).
+ * @lastreviewed null
+ */
+function normalizeEscapes(text: string): string | null {
+  const bytes = Buffer.from(text, "utf8");
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) {
+    let ch = bytes[i];
+    let wasEscaped = false;
+    if (ch === 0x25) {
+      const hex = bytes.subarray(i + 1, i + 3).toString("latin1");
+      const value = hex.length === 2 ? hexByte(hex, 0) : -1;
+      if (value < 0) {
+        return null;
+      }
+      ch = value;
+      i += 2;
+      wasEscaped = true;
+    }
+    const c = String.fromCharCode(ch);
+    if (ch <= 0x1f || ch >= 0x7f || URL_UNSAFE_CHARS.includes(c) || (wasEscaped && URL_RESERVED.includes(c))) {
+      out += `%${ch.toString(16).toUpperCase().padStart(2, "0")}`;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+// git's url_decode_mem: each `%XX` (but `%00`) becomes its byte; anything else stays as it is.
+function urlDecode(text: string): string {
+  const out: number[] = [];
+  const bytes = Buffer.from(text, "utf8");
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] === 0x25 && i + 2 < bytes.length) {
+      const value = hexByte(bytes.subarray(i + 1, i + 3).toString("latin1"), 0);
+      if (value > 0) {
+        out.push(value);
+        i += 2;
+        continue;
+      }
+    }
+    out.push(bytes[i]);
+  }
+  return Buffer.from(out).toString("utf8");
+}
+
+/**
+ * A URL pattern as git 2.53's url_normalize_1 (urlmatch.c, globs allowed) leaves it, or `null`
+ * where git rejects it and falls back to partial-URL matching.
+ * @lastreviewed null
+ */
+interface NormalizedPattern {
+  readonly scheme: string;
+  // The user name (escapes normalized), `null` when the pattern names none.
+  readonly user: string | null;
+  // Lowercase; `*` labels kept.
+  readonly host: string;
+  // Digits without leading zeros, `""` for the scheme's default.
+  readonly port: string;
+  // The path with dot segments resolved, then any query or fragment: `/` for none.
+  readonly path: string;
+}
+
+function normalizePattern(url: string): NormalizedPattern | null {
+  const spanned = URL_SCHEME_CHARS.exec(url)?.[0].length ?? 0;
+  if (
+    spanned === 0 ||
+    !/^[A-Za-z]/.test(url) ||
+    spanned + 3 > url.length ||
+    url.slice(spanned, spanned + 3) !== "://"
+  ) {
+    return null;
+  }
+  const scheme = url.slice(0, spanned).toLowerCase();
+  let rest = url.slice(spanned + 3);
+  const delimiter = rest.search(/[/?#]/);
+  let slash = delimiter === -1 ? rest.length : delimiter;
+  let user: string | null = null;
+  const at = rest.indexOf("@");
+  if (at !== -1 && at < slash) {
+    user = "";
+    if (at > 0) {
+      const userinfo = normalizeEscapes(rest.slice(0, at));
+      if (userinfo === null) {
+        return null;
+      }
+      const colon = userinfo.indexOf(":");
+      user = colon === -1 ? userinfo : userinfo.slice(0, colon);
+    }
+    rest = rest.slice(at + 1);
+    slash -= at + 1;
+  }
+  if (rest === "" || ":/?#".includes(rest[0])) {
+    return null; // A missing host: only file: URLs may have one.
+  }
+  let colon = slash - 1;
+  while (colon > 0 && rest[colon] !== ":" && rest[colon] !== "]") {
+    colon--;
+  }
+  if (rest[colon] !== ":") {
+    colon = slash;
+  }
+  if ((URL_HOST_CHARS.exec(rest)?.[0].length ?? 0) < colon) {
+    return null; // Invalid characters in the host, a `%` escape included.
+  }
+  const host = rest.slice(0, colon).toLowerCase();
+  let port = "";
+  if (colon < slash) {
+    const written = rest.slice(colon + 1, slash);
+    const digits = written === "" ? "" : written.replace(/^0+/, "") || "0";
+    if (digits !== "" && !(scheme === "https" && digits === "443") && !(scheme === "http" && digits === "80")) {
+      if (!/^\d+$/.test(digits) || digits.length > 5 || Number(digits) === 0 || Number(digits) > 65535) {
+        return null;
+      }
+      port = digits;
+    }
+  }
+  const path = normalizePath(rest.slice(slash));
+  return path === null ? null : { scheme, user, host, port, path };
+}
+
+// The path loop of url_normalize_1: escapes normalized, `.` and `..` resolved, the rest appended.
+function normalizePath(written: string): string | null {
+  let rest = written.startsWith("/") ? written.slice(1) : written;
+  let norm = "/";
+  for (;;) {
+    const segmentStart = norm.length;
+    const found = rest.search(/[/?#]/);
+    const next = found === -1 ? rest.length : found;
+    const segment = normalizeEscapes(rest.slice(0, next));
+    if (segment === null) {
+      return null;
+    }
+    norm += segment;
+    let skipSlash = false;
+    if (segment === ".") {
+      if (segmentStart === 1) {
+        norm = norm.slice(0, -1);
+        skipSlash = true;
+      } else {
+        norm = norm.slice(0, -2);
+      }
+    } else if (segment === "..") {
+      let previous = norm.length - 3;
+      if (previous <= 0) {
+        return null;
+      }
+      while (norm[--previous] !== "/") {
+        // Back to the slash before the previous segment.
+      }
+      if (previous === 0) {
+        norm = norm.slice(0, 1);
+        skipSlash = true;
+      } else {
+        norm = norm.slice(0, previous);
+      }
+    }
+    rest = rest.slice(next);
+    if (!rest.startsWith("/")) {
+      break;
+    }
+    rest = rest.slice(1);
+    if (!skipSlash) {
+      norm += "/";
+    }
+  }
+  if (rest !== "") {
+    const tail = normalizeEscapes(rest);
+    if (tail === null) {
+      return null;
+    }
+    norm += tail;
+  }
+  return norm;
+}
+
+// urlmatch.c match_host: label by label, a label that is exactly `*` matching any one.
+function matchHost(have: string, pattern: string): boolean {
+  let url = have;
+  let pat = pattern;
+  while (url !== "" && pat !== "") {
+    const urlDot = url.indexOf(".");
+    const patDot = pat.indexOf(".");
+    const urlLabel = urlDot === -1 ? url : url.slice(0, urlDot);
+    const patLabel = patDot === -1 ? pat : pat.slice(0, patDot);
+    if (patLabel !== "*" && patLabel !== urlLabel) {
+      return false;
+    }
+    url = urlDot === -1 ? "" : url.slice(urlDot + 1);
+    pat = patDot === -1 ? "" : pat.slice(patDot + 1);
+  }
+  return url === "" && pat === "";
+}
+
+/**
+ * credential.c match_partial_url, for a pattern git could not normalize: the pattern is split as
+ * credential_from_url_1 does with partial URLs allowed (parts percent-decoded), and each part it
+ * sets must equal the request's as written (case-sensitive), which is all git compares.
+ * @lastreviewed null
+ */
+function partialMatch(url: string, host: string): CredentialContextMatch {
+  const protoEnd = url.indexOf("://");
+  const cp = protoEnd === -1 ? 0 : protoEnd + 3;
+  const at = url.indexOf("@", cp);
+  const colon = url.indexOf(":", cp);
+  const found = url.slice(cp).search(/[/?#]/);
+  const slash = found === -1 ? url.length : cp + found;
+  let username: string | undefined;
+  let hostStart = cp;
+  if (at !== -1 && slash > at) {
+    username = urlDecode(url.slice(cp, colon === -1 || at <= colon ? at : colon));
+    hostStart = at + 1;
+  }
+  const protocol = protoEnd > 0 ? url.slice(0, protoEnd) : undefined;
+  const wantHost = slash - hostStart > 0 ? urlDecode(url.slice(hostStart, slash)) : undefined;
+  let pathStart = slash;
+  while (url[pathStart] === "/") {
+    pathStart++;
+  }
+  const wantPath = pathStart < url.length ? urlDecode(url.slice(pathStart)) : undefined;
+  if ([username, protocol, wantHost, wantPath].some((part) => part?.includes("\n"))) {
+    return "no"; // git warns and skips the entry.
+  }
+  let match: CredentialContextMatch = "yes";
+  if (protocol !== undefined && protocol !== "https") {
+    return "no";
+  }
+  if (wantHost !== undefined) {
+    // The request's host is as the remote URL wrote it: b6p answers any case of the allowed host, and `:443` beside
+    // a default port, so a pattern naming one spelling matches only some of those requests.
+    const spellings = splitPort(host).port === "" ? [host, `${host}:443`] : [host];
+    if (!spellings.includes(wantHost.toLowerCase())) {
+      return "no";
+    }
+    match = "maybe";
+  }
+  if (username !== undefined) {
+    if (username !== GitCredential.USERNAME) {
+      return "no"; // b6p answers only requests with no username or `b6p`.
+    }
+    match = "maybe";
+  }
+  if (wantPath !== undefined) {
+    match = "maybe"; // The request's path is the repository's.
+  }
+  return match;
+}
+
+/**
+ * How a `credential.<url>.*` entry (`url` the subsection, `null` for the generic entry) applies to
+ * the https requests b6p answers for `host` (`host[:port]`, as on the allowlist), following git
+ * 2.53's credential contexts exactly: every matching entry applies, in config order (select_all).
+ *
+ * - A pattern git can normalize (urlmatch.c url_normalize_1) matches by scheme (case-insensitive),
+ *   host (case-insensitive, a whole `*` label matching any one label, no `%` escapes), port
+ *   (leading zeros dropped, the scheme's default the same as none), the user when it names one,
+ *   and the path as a prefix on a `/` boundary (escapes normalized, dot segments resolved).
+ * - Any other pattern (no scheme, a missing host as in `https://`, a `%` in the host, port 0) is
+ *   matched as credential.c match_partial_url does: each part it names, percent-decoded, must
+ *   equal the request's exactly. `https://` names only the protocol, so it matches every https
+ *   request.
+ *
+ * A request's path, the case of its host and a username in the remote URL are not known here, so
+ * an entry that depends on them is `maybe`.
+ * @lastreviewed null
+ */
+export function credentialContextMatch(url: string | null, host: string): CredentialContextMatch {
+  if (url === null) {
+    return "yes";
+  }
+  const pattern = normalizePattern(url);
+  if (pattern === null) {
+    return partialMatch(url, host);
+  }
+  const target = splitPort(host.toLowerCase());
+  if (pattern.scheme !== "https") {
+    return "no";
+  }
+  if (pattern.user !== null && pattern.user !== GitCredential.USERNAME) {
+    return "no";
+  }
+  if (!matchHost(target.host, pattern.host)) {
+    return "no";
+  }
+  if (pattern.port !== (target.port === "443" ? "" : target.port)) {
+    return "no";
+  }
+  return pattern.user !== null || pattern.path !== "/" ? "maybe" : "yes";
+}
+
+/**
+ * Whether git may use a `credential.<url>.*` entry for a request b6p answers for `host`: its
+ * {@link credentialContextMatch} is `yes` or `maybe`.
  * @lastreviewed null
  */
 export function patternApplies(url: string | null, host: string): boolean {
-  if (url === null) {
-    return true;
-  }
-  let rest = url;
-  const scheme = url.indexOf("://");
-  if (scheme !== -1) {
-    if (url.slice(0, scheme).toLowerCase() !== "https") {
-      return false;
-    }
-    rest = url.slice(scheme + 3);
-  }
-  const slash = rest.indexOf("/");
-  let authority = slash === -1 ? rest : rest.slice(0, slash);
-  const at = authority.lastIndexOf("@");
-  if (at !== -1) {
-    authority = authority.slice(at + 1);
-  }
-  if (authority.includes("%")) {
-    return true;
-  }
-  const pattern = splitPort(authority.toLowerCase());
+  return credentialContextMatch(url, host) !== "no";
+}
+
+/**
+ * Whether a URL pattern names exactly `https://<host>` in a form git normalizes (setup's own
+ * spelling, or another case or port spelling of it): no wildcard, user, path, query or other port.
+ * @lastreviewed null
+ */
+export function patternIsHost(url: string, host: string): boolean {
+  const pattern = normalizePattern(url);
   const target = splitPort(host.toLowerCase());
-  if ((pattern.port || "443") !== (target.port || "443")) {
-    return false;
-  }
-  const want = pattern.host.split(".");
-  const have = target.host.split(".");
-  if (want.length !== have.length) {
-    return false;
-  }
-  return want.every((label, i) => label === have[i] || label.includes("*"));
+  return (
+    pattern !== null &&
+    pattern.scheme === "https" &&
+    pattern.user === null &&
+    pattern.path === "/" &&
+    pattern.host === target.host &&
+    pattern.port === (target.port === "443" ? "" : target.port)
+  );
 }
 
 /**
  * What git asks for `host`: every applying entry in order, each empty value clearing the list so
- * far. `helpers` are b6p's own commands.
+ * far. `helpers` are b6p's own commands. Where an entry applies to only some of the requests
+ * ({@link credentialContextMatch} `maybe`), the answer takes the worst case for each question: a
+ * foreign helper counts as asked, and a reset or b6p's own entry counts as not applying when it
+ * would hide a foreign helper, and as applying when it would clear b6p.
  *
- * - `configured`: the list is not empty and holds only b6p.
- * - `alsoAsked`: the other helpers still on it, in order, without repeats.
- * - `others`: the entries that keep b6p from being the only helper asked: each other helper on the
- *   list, and the reset that cleared b6p when a b6p entry came before it.
+ * - `configured`: git certainly asks b6p and no other helper.
+ * - `alsoAsked`: the other helpers git may ask, in order, without repeats.
+ * - `others`: the entries that keep b6p from being the only helper asked: each other helper git
+ *   may ask, and the reset that may clear b6p when a b6p entry came before it.
  * @lastreviewed null
  */
 export function askedFor(
@@ -155,38 +457,84 @@ export function askedFor(
   host: string,
   helpers: ReadonlySet<string>
 ): { configured: boolean; alsoAsked: string[]; others: GitCredentialConfigEntry[] } {
-  let list: HelperEntry[] = [];
+  let foreign: HelperEntry[] = [];
+  let surelyB6p = false;
   let clearedB6p: HelperEntry | null = null;
   for (const entry of entries) {
-    if (!patternApplies(entry.url, host)) {
+    const match = credentialContextMatch(entry.url, host);
+    if (match === "no") {
       continue;
     }
     if (entry.value === "") {
-      clearedB6p = list.some((e) => helpers.has(e.value)) ? entry : clearedB6p;
-      list = [];
+      if (match === "yes") {
+        foreign = [];
+      }
+      if (surelyB6p) {
+        clearedB6p = entry;
+      }
+      surelyB6p = false;
+    } else if (helpers.has(entry.value)) {
+      surelyB6p ||= match === "yes";
     } else {
-      list.push(entry);
+      foreign.push(entry);
     }
   }
-  const foreign = list.filter((e) => !helpers.has(e.value));
-  const hasB6p = list.some((e) => helpers.has(e.value));
   const others: GitCredentialConfigEntry[] = foreign.map(({ key, value, file }) => ({ key, value, file }));
-  if (!hasB6p && clearedB6p) {
+  if (!surelyB6p && clearedB6p) {
     others.push({ key: clearedB6p.key, value: clearedB6p.value, file: clearedB6p.file });
   }
   return {
-    configured: hasB6p && foreign.length === 0,
+    configured: surelyB6p && foreign.length === 0,
     alsoAsked: [...new Set(foreign.map((e) => e.value))],
     others,
   };
 }
 
 /**
+ * How config file paths are spelled and compared: `win32` (git for Windows reports forward
+ * slashes, a path b6p builds has backslashes, and the file system ignores case) or `posix`.
+ * @lastreviewed null
+ */
+export type ConfigPathStyle = "posix" | "win32";
+
+/**
+ * The form of a config file path that two spellings of the same file share: on `win32`
+ * normalized with either slash and compared without case, on `posix` normalized.
+ * @lastreviewed null
+ */
+export function configPathKey(file: string, style: ConfigPathStyle): string {
+  return style === "win32" ? path.win32.normalize(file).toLowerCase() : path.posix.normalize(file);
+}
+
+function valuesOf(entries: readonly HelperEntry[], file: string, key: string, style: ConfigPathStyle): string[] {
+  const want = configPathKey(file, style);
+  return entries
+    .filter((e) => e.file !== null && e.key === key && configPathKey(e.file, style) === want)
+    .map((e) => e.value);
+}
+
+/**
  * How many empty values `key` (exact spelling) has in `file`.
  * @lastreviewed null
  */
-export function emptiesOf(entries: readonly HelperEntry[], file: string, key: string): number {
-  return entries.filter((e) => e.file === file && e.key === key && e.value === "").length;
+export function emptiesOf(entries: readonly HelperEntry[], file: string, key: string, style: ConfigPathStyle): number {
+  return valuesOf(entries, file, key, style).filter((value) => value === "").length;
+}
+
+/**
+ * Whether `helper` directly follows an empty value among the values of `key` (exact spelling) in
+ * `file`: the pair setup writes.
+ * @lastreviewed null
+ */
+export function pairedReset(
+  entries: readonly HelperEntry[],
+  file: string,
+  key: string,
+  helper: string,
+  style: ConfigPathStyle
+): boolean {
+  const values = valuesOf(entries, file, key, style);
+  return values.some((value, i) => value === "" && values[i + 1] === helper);
 }
 
 /**

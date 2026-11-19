@@ -22,7 +22,7 @@ const core = require("../dist/index.js");
 
 const { GitCredentialService, GitCredentialHosts, GitCredentialResets, GitCredential, Err, PublicKeys } = core;
 const { ScriptService, SharedFilePersistence, credentialHostOf, requestedCredentialHost, gitConfigRunner } = core;
-const { parseCredentialRequest, patternApplies } = core;
+const { parseCredentialRequest, patternApplies, credentialContextMatch, patternIsHost } = core;
 
 const TOKEN = "b6pt_credentialHelperTestToken";
 const GATEWAY = "https://gateway.bluestep.net";
@@ -464,7 +464,9 @@ test("a reset the user wrote is never removed: not one away from b6p's entry, no
   // The gateway's key holds the user's empty value beside the one b6p recorded, so b6p's is kept rather than risk the
   // user's. The tenant's reset was never b6p's (setup found the host configured and wrote nothing), so it stays and is
   // not reported.
-  assert.deepStrictEqual(result.keptResets, ["https://gateway.bluestep.net"]);
+  assert.deepStrictEqual(result.keptResets, [
+    { url: "https://gateway.bluestep.net", file: config.file, reason: "shared-key" },
+  ]);
   assert.deepStrictEqual(gitGetAll(config.env, "credential.https://gateway.bluestep.net.helper"), ["", "mine", ""]);
   assert.deepStrictEqual(gitGetAll(config.env, `credential.https://${TENANT}.helper`), ["", "mine", ""]);
 });
@@ -502,8 +504,14 @@ test("an included file and $XDG_CONFIG_HOME/git/config are read, and removal edi
   const persistence = memoryPersistence();
   const { service, hosts, resets } = makeService({ config: { env: scratch.env }, persistence });
   // As a setup that wrote these would have recorded them.
-  await resets.put(inc, "credential.https://gateway.bluestep.net.helper", { installed: 1 });
-  await resets.put(xdg, `credential.https://${TENANT}.helper`, { installed: 1 });
+  await resets.put(inc, "credential.https://gateway.bluestep.net.helper", {
+    state: "installed",
+    helper: GitCredential.DEFAULT_HELPER,
+  });
+  await resets.put(xdg, `credential.https://${TENANT}.helper`, {
+    state: "installed",
+    helper: GitCredential.DEFAULT_HELPER,
+  });
   await hosts.record(`https://${TENANT}/`);
   const status = await service.setupStatus();
   assert.deepStrictEqual(status.otherHelpers, ["store"], "a generic helper in the XDG file is seen");
@@ -560,38 +568,97 @@ test("a git config failure or a missing git is a GitCredentialSetupError with no
 
 // ── git's credential contexts ─────────────────────────────────────────
 
-test("patternApplies follows git's credential contexts, and errs towards applying where it cannot tell", () => {
-  const host = "gateway.bluestep.net";
-  for (const url of [
+const CONTEXT_CASES = {
+  yes: [
+    null,
     "https://gateway.bluestep.net",
     "https://gateway.bluestep.net/",
     "https://GATEWAY.bluestep.net",
+    "HTTPS://gateway.bluestep.net",
     "https://gateway.bluestep.net:443",
+    "https://gateway.bluestep.net:0443",
+    "https://gateway.bluestep.net:",
     "https://*.bluestep.net",
     "https://gateway.*.net",
-    "https://gate*.bluestep.net",
+    "https://gateway.bluestep.net/.",
+    "https://gateway.bluestep.net/a/..",
+    "https://",
+  ],
+  maybe: [
     "https://gateway.bluestep.net/api/v1/git/",
-    "https://someone@gateway.bluestep.net",
+    "https://gateway.bluestep.net/api/v1/git/kb.git",
+    "https://b6p@gateway.bluestep.net",
+    "https://b%36p@gateway.bluestep.net",
     "gateway.bluestep.net",
-    "*.bluestep.net",
     "https://gateway%2ebluestep.net",
-    null,
-  ]) {
-    assert.strictEqual(patternApplies(url, host), true, String(url));
-  }
-  for (const url of [
+    "/api/v1/git/kb.git",
+  ],
+  no: [
     "http://gateway.bluestep.net",
+    "ssh://gateway.bluestep.net",
+    "http://",
     "https://gateway.bluestep.net:8443",
+    "https://gateway.bluestep.net:0",
     "https://other.bluestep.net",
     "https://*.gateway.bluestep.net",
     "https://bluestep.net",
     "https://*.example.com",
-    "ssh://gateway.bluestep.net",
-  ]) {
-    assert.strictEqual(patternApplies(url, host), false, url);
+    "https://gate*.bluestep.net",
+    "https://someone@gateway.bluestep.net",
+    "*.bluestep.net",
+    "GATEWAY.bluestep.net:8443",
+  ],
+};
+
+test("credentialContextMatch: yes, no or maybe for each pattern, as git 2.53's credential contexts decide", () => {
+  const host = "gateway.bluestep.net";
+  for (const [want, urls] of Object.entries(CONTEXT_CASES)) {
+    for (const url of urls) {
+      assert.strictEqual(credentialContextMatch(url, host), want, String(url));
+      assert.strictEqual(patternApplies(url, host), want !== "no", String(url));
+    }
   }
-  assert.strictEqual(patternApplies("https://gw.example:8443/", "gw.example:8443"), true);
-  assert.strictEqual(patternApplies("https://gw.example", "gw.example:8443"), false);
+  assert.strictEqual(credentialContextMatch("https://gw.example:8443/", "gw.example:8443"), "yes");
+  assert.strictEqual(credentialContextMatch("https://gw.example:08443", "gw.example:8443"), "yes");
+  assert.strictEqual(credentialContextMatch("https://gw.example", "gw.example:8443"), "no");
+  assert.strictEqual(credentialContextMatch("gw.example:8443", "gw.example:8443"), "maybe");
+  assert.strictEqual(patternIsHost("https://GATEWAY.bluestep.net:0443/", host), true);
+  for (const url of ["https://*.bluestep.net", "https://b6p@gateway.bluestep.net", "https://gateway.bluestep.net/x"]) {
+    assert.strictEqual(patternIsHost(url, host), false, url);
+  }
+});
+
+test("the cases above are what real git 2.53 does: yes asks for every request b6p answers, no for none, maybe some", () => {
+  // The requests b6p answers for the host: any case, `:443` or not, any path, no username or `b6p`.
+  const requests = [
+    "protocol=https\nhost=gateway.bluestep.net\n",
+    "protocol=https\nhost=GATEWAY.BLUESTEP.NET\n",
+    "protocol=https\nhost=gateway.bluestep.net:443\n",
+    "protocol=https\nhost=gateway.bluestep.net\npath=api/v1/git/kb.git\n",
+    "protocol=https\nhost=gateway.bluestep.net\nusername=b6p\n",
+  ];
+  const marks = path.join(tmp, `marks-${++configN}`);
+  const helper = `!f() { echo x >> "${marks.replace(/\\/g, "/")}"; echo username=u; echo password=p; }; f`;
+  for (const [want, urls] of Object.entries(CONTEXT_CASES)) {
+    for (const url of urls) {
+      const config = scratchConfig();
+      execFileSync(
+        "git",
+        ["config", "--global", url === null ? "credential.helper" : `credential.${url}.helper`, helper],
+        {
+          env: config.env,
+        }
+      );
+      let asked = 0;
+      for (const request of requests) {
+        fs.rmSync(marks, { force: true });
+        credential("fill", request + "\n", config.env);
+        asked += fs.existsSync(marks) ? 1 : 0;
+      }
+      const seen = asked === requests.length ? "yes" : asked === 0 ? "no" : "maybe";
+      assert.strictEqual(seen, want, `${url}: git asked for ${asked} of ${requests.length}`);
+    }
+  }
 });
 
 test("a wildcard, port, trailing-slash or path entry after b6p's leaves the host not configured, the entry named", async () => {
@@ -690,19 +757,24 @@ test("a reset b6p did not record is never removed, even right before b6p's entry
   assert.deepStrictEqual(gitGetAll(config.env, "credential.https://gateway.bluestep.net.username"), ["b6p"]);
 });
 
-test("setup records each reset it writes: file, exact key and count", async () => {
+test("setup records each reset it writes: file, exact key and the helper after it", async () => {
   const config = scratchConfig();
   const { service, resets, persistence } = makeService({ config });
   await service.setupGit();
   assert.deepStrictEqual(await resets.all(), {
-    [config.file]: { "credential.https://gateway.bluestep.net.helper": { installed: 1 } },
+    [config.file]: {
+      "credential.https://gateway.bluestep.net.helper": { state: "installed", helper: GitCredential.DEFAULT_HELPER },
+    },
   });
   assert.ok(persistence.data[PublicKeys.GIT_CREDENTIAL_RESETS]);
   await service.removeGit();
   assert.deepStrictEqual(await resets.all(), {});
 });
 
-/** A `run` that fails (or throws after running, like a process that died) on the first call `match` picks. */
+/**
+ * A `run` that, on the first call `match` picks, fails (`fail`), throws after running it like a process that died just
+ * after (`crash`), or throws without running it, like one that died just before (`die`).
+ */
 function faultOn(match, mode) {
   let fired = false;
   return async (args, real) => {
@@ -711,7 +783,9 @@ function faultOn(match, mode) {
       if (mode === "fail") {
         return { code: 255, stdout: "", stderr: "error: could not lock config file" };
       }
-      await real(args);
+      if (mode !== "die") {
+        await real(args);
+      }
       throw new Error("the process stopped here");
     }
     return real(args);
@@ -743,27 +817,54 @@ test("a reset that cannot be added changes nothing", async () => {
   assert.deepStrictEqual(await failing.resets.all(), {});
 });
 
-test("a setup that stopped after its reset is finished by a retry with one reset, and removal leaves none", async () => {
-  for (const stopAfter of [addsReset, addsHelper]) {
-    const config = scratchConfig("[credential]\n\thelper = cache\n");
-    const persistence = memoryPersistence();
-    const crashed = makeService({ config, persistence, run: faultOn(stopAfter, "crash") });
-    await assert.rejects(crashed.service.setupGit(), /the process stopped here/);
-    const retry = makeService({ config, persistence });
-    const result = await retry.service.setupGit();
-    assert.strictEqual(result.hosts[0].configured, true);
-    assert.deepStrictEqual(gitGetAll(config.env, "credential.https://gateway.bluestep.net.helper"), [
-      "",
-      GitCredential.DEFAULT_HELPER,
-    ]);
-    assert.deepStrictEqual(await retry.resets.all(), {
-      [config.file]: { "credential.https://gateway.bluestep.net.helper": { installed: 1 } },
-    });
-    await retry.service.removeGit();
-    assert.deepStrictEqual(gitGetAll(config.env, "credential.https://gateway.bluestep.net.helper"), []);
-    assert.deepStrictEqual(gitGetAll(config.env, "credential.helper"), ["cache"]);
-    assert.deepStrictEqual(await retry.resets.all(), {});
-  }
+test("a setup that stopped after both writes is finished by a retry with one pair, and removal leaves none", async () => {
+  const config = scratchConfig("[credential]\n\thelper = cache\n");
+  const persistence = memoryPersistence();
+  const crashed = makeService({ config, persistence, run: faultOn(addsHelper, "crash") });
+  await assert.rejects(crashed.service.setupGit(), /the process stopped here/);
+  const retry = makeService({ config, persistence });
+  const result = await retry.service.setupGit();
+  assert.strictEqual(result.hosts[0].configured, true);
+  assert.deepStrictEqual(result.alreadyConfigured, ["gateway.bluestep.net"], "the pair the crashed run wrote is b6p's");
+  assert.deepStrictEqual(gitGetAll(config.env, "credential.https://gateway.bluestep.net.helper"), [
+    "",
+    GitCredential.DEFAULT_HELPER,
+  ]);
+  assert.deepStrictEqual(await retry.resets.all(), {
+    [config.file]: {
+      "credential.https://gateway.bluestep.net.helper": { state: "installed", helper: GitCredential.DEFAULT_HELPER },
+    },
+  });
+  await retry.service.removeGit();
+  assert.deepStrictEqual(gitGetAll(config.env, "credential.https://gateway.bluestep.net.helper"), []);
+  assert.deepStrictEqual(gitGetAll(config.env, "credential.helper"), ["cache"]);
+  assert.deepStrictEqual(await retry.resets.all(), {});
+});
+
+test("a setup that stopped between its reset and its helper leaves that reset unconfirmed: kept and reported", async () => {
+  // The file then looks just as it would had the run stopped before writing anything and the user added a reset, so
+  // b6p cannot say the reset is its own.
+  const config = scratchConfig("[credential]\n\thelper = cache\n");
+  const persistence = memoryPersistence();
+  const crashed = makeService({ config, persistence, run: faultOn(addsReset, "crash") });
+  await assert.rejects(crashed.service.setupGit(), /the process stopped here/);
+  const retry = makeService({ config, persistence });
+  const result = await retry.service.setupGit();
+  assert.strictEqual(result.hosts[0].configured, true);
+  assert.deepStrictEqual(result.keptResets, [
+    { url: "https://gateway.bluestep.net", file: config.file, reason: "unconfirmed" },
+  ]);
+  assert.deepStrictEqual(gitGetAll(config.env, "credential.https://gateway.bluestep.net.helper"), [
+    "",
+    "",
+    GitCredential.DEFAULT_HELPER,
+  ]);
+  const removed = await retry.service.removeGit();
+  assert.deepStrictEqual(removed.keptResets, [
+    { url: "https://gateway.bluestep.net", file: config.file, reason: "shared-key" },
+  ]);
+  assert.deepStrictEqual(gitGetAll(config.env, "credential.https://gateway.bluestep.net.helper"), ["", ""]);
+  assert.deepStrictEqual(await retry.resets.all(), {});
 });
 
 test("a removal that stopped after unsetting its reset is settled by the next run", async () => {
@@ -774,7 +875,7 @@ test("a removal that stopped after unsetting its reset is settled by the next ru
   const crashed = makeService({ config, persistence, run: faultOn((a) => a.includes("^$"), "crash") });
   await assert.rejects(crashed.service.removeGit(), /the process stopped here/);
   const pending = (await crashed.resets.all())[config.file]["credential.https://gateway.bluestep.net.helper"];
-  assert.deepStrictEqual(pending.pending, { op: "remove", emptiesBefore: 1 });
+  assert.deepStrictEqual(pending, { state: "removing", helper: GitCredential.DEFAULT_HELPER, emptiesBefore: 1 });
   const next = makeService({ config, persistence });
   await next.service.removeGit();
   assert.deepStrictEqual(await next.resets.all(), {});
@@ -785,12 +886,301 @@ test("removal takes out b6p's entries in every spelling of the URL", async () =>
   const pair = (url) => `[credential "${url}"]\n\thelper =\n\thelper = ${GitCredential.DEFAULT_HELPER}\n`;
   const config = scratchConfig(pair("https://gateway.bluestep.net") + pair("https://GATEWAY.bluestep.net"));
   const { service, resets } = makeService({ config });
-  await resets.put(config.file, "credential.https://gateway.bluestep.net.helper", { installed: 1 });
-  await resets.put(config.file, "credential.https://GATEWAY.bluestep.net.helper", { installed: 1 });
+  await resets.put(config.file, "credential.https://gateway.bluestep.net.helper", {
+    state: "installed",
+    helper: GitCredential.DEFAULT_HELPER,
+  });
+  await resets.put(config.file, "credential.https://GATEWAY.bluestep.net.helper", {
+    state: "installed",
+    helper: GitCredential.DEFAULT_HELPER,
+  });
   const result = await service.removeGit();
   assert.deepStrictEqual(result.removed.sort(), ["https://GATEWAY.bluestep.net", "https://gateway.bluestep.net"]);
   assert.deepStrictEqual(result.keptResets, []);
   assert.deepStrictEqual(entriesOf(config.env, config.file), []);
+});
+
+// ── round 3: what applies, who owns a reset, locks ────────────────────
+
+const GW_KEY = "credential.https://gateway.bluestep.net.helper";
+
+test("a reset scoped to a path does not hide an earlier helper: not configured, and setup repairs it", async () => {
+  const config = scratchConfig(
+    "[credential]\n\thelper = store\n" +
+      '[credential "https://gateway.bluestep.net/special"]\n\thelper =\n' +
+      `[credential "https://gateway.bluestep.net"]\n\thelper = ${GitCredential.DEFAULT_HELPER}\n`
+  );
+  const { service } = makeService({ config });
+  const status = await service.setupStatus();
+  assert.strictEqual(status.hosts[0].configured, false, "outside /special git asks store too");
+  assert.deepStrictEqual(status.hosts[0].alsoAsked, ["store"]);
+  const result = await service.setupGit();
+  assert.deepStrictEqual(result.added, ["gateway.bluestep.net"]);
+  assert.strictEqual(result.hosts[0].configured, true);
+  assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), ["", GitCredential.DEFAULT_HELPER]);
+});
+
+test("a reset that may apply after b6p's entry leaves the host not configured, and setup puts b6p after it", async () => {
+  const config = scratchConfig();
+  const { service } = makeService({ config });
+  await service.setupGit();
+  fs.appendFileSync(config.file, '[credential "https://gateway.bluestep.net/special"]\n\thelper =\n');
+  const status = await service.setupStatus();
+  assert.strictEqual(status.hosts[0].configured, false, "under /special git asks nobody");
+  assert.deepStrictEqual(status.hosts[0].others, [
+    { key: "credential.https://gateway.bluestep.net/special.helper", value: "", file: config.file },
+  ]);
+  const result = await service.setupGit();
+  assert.strictEqual(result.hosts[0].configured, true);
+});
+
+for (const url of ["https://", "https://gateway.bluestep.net:0443"]) {
+  test(`end to end: a store helper on ${url} after b6p's pair is reported, gets the token from git, and setup fixes it`, async () => {
+    const storeFile = path.join(tmp, `store-${++configN}`).replace(/\\/g, "/");
+    const scratch = scratchHome({});
+    const stateFile = path.join(tmp, `state-${++configN}.json`);
+    fs.writeFileSync(stateFile, JSON.stringify({ token: TOKEN, gatewayUrl: GATEWAY, public: {} }));
+    const script = path.join(__dirname, "support", "GitCredentialHelper.js").replace(/\\/g, "/");
+    const helper = `!"${process.execPath.replace(/\\/g, "/")}" "${script}" "${stateFile.replace(/\\/g, "/")}"`;
+    const { service } = makeService({ config: { env: scratch.env } });
+    assert.strictEqual((await service.setupGit({ helper })).hosts[0].configured, true);
+    execFileSync("git", ["config", "--global", "--add", `credential.${url}.helper`, `store --file=${storeFile}`], {
+      env: scratch.env,
+    });
+    const status = await service.setupStatus({ helper });
+    assert.strictEqual(status.hosts[0].configured, false, url);
+    assert.deepStrictEqual(status.hosts[0].alsoAsked, [`store --file=${storeFile}`]);
+    const request = "protocol=https\nhost=gateway.bluestep.net\n\n";
+    credential("approve", credential("fill", request, scratch.env).stdout + "\n", scratch.env);
+    assert.ok(fs.readFileSync(storeFile, "utf8").includes(TOKEN), "git really does give it to that store");
+
+    fs.rmSync(storeFile);
+    const fixed = await service.setupGit({ helper });
+    assert.deepStrictEqual(fixed.added, ["gateway.bluestep.net"]);
+    assert.strictEqual(fixed.hosts[0].configured, true);
+    const filled = credential("fill", request, scratch.env);
+    assert.match(filled.stdout, new RegExp(`^password=${TOKEN}$`, "m"));
+    credential("approve", filled.stdout + "\n", scratch.env);
+    assert.ok(!fs.existsSync(storeFile) || !fs.readFileSync(storeFile, "utf8").includes(TOKEN), "store never saw it");
+  });
+}
+
+test("a recorded reset whose b6p helper the user took out is no longer b6p's: removal deletes nothing", async () => {
+  const mine = '[credential "https://gateway.bluestep.net"]\n\thelper =\n\thelper = store\n';
+  const config = scratchConfig(mine + "[credential]\n\thelper = cache\n");
+  const { service, resets } = makeService({ config });
+  await service.setupGit();
+  // b6p's pair went into the user's section, after their own reset and helper.
+  assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), ["", "store", "", GitCredential.DEFAULT_HELPER]);
+  // The user deletes b6p's pair by hand, leaving one empty value: the count alone would still match the record.
+  fs.writeFileSync(config.file, mine + "[credential]\n\thelper = cache\n");
+  const result = await service.removeGit();
+  assert.deepStrictEqual(result, { removed: [], keptResets: [] });
+  assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), ["", "store"], "the user's reset stays");
+  assert.deepStrictEqual(await resets.all(), {}, "b6p dropped its claim");
+});
+
+test("a setup that died before its reset was written, then a reset of the user's: kept and reported, not deleted", async () => {
+  const config = scratchConfig("[credential]\n\thelper = cache\n");
+  const persistence = memoryPersistence();
+  const died = makeService({ config, persistence, run: faultOn(addsReset, "die") });
+  await assert.rejects(died.service.setupGit(), /the process stopped here/);
+  assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), [], "nothing was written");
+  fs.appendFileSync(config.file, '[credential "https://gateway.bluestep.net"]\n\thelper =\n');
+  const next = makeService({ config, persistence });
+  const result = await next.service.removeGit();
+  assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), [""], "the user's reset stays");
+  assert.deepStrictEqual(result.removed, []);
+  assert.deepStrictEqual(result.keptResets, [
+    { url: "https://gateway.bluestep.net", file: config.file, reason: "unconfirmed" },
+  ]);
+  assert.deepStrictEqual(await next.resets.all(), {}, "reported once, then forgotten");
+  assert.deepStrictEqual((await next.service.removeGit()).keptResets, []);
+});
+
+test("a removal that died after its reset, then a reset of the user's: kept and reported, not deleted", async () => {
+  const config = scratchConfig();
+  const persistence = memoryPersistence();
+  await makeService({ config, persistence }).service.setupGit();
+  const unsetsResets = (args) => args.includes("--unset-all") && args[args.length - 1] === "^$";
+  const crashed = makeService({ config, persistence, run: faultOn(unsetsResets, "crash") });
+  await assert.rejects(crashed.service.removeGit(), /the process stopped here/);
+  fs.appendFileSync(config.file, '[credential "https://gateway.bluestep.net"]\n\thelper =\n');
+  const next = makeService({ config, persistence });
+  const result = await next.service.removeGit();
+  assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), [""], "the user's reset stays");
+  assert.deepStrictEqual(result.keptResets, [
+    { url: "https://gateway.bluestep.net", file: config.file, reason: "unconfirmed" },
+  ]);
+});
+
+test("two setups at once, in one process, write one pair and one record", async () => {
+  const config = scratchConfig("[credential]\n\thelper = cache\n");
+  const persistence = memoryPersistence();
+  const { service, resets } = makeService({ config, persistence });
+  const other = makeService({ config, persistence });
+  await Promise.all([service.setupGit(), service.setupGit(), other.service.setupGit()]);
+  assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), ["", GitCredential.DEFAULT_HELPER]);
+  assert.deepStrictEqual(await resets.all(), {
+    [config.file]: { [GW_KEY]: { state: "installed", helper: GitCredential.DEFAULT_HELPER } },
+  });
+  await Promise.all([service.removeGit(), other.service.setupGit()]);
+  const values = gitGetAll(config.env, GW_KEY);
+  assert.ok(
+    values.length === 0 || (values.length === 2 && values[0] === "" && values[1] === GitCredential.DEFAULT_HELPER),
+    values.join("|")
+  );
+});
+
+/** A child process running `body` (with `c` the compiled core) once the clock reaches `at`. */
+function childAt(at, body, env = process.env) {
+  const dist = path.join(__dirname, "..", "dist", "index.js");
+  const code =
+    `const c = require(${JSON.stringify(dist)});` +
+    `setTimeout(() => (async () => { ${body} })().catch((e) => { console.error(e); process.exit(1); }), ${at} - Date.now());`;
+  return new Promise((resolve, reject) => {
+    const proc = require("node:child_process").spawn(process.execPath, ["-e", code], { stdio: "inherit", env });
+    proc.on("exit", (status) => (status === 0 ? resolve() : reject(new Error(`child exited ${status}`))));
+  });
+}
+
+test("two processes writing different keys of the shared state at once lose none of them", async () => {
+  const dir = fs.mkdtempSync(path.join(tmp, "persist-"));
+  const at = Date.now() + 700;
+  const writes = (prefix) =>
+    `const p = new c.SharedFilePersistence(${JSON.stringify(dir)});` +
+    `for (let i = 0; i < 40; i++) await p.set("${prefix}" + i, i);`;
+  await Promise.all([childAt(at, writes("a")), childAt(at, writes("b"))]);
+  const state = JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8"));
+  const missing = [];
+  for (const prefix of ["a", "b"]) {
+    for (let i = 0; i < 40; i++) {
+      if (state[prefix + i] !== i) {
+        missing.push(prefix + i);
+      }
+    }
+  }
+  assert.deepStrictEqual(missing, [], "every write of each process survives the other's");
+});
+
+test("two processes setting up git at once write one pair and one record", async () => {
+  const dir = fs.mkdtempSync(path.join(tmp, "persist-"));
+  const config = scratchConfig("[credential]\n\thelper = cache\n");
+  const at = Date.now() + 700;
+  const body =
+    `const p = new c.SharedFilePersistence(${JSON.stringify(dir)});` +
+    `const s = new c.GitCredentialService({ logger: console, token: { token: async () => undefined },` +
+    ` gatewayUrl: async () => ${JSON.stringify(GATEWAY)}, hosts: new c.GitCredentialHosts(p),` +
+    ` resets: new c.GitCredentialResets(p), gitConfig: c.gitConfigRunner(process.env) });` +
+    `for (let i = 0; i < 3; i++) { await s.setupGit(); }`;
+  await Promise.all([childAt(at, body, config.env), childAt(at, body, config.env), childAt(at, body, config.env)]);
+  assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), ["", GitCredential.DEFAULT_HELPER]);
+  const resets = await new GitCredentialResets(new SharedFilePersistence(dir)).all();
+  assert.deepStrictEqual(
+    Object.values(resets).map((keys) => Object.keys(keys)),
+    [[GW_KEY]]
+  );
+});
+
+test("config paths compare as git reports them on Windows: either slash, any case", () => {
+  const { configPathKey } = core;
+  assert.strictEqual(
+    configPathKey("C:\\Users\\Example\\.gitconfig", "win32"),
+    configPathKey("c:/users/example/.gitconfig", "win32")
+  );
+  assert.strictEqual(
+    configPathKey(path.win32.join("C:\\Users\\Example", ".config", "git", "config"), "win32"),
+    configPathKey("C:/Users/Example/.config/git/config", "win32")
+  );
+  assert.notStrictEqual(configPathKey("/home/a/.gitconfig", "posix"), configPathKey("/home/A/.gitconfig", "posix"));
+  assert.notStrictEqual(
+    configPathKey("C:\\Users\\Example\\.gitconfig", "win32"),
+    configPathKey("C:/Users/Other/.gitconfig", "win32")
+  );
+});
+
+test("on Windows, a reset recorded under b6p's backslash path is still found under git's forward-slash one", async () => {
+  // git for Windows reports its global config as C:/Users/…; b6p names it C:\Users\…. On this machine the scratch file
+  // is named with forward slashes; b6p is handed the same name with backslashes, which git (as on Windows) accepts.
+  const config = scratchConfig();
+  const backslashed = config.file.replace(/\//g, "\\");
+  const real = gitConfigRunner(config.env);
+  const persistence = memoryPersistence();
+  const resets = new GitCredentialResets(persistence);
+  const service = new GitCredentialService({
+    logger,
+    token: { token: async () => TOKEN },
+    gatewayUrl: async () => GATEWAY,
+    hosts: new GitCredentialHosts(persistence),
+    resets,
+    gitConfig: {
+      pathStyle: "win32",
+      globalFile: () => backslashed,
+      run: (args) => real.run(args.map((a, i) => (args[i - 1] === "--file" ? a.replace(/\\/g, "/") : a))),
+    },
+  });
+  await service.setupGit();
+  assert.deepStrictEqual(Object.keys(await resets.all()), [backslashed]);
+  const result = await service.removeGit();
+  assert.deepStrictEqual(result, { removed: ["https://gateway.bluestep.net"], keptResets: [] });
+  assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), [], "b6p's reset went with its helper");
+});
+
+test("clearSettings and clearAll keep the record of b6p's resets, so a later removal still takes them out", async () => {
+  for (const clear of ["clearSettings", "clearAll"]) {
+    const config = scratchConfig("[credential]\n\thelper = cache\n");
+    const saved = {};
+    for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"]) {
+      saved[key] = process.env[key];
+      process.env[key] = config.env[key];
+    }
+    const pub = {};
+    const persistence = {
+      get: async (k) => pub[k],
+      set: async (k, v) => {
+        pub[k] = JSON.parse(JSON.stringify(v));
+      },
+      delete: async (k) => {
+        delete pub[k];
+      },
+      getSecret: async () => undefined,
+      setSecret: async () => {},
+      deleteSecret: async () => {},
+      clearPublic: async () => {
+        for (const k of Object.keys(pub)) delete pub[k];
+      },
+      clearSecrets: async () => {},
+    };
+    const prompt = {
+      inputBox: async () => undefined,
+      confirm: async () => undefined,
+      info: noop,
+      popup: async () => {},
+    };
+    const b6p = new core.B6PCore({
+      fs: new core.MockFileSystem(),
+      persistence,
+      prompt: { ...prompt, warn: noop, error: noop },
+      logger,
+      progress: { withProgress: async (tasks) => Promise.all(tasks.map((t) => t.execute())) },
+    });
+    try {
+      await b6p.gitCredential.setupGit();
+      await b6p.setConfig("debugMode", true).catch(() => undefined);
+      await b6p[clear]();
+      assert.ok(pub[PublicKeys.GIT_CREDENTIAL_RESETS], `${clear} kept the record`);
+      const result = await b6p.gitCredential.removeGit();
+      assert.deepStrictEqual(result, { removed: ["https://gateway.bluestep.net"], keptResets: [] }, clear);
+      assert.deepStrictEqual(gitGetAll(config.env, GW_KEY), [], `${clear}: no reset of b6p's left behind`);
+      assert.deepStrictEqual(gitGetAll(config.env, "credential.helper"), ["cache"]);
+    } finally {
+      b6p.dispose();
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
 });
 
 // ── the host list across instances and processes ──────────────────────
@@ -839,6 +1229,122 @@ test("two processes recording at once lose nothing; a stale lock is taken over; 
     withFileLock(lock, async () => "never", { timeoutMs: 100 }),
     /Timed out/
   );
+  fs.unlinkSync(lock);
+});
+
+/**
+ * Patch `fs/promises` methods for the length of `body` (the lock calls them through the module object, so a patch
+ * there is seen), restoring them after.
+ */
+async function withPatchedFs(patches, body) {
+  const fsp = require("node:fs/promises");
+  const saved = {};
+  for (const [name, patch] of Object.entries(patches)) {
+    saved[name] = fsp[name];
+    const original = fsp[name].bind(fsp);
+    fsp[name] = (...args) => patch(original, ...args);
+  }
+  try {
+    return await body();
+  } finally {
+    Object.assign(fsp, saved);
+  }
+}
+
+const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("a stale lock two waiters judged at once is taken over by one: the other never removes the new lock", async () => {
+  const { withFileLock } = require("../dist/persistence/fileLock.js");
+  const dir = fs.mkdtempSync(path.join(tmp, "lock-"));
+  const lock = path.join(dir, "state.lock");
+  fs.writeFileSync(lock, "12345 0 stale");
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(lock, old, old);
+  let inside = 0;
+  let most = 0;
+  let firstInside = null;
+  const entered = new Promise((resolve) => (firstInside = resolve));
+  let destructive = 0;
+  // The first waiter to remove (or move) the lock goes once both have judged it stale; the second only once the first
+  // holds a new lock, so the second acts on its old judgement against the first's fresh lock.
+  const gate = async (original, target, ...rest) => {
+    if (path.resolve(String(target)) === lock) {
+      const n = ++destructive;
+      if (n === 1) {
+        await sleepMs(150);
+      } else if (n === 2) {
+        await Promise.race([entered, sleepMs(3000)]);
+      }
+    }
+    return original(target, ...rest);
+  };
+  const work = async () => {
+    inside++;
+    most = Math.max(most, inside);
+    firstInside();
+    await sleepMs(300);
+    inside--;
+  };
+  let restored = 0;
+  const link = (original, ...args) => {
+    restored++;
+    return original(...args);
+  };
+  await withPatchedFs({ unlink: gate, rename: gate, link }, () =>
+    Promise.all([withFileLock(lock, work, { timeoutMs: 5000 }), withFileLock(lock, work, { timeoutMs: 5000 })])
+  );
+  assert.strictEqual(most, 1, "the two never held the lock together");
+  assert.strictEqual(
+    restored,
+    1,
+    "the second waiter found the first's new lock where the stale one was, and put it back"
+  );
+  assert.deepStrictEqual(fs.readdirSync(dir), [], "nothing left behind");
+});
+
+test("a file system that keeps refusing the lock times out after the wait, retrying at the retry delay", async () => {
+  const { withFileLock, FILE_LOCK_DEFAULTS } = require("../dist/persistence/fileLock.js");
+  assert.strictEqual(FILE_LOCK_DEFAULTS.timeoutMs, 10_000);
+  const dir = fs.mkdtempSync(path.join(tmp, "lock-"));
+  const lock = path.join(dir, "state.lock");
+  const refuse = (code) => async () => {
+    attempts++;
+    throw Object.assign(new Error(`${code}: refused`), { code });
+  };
+  let attempts = 0;
+  for (const code of ["EPERM", "EACCES"]) {
+    attempts = 0;
+    const started = Date.now();
+    const error = await withPatchedFs({ open: refuse(code) }, () =>
+      withFileLock(lock, async () => "never", { timeoutMs: 300, retryMs: 25 }).then(
+        () => null,
+        (e) => e
+      )
+    );
+    const waited = Date.now() - started;
+    assert.ok(error && /Timed out/.test(error.message), `${code}: ${error && error.message}`);
+    assert.ok(error.message.includes(code), error.message);
+    assert.ok(waited >= 280, `${code}: gave up after ${waited} ms, not the wait`);
+    assert.ok(attempts <= 300 / 25 + 3, `${code}: ${attempts} attempts, so the retry delay was not kept`);
+  }
+  // A stale lock that cannot be moved or removed: the same, rather than a loop with no end.
+  fs.writeFileSync(lock, "12345 0 stale");
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(lock, old, old);
+  attempts = 0;
+  const started = Date.now();
+  const outcome = await withPatchedFs({ unlink: refuse("EPERM"), rename: refuse("EPERM") }, () =>
+    Promise.race([
+      withFileLock(lock, async () => "never", { timeoutMs: 300, retryMs: 25 }).then(
+        () => "acquired",
+        (e) => e.message
+      ),
+      sleepMs(3000).then(() => "still trying"),
+    ])
+  );
+  assert.match(outcome, /Timed out/);
+  assert.ok(Date.now() - started >= 280);
+  assert.ok(attempts <= 300 / 25 + 3, `${attempts} attempts`);
   fs.unlinkSync(lock);
 });
 

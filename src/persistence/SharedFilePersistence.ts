@@ -25,16 +25,18 @@ import { withFileLock } from "./fileLock";
  * opened above the U-folder, etc.), and `ScriptMetaDataStore` already keys
  * its contents by org+script internally, so a single global file is enough.
  *
- * Concurrency model: last-writer-wins. Reads always re-load from disk so a
- * change made by one process is visible to the other. Writes go to a temp
- * file and atomically rename into place to avoid partial-write corruption.
- * Within one process, mutations of each file (`set`/`delete`/`clearPublic` on
- * the state file; `setSecret`/`deleteSecret`/`clearSecrets` on the secrets file)
- * run one at a time, each re-loading inside that turn, so overlapping mutations
- * no longer drop each other's changes.
- * Across processes a plain `set` still takes no lock: a write by another process
- * that lands between this process's load and save is overwritten. A caller that
- * needs a cross-process read-modify-write wraps it in {@link withLock}.
+ * Concurrency model. Reads always re-load from disk so a change made by one
+ * process is visible to the other. Writes go to a temp file and atomically
+ * rename into place to avoid partial-write corruption.
+ * Every write of the state file (`set`, `delete`, `clearPublic`, a seed) holds
+ * one lock for the whole file, `state.json.lock`, shared by every process: it
+ * re-loads the file under that lock and changes only its own key, so no write
+ * of any key (a setting, a cache entry, a record) is ever lost to another
+ * process's. Within one process those writes also queue, as do the secrets
+ * file's (`setSecret`/`deleteSecret`/`clearSecrets`, which take no
+ * cross-process lock and stay last-writer-wins across processes).
+ * A caller whose new value depends on the old one (a read-modify-write of one
+ * key) still wraps the read and the write in {@link withLock}.
  *
  * Threat model: encryption protects against accidental disclosure (backups,
  * git commits, file shares). It does not protect against an attacker with
@@ -148,7 +150,9 @@ export class SharedFilePersistence implements Persistence {
     if (seed.publicEntries && !(await fileExists(this.statePath))) {
       const entries = await seed.publicEntries();
       if (entries && Object.keys(entries).length > 0) {
-        await this.saveState(entries);
+        // Under the state lock, and only while the file is still missing, so a write another process made since the
+        // check above is not replaced.
+        await this.mutateState((state) => (Object.keys(state).length === 0 ? entries : state));
       }
     }
     if (seed.secretEntries && !(await fileExists(this.secretsPath))) {
@@ -163,13 +167,17 @@ export class SharedFilePersistence implements Persistence {
 
   /**
    * Run one load → change → save of the public state file as a single turn of that file's
-   * in-process queue (see {@link mutateSecrets}), so overlapping `set`/`delete`/`clearPublic` calls
-   * no longer drop each other's changes. In-process only; no cross-process lock.
+   * in-process queue, holding the state file's cross-process lock (`state.json.lock`) from the
+   * load to the save, so a write by another process is never overwritten with what this one
+   * loaded before it.
    * @lastreviewed null
    */
   private mutateState(change: (state: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
     return enqueueFileMutation(this.statePath, async () => {
-      await this.saveState(change(await this.loadState()));
+      await this.ensureDir();
+      await withFileLock(`${this.statePath}.lock`, async () => {
+        await this.saveState(change(await this.loadState()));
+      });
     });
   }
 

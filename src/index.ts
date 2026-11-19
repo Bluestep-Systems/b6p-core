@@ -130,6 +130,8 @@ export type {
   GitCredentialHost,
   GitCredentialHostSource,
   GitCredentialHostStatus,
+  GitCredentialKeptReset,
+  GitCredentialKeptResetReason,
   GitCredentialRemoveOptions,
   GitCredentialRemoveResult,
   GitCredentialSetupResult,
@@ -139,8 +141,12 @@ export type { GitCredentialContext } from "./gitCredential/GitCredentialContext"
 export { gitConfigRunner } from "./gitCredential/GitConfigRunner";
 export type { GitConfigOutcome, GitConfigRunner } from "./gitCredential/GitConfigRunner";
 export { credentialHostOf, requestedCredentialHost } from "./gitCredential/hosts";
-export { patternApplies } from "./gitCredential/credentialConfig";
-export type { GitCredentialConfigEntry } from "./gitCredential/credentialConfig";
+export { configPathKey, credentialContextMatch, patternApplies, patternIsHost } from "./gitCredential/credentialConfig";
+export type {
+  ConfigPathStyle,
+  CredentialContextMatch,
+  GitCredentialConfigEntry,
+} from "./gitCredential/credentialConfig";
 
 // ─── Constants ───────────────────────────────────────────────────────
 export {
@@ -185,10 +191,10 @@ export { SharedFilePersistence } from "./persistence/SharedFilePersistence";
 export { OrgCache } from "./cache/OrgCache";
 export { ScriptMetaDataStore } from "./cache/ScriptMetaDataStore";
 export { GitCredentialHosts } from "./cache/GitCredentialHosts";
-export { GitCredentialResets } from "./cache/GitCredentialResets";
+export { GIT_CONFIG_LOCK, GitCredentialResets } from "./cache/GitCredentialResets";
 export type {
-  GitCredentialResetChange,
   GitCredentialResetRecord,
+  GitCredentialResetState,
   GitCredentialResetsByFile,
 } from "./cache/GitCredentialResets";
 

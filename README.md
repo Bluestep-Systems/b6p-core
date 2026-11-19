@@ -448,9 +448,9 @@ still take `core.script.push` (the CLI's `b6p script push` or publish), which is
 process.stdout.write(await core.gitCredential.answer(action, stdinText)); // then exit 0
 
 await core.gitCredential.allowedHosts(); // [{ host: "gateway.bluestep.net", source: "gateway" }, { host, source: "script-pull" }]
-await core.gitCredential.setupStatus(); // { hosts: [{ host, source, configured, alsoAsked }], configured, otherHelpers }
-await core.gitCredential.setupGit(); // per allowed host: credential.https://<host>.helper = "" then = !b6p auth git-credential
-await core.gitCredential.removeGit(); // { removed, keptResets }: takes those entries out again
+await core.gitCredential.setupStatus(); // { hosts: [{ host, source, configured, alsoAsked, others }], configured, otherHelpers }
+await core.gitCredential.setupGit(); // per allowed host: credential.https://<host>.helper = "" then = !b6p auth git-credential; also keptResets
+await core.gitCredential.removeGit(); // { removed, keptResets: [{ url, file, reason }] }: takes those entries out again
 ```
 
 - **What it answers for.** `get` answers `username=b6p` and `password=<token>` only for `protocol=https` and a host
@@ -466,29 +466,45 @@ await core.gitCredential.removeGit(); // { removed, keptResets }: takes those en
   that host or is told to keep the token) and then b6p's command. A host already set up is left alone, so a second
   run changes nothing; otherwise b6p's own entries and recorded resets for it are taken out first, so neither line is
   ever doubled and a run that stopped halfway is finished cleanly. If the command cannot be added after its reset,
-  the reset is taken out again in the same call. A tenant recorded later needs another run.
-- **Status follows git's credential contexts.** `setupStatus()` works out, per host, every entry git applies to it,
-  as git does (gitcredentials(7)): https only, matching port (443 when absent), each host label equal or a `*`
-  wildcard, and every matching entry in config order, resets included, not only the most specific. Where git's answer
-  depends on more than the host (an entry scoped to a path, one naming a user, a partial wildcard, a pattern with no
-  scheme) the entry counts as applying, so a host is never reported set up while another helper may be asked.
-  `configured` means b6p is the only helper git asks; `alsoAsked` lists the others and `others` the config entries
-  responsible (key, value, file). Setup never moves or deletes the user's entries, so the consumer tells the user to
-  move such an entry before b6p's section or remove it. `otherHelpers` lists the generic helpers.
+  the reset is taken out again in the same call when it is the key's only empty value there. A tenant recorded later
+  needs another run.
+- **Status follows git's credential contexts exactly.** `setupStatus()` works out, per host, every entry git 2.53
+  applies to it (`credentialContextMatch`, from git's `credential.c` and `urlmatch.c`): every matching entry in config
+  order, resets included, not only the most specific. A pattern git can normalize matches by scheme and host
+  case-insensitively, a whole `*` label matching any one label, by port with leading zeros dropped and `:443` the same
+  as none, by the user when it names one, and by path prefix (escapes normalized, dot segments resolved). Any other
+  pattern (no scheme, a `%` in the host, port 0, or `https://` with no host at all) is matched as git's partial-URL
+  fallback does: only the parts it names, percent-decoded, compared exactly, so `https://` applies to every https
+  request. Each entry is `yes` (every request b6p answers for the host), `no` or `maybe` (only some: a path, the `b6p`
+  user, a partial pattern's host spelling). In doubt, another helper counts as asked, and a reset or b6p's own entry
+  as not applying when it would hide one, so `configured` is true only when git certainly asks b6p alone; setup
+  repairs any host that is not. `alsoAsked` lists the other helpers and `others` the config entries responsible (key,
+  value, file). Setup never moves or deletes the user's entries, so the consumer tells the user to move such an entry
+  before b6p's section or remove it. `otherHelpers` lists the generic helpers.
 - **Every global config file.** Entries are read from `~/.gitconfig`, `$XDG_CONFIG_HOME/git/config` and the files
   they `[include]` (`git config --includes --show-scope --show-origin`, so git 2.26 or later; an older git fails as
   `Err.GitCredentialSetupError`), and each removal edits the file the entry came from (`--file <origin>`).
-- **b6p removes only resets it recorded.** Each reset setup writes is recorded in public state
-  `b6p:git_credential_resets` as `{ "<file>": { "<exact key>": { installed, pending? } } }`, written before the
-  config change (`pending: { op, emptiesBefore }`) and after it, so a run that stopped in between is settled from the
-  file by the next one. Removal takes out every entry whose value is b6p's command, in any spelling of the URL, and the
-  resets recorded for it; a reset b6p did not record is never removed, whatever sits next to it. `git config` removes
-  by value only, so when the same key in the same file holds more empty values than b6p recorded, b6p's are left too
-  and the URL is reported in `keptResets`.
-- **The host list is locked.** Each record or forget of a tenant host is one read-modify-write under
-  `Persistence.withLock` (`SharedFilePersistence` takes a lockfile in its directory; a lock older than 30 s is
-  treated as stale, a wait gives up after 10 s), so two processes or instances lose nothing. A pull whose host cannot
-  be recorded still succeeds.
+- **b6p removes only resets that are certainly its own.** Each reset setup writes is recorded in public state
+  `b6p:git_credential_resets` as `{ "<file>": { "<exact key>": { state, helper, emptiesBefore? } } }`. A count of empty
+  values is never ownership: a reset stays b6p's only while b6p's helper directly follows an empty value among that
+  key's values in that file. If the user took b6p's helper out, b6p drops its claim and deletes nothing. A change is
+  recorded before it is made (`adding`, `removing`, with the key's count of empty values) and after, and a run that
+  stopped in between is settled from the file only when the file is in one of the two states the change predicts;
+  otherwise the reset is `unconfirmed`, never removed, and reported once in `keptResets` (`reason: "unconfirmed"`).
+  `git config` removes by value only, so a reset of b6p's whose key holds other empty values in the file is left too
+  (`reason: "shared-key"`). Removal takes b6p's reset out before its helper, then every entry whose value is b6p's
+  command, in any spelling of the URL. File paths are compared as git reports them (on Windows, either slash and any
+  case). The record survives `clearSettings()` and `clearAll()`, which keep it while clearing the rest of public state,
+  because the entries it describes stay in the git config until a removal takes them out.
+- **Locks.** One lock guards the whole of `SharedFilePersistence`'s state file (`state.json.lock`): every write
+  re-reads the file under it and changes only its own key, so no process's setting, cache entry or record is lost to
+  another's. Each record or forget of a tenant host, and each reset record, is also one read-modify-write under
+  `Persistence.withLock`, and each setup or removal holds one git config lock (`b6p:git_credential_config`) from
+  reading the config to settling the last record, so two never interleave, in one process or several. A lockfile
+  holds a unique stamp; one older than 30 s is taken over by renaming it to a name of the waiter's own and deleting it
+  only if it still holds the stamp judged stale (otherwise it is put back), so a waiter acting on an old judgement
+  never removes a lock another has just taken. Every failed attempt, `EPERM` and `EACCES` included, waits the retry
+  delay and counts against the 10 s wait. A pull whose host cannot be recorded still succeeds.
 - The helper command defaults to `GitCredential.DEFAULT_HELPER`; pass `{ helper }` to write another.
 - The token never reaches git config's argv, a log line or an error message. Failures of `git config` are
   `Err.GitCredentialSetupError` (`exitCode`).
