@@ -66,7 +66,8 @@ const matchingEtag = '"' + crypto.createHash("sha512").update(Buffer.from(CONTEN
 const differingEtag = '"' + "a".repeat(128) + '"';
 // Numeric + complex ETags: how declaration/library "memory documents" are served.
 const numericEtag = '"1700000000000-123_456"';
-const complexEtag = '"1700000000000-{"class": "myassn.document.LibraryServletMemoryDocumentKey", "classId": 42}"';
+const complexEtag =
+  '"1700000000000-{"class": "myassn.document.LibraryServletMemoryDocumentKey", "classId": 42}"';
 // Weak SHA-512 ETags: the same content hash behind a `W/` prefix.
 const weakMatchingEtag = "W/" + matchingEtag;
 const weakDifferingEtag = "W/" + differingEtag;

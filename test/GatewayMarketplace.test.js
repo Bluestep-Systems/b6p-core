@@ -111,22 +111,12 @@ test("list returns typed repos with their tags", async () => {
   });
 });
 
-test('list keeps the server\'s order and accepts an empty description (the registry sends "" when absent)', async () => {
+test("list keeps the server's order and accepts an empty description (the registry sends \"\" when absent)", async () => {
   await withMarket(async ({ market, fake }) => {
-    const entry = (name) => ({
-      name,
-      description: "",
-      defaultBranch: "master",
-      tags: ["v2", "v10"],
-      gitUrl: fake.gitUrl("marketplace", name),
-    });
+    const entry = (name) => ({ name, description: "", defaultBranch: "master", tags: ["v2", "v10"], gitUrl: fake.gitUrl("marketplace", name) });
     fake.repos = [entry("zeta"), entry("alpha")];
     const repos = await market.list();
-    assert.deepStrictEqual(
-      repos.map((r) => r.name),
-      ["zeta", "alpha"],
-      "not re-sorted"
-    );
+    assert.deepStrictEqual(repos.map((r) => r.name), ["zeta", "alpha"], "not re-sorted");
     assert.strictEqual(repos[0].description, "");
     assert.deepStrictEqual(repos[0].tags, ["v2", "v10"], "tags not re-sorted");
   });
@@ -135,9 +125,7 @@ test('list keeps the server\'s order and accepts an empty description (the regis
 test("list hands every tag over in the server's order and truncates nothing, even past 1_000", async () => {
   await withMarket(async ({ market, fake }) => {
     const tags = Array.from({ length: 1_200 }, (_, i) => `1.0.${1_199 - i}`);
-    fake.repos = [
-      { name: "big", description: "d", defaultBranch: "master", tags, gitUrl: fake.gitUrl("marketplace", "big") },
-    ];
+    fake.repos = [{ name: "big", description: "d", defaultBranch: "master", tags, gitUrl: fake.gitUrl("marketplace", "big") }];
     const [repo] = await market.list();
     assert.deepStrictEqual(repo.tags, tags, "the client neither re-sorts nor caps the tags (the server owns both)");
   });

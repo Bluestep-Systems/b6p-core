@@ -202,7 +202,10 @@ async function test(name, fn) {
     renameImpl = realRename;
     const p = new SharedFilePersistence(tmpDir());
     await p.set("gone", 1);
-    await Promise.all([...Array.from({ length: 12 }, (_, i) => p.set(`k${i}`, { i })), p.delete("gone")]);
+    await Promise.all([
+      ...Array.from({ length: 12 }, (_, i) => p.set(`k${i}`, { i })),
+      p.delete("gone"),
+    ]);
     for (let i = 0; i < 12; i++) {
       assert.deepStrictEqual(await p.get(`k${i}`), { i }, `k${i} was lost`);
     }

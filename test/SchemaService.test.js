@@ -100,28 +100,11 @@ async function test(name, fn) {
 (async () => {
   await test("is mounted at core.schema", () => {
     const noop = () => {};
-    const persistence = {
-      get: async () => undefined,
-      set: noop,
-      delete: noop,
-      getSecret: async () => undefined,
-      setSecret: noop,
-      deleteSecret: noop,
-      clearPublic: noop,
-      clearSecrets: noop,
-    };
+    const persistence = { get: async () => undefined, set: noop, delete: noop, getSecret: async () => undefined, setSecret: noop, deleteSecret: noop, clearPublic: noop, clearSecrets: noop };
     const core = new B6PCore({
       fs: new MockFileSystem(),
       persistence,
-      prompt: {
-        error: noop,
-        info: noop,
-        warn: noop,
-        inputBox: noop,
-        quickPick: noop,
-        showMessage: noop,
-        confirm: noop,
-      },
+      prompt: { error: noop, info: noop, warn: noop, inputBox: noop, quickPick: noop, showMessage: noop, confirm: noop },
       logger: { info: noop, warn: noop, error: noop, debug: noop },
       progress: { report: noop, withProgress: async (_o, t) => t({ report: noop }) },
       orgCacheSettings: { getParsedAnyDomainOverrideUrl: () => new URL("https://myorg.bluestep.net/") },
@@ -175,31 +158,9 @@ async function test(name, fn) {
     assert.strictEqual(got.schemaMutationKey, null);
     assert.strictEqual(got.refusal, null);
     for (const field of [
-      "passed",
-      "failedAt",
-      "actions",
-      "element",
-      "action",
-      "objectId",
-      "spec",
-      "deltas",
-      "path",
-      "kind",
-      "from",
-      "to",
-      "livePositions",
-      "reasons",
-      "refusals",
-      "stage",
-      "code",
-      "locus",
-      "detail",
-      "hits",
-      "live",
-      "schemaMutationKey",
-      "refusal",
-      "element",
-      "warnings",
+      "passed", "failedAt", "actions", "element", "action", "objectId", "spec", "deltas", "path", "kind", "from", "to",
+      "livePositions", "reasons", "refusals", "stage", "code", "locus", "detail", "hits", "live", "schemaMutationKey",
+      "refusal", "element", "warnings",
     ]) {
       assert.ok(calls[0].body.query.includes(field), `selects ${field}`);
     }
@@ -258,24 +219,15 @@ async function test(name, fn) {
 
   await test("an unrelated validation error stays a GraphQLError", async () => {
     const { service } = makeService(() => ({
-      json: {
-        errors: [
-          { message: "Variable 'topIds' has an invalid value", extensions: { classification: "ValidationError" } },
-        ],
-      },
+      json: { errors: [{ message: "Variable 'topIds' has an invalid value", extensions: { classification: "ValidationError" } }] },
     }));
     await assert.rejects(service.generate(ORG, ["1"]), Err.GraphQLError);
   });
 
   await test("FORBIDDEN maps to a typed super-only error on every operation", async () => {
-    const forbidden = {
-      json: { errors: [{ message: "no", extensions: { code: "FORBIDDEN", classification: "FORBIDDEN" } }], data: null },
-    };
+    const forbidden = { json: { errors: [{ message: "no", extensions: { code: "FORBIDDEN", classification: "FORBIDDEN" } }], data: null } };
     const { service } = makeService(() => forbidden);
-    await assert.rejects(
-      service.generate(ORG, ["1"]),
-      (e) => e instanceof Err.SchemaForbiddenError && /super users/.test(e.message)
-    );
+    await assert.rejects(service.generate(ORG, ["1"]), (e) => e instanceof Err.SchemaForbiddenError && /super users/.test(e.message));
     await assert.rejects(service.recipe(ORG, "LINK_VIEW_GRANTS"), Err.SchemaForbiddenError);
     await assert.rejects(service.test(ORG, "m"), Err.SchemaForbiddenError);
     await assert.rejects(service.apply(ORG, "m", "k"), Err.SchemaForbiddenError);

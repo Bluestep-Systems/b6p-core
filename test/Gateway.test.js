@@ -205,11 +205,7 @@ const MAPPINGS = [
     { scope: "kb:push", code: "scope-missing" },
   ],
   [{ status: 403, body: { error: "scope-missing" } }, Err.GatewayScopeError, { scope: null }],
-  [
-    { status: 403, body: { error: "not-permitted", message: "m" } },
-    Err.GatewayNotPermittedError,
-    { code: "not-permitted" },
-  ],
+  [{ status: 403, body: { error: "not-permitted", message: "m" } }, Err.GatewayNotPermittedError, { code: "not-permitted" }],
   [{ status: 403 }, Err.GatewayNotPermittedError, { code: null }],
   [{ status: 404, body: { error: "not-found", message: "m" } }, Err.GatewayNotFoundError, { code: "not-found" }],
   [
@@ -217,11 +213,7 @@ const MAPPINGS = [
     Err.GatewayConflictError,
     { code: "non-fast-forward" },
   ],
-  [
-    { status: 400, body: { error: "invalid-request", message: "m" } },
-    Err.GatewayInvalidRequestError,
-    { code: "invalid-request", status: 400 },
-  ],
+  [{ status: 400, body: { error: "invalid-request", message: "m" } }, Err.GatewayInvalidRequestError, { code: "invalid-request", status: 400 }],
   [{ status: 400 }, Err.GatewayInvalidRequestError, { code: null }],
   [
     { status: 409, body: { error: "token-limit", message: "m", limit: 50 } },
@@ -264,32 +256,20 @@ for (const [failure, type, expected] of MAPPINGS) {
 
 test("403 not-permitted carries the body's reason and presentingExpiresAt; odd values are dropped", () => {
   const at = "2026-12-01T00:00:00.000Z";
-  const e = gatewayErrorFor(
-    403,
-    JSON.stringify({ error: "not-permitted", reason: "expiry-exceeds-presenting", presentingExpiresAt: at }),
-    "x"
-  );
+  const e = gatewayErrorFor(403, JSON.stringify({ error: "not-permitted", reason: "expiry-exceeds-presenting", presentingExpiresAt: at }), "x");
   assert.ok(e instanceof Err.GatewayNotPermittedError);
   assert.strictEqual(e.reason, "expiry-exceeds-presenting");
   assert.strictEqual(e.presentingExpiresAt, at);
   const r = gatewayErrorFor(403, '{"error":"not-permitted","reason":"restricted-mints-disabled"}', "x");
   assert.strictEqual(r.reason, "restricted-mints-disabled");
   assert.strictEqual(r.presentingExpiresAt, null);
-  const rw = gatewayErrorFor(
-    403,
-    '{"error":"not-permitted","reason":"rewrite-not-permitted","scope":"kb:rewrite"}',
-    "x"
-  );
+  const rw = gatewayErrorFor(403, '{"error":"not-permitted","reason":"rewrite-not-permitted","scope":"kb:rewrite"}', "x");
   assert.strictEqual(rw.reason, "rewrite-not-permitted");
   assert.strictEqual(rw.scope, "kb:rewrite");
   assert.strictEqual(r.scope, null);
   const unknown = gatewayErrorFor(403, '{"error":"not-permitted","reason":"something-new"}', "x");
   assert.strictEqual(unknown.reason, "something-new");
-  const junk = gatewayErrorFor(
-    403,
-    '{"error":"not-permitted","reason":"has spaces and b6pt_secret","presentingExpiresAt":"nope"}',
-    "x"
-  );
+  const junk = gatewayErrorFor(403, '{"error":"not-permitted","reason":"has spaces and b6pt_secret","presentingExpiresAt":"nope"}', "x");
   assert.strictEqual(junk.reason, null);
   assert.strictEqual(junk.presentingExpiresAt, null);
   assert.strictEqual(gatewayErrorFor(403, "", "x").reason, null);
@@ -394,12 +374,7 @@ test("concurrent calls run one at a time, in call order, and a failure does not 
     );
     assert.deepStrictEqual(
       fake.requests.map((r) => r.path + (r.query.scope ? `?${r.query.scope}` : "")),
-      [
-        `${Gateway.Paths.KNOWLEDGE_BASES}?a`,
-        "/api/v1/missing",
-        `${Gateway.Paths.KNOWLEDGE_BASES}?b`,
-        Gateway.Paths.REGISTRY_REPOS,
-      ]
+      [`${Gateway.Paths.KNOWLEDGE_BASES}?a`, "/api/v1/missing", `${Gateway.Paths.KNOWLEDGE_BASES}?b`, Gateway.Paths.REGISTRY_REPOS]
     );
     thrownMessages.push(results[1].reason.message);
   });
@@ -499,8 +474,7 @@ test("a redirect is refused and not followed, as a distinct redirect-refused err
       fake.route({
         method: "GET",
         prefix: "/api/v1/moved",
-        handler: (_req, res) =>
-          res.writeHead(302, { Location: `${other.url}/api/v1/knowledge-bases?secret-location` }).end(),
+        handler: (_req, res) => res.writeHead(302, { Location: `${other.url}/api/v1/knowledge-bases?secret-location` }).end(),
       });
       const { client } = makeClient(fake);
       const error = await rejectsWith(client.getJson("/api/v1/moved"), Err.GatewayUnexpectedResponseError);
@@ -608,15 +582,7 @@ test("core.gateway defaults to gateway.bluestep.net and follows the gatewayUrl c
     try {
       assert.strictEqual(await core.gateway.client.origin(), Gateway.DEFAULT_URL);
       await core.setConfig("gatewayUrl", fake.url);
-      fake.repos = [
-        {
-          name: "core",
-          description: "",
-          defaultBranch: "master",
-          tags: ["v1.0.0"],
-          gitUrl: fake.gitUrl("marketplace", "core"),
-        },
-      ];
+      fake.repos = [{ name: "core", description: "", defaultBranch: "master", tags: ["v1.0.0"], gitUrl: fake.gitUrl("marketplace", "core") }];
       const body = await core.gateway.client.getJson(Gateway.Paths.REGISTRY_REPOS);
       assert.strictEqual(body.repos[0].name, "core");
       assert.strictEqual(fake.requests[0].authorization, `Bearer ${TOKEN}`);
@@ -715,9 +681,7 @@ test("a consumer-supplied non-bearer AuthProvider gives the gateway no token", a
     failures++;
     console.error(`  ✗ the token never appears in a thrown message or log line\n    ${leaks.join("\n    ")}`);
   } else {
-    console.log(
-      `  ✓ the token never appears in a thrown message or log line (${thrownMessages.length} errors, ${logLines.length} log lines)`
-    );
+    console.log(`  ✓ the token never appears in a thrown message or log line (${thrownMessages.length} errors, ${logLines.length} log lines)`);
   }
 
   if (failures > 0) {
