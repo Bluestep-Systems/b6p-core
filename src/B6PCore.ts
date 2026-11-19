@@ -273,13 +273,18 @@ export class B6PCore {
   /**
    * Clear public state, all but the record of the resets b6p wrote into the user's git config
    * ({@link GitCredentialResets}): those entries stay in the git config until `removeGit` takes them
-   * out, and without the record it could not tell them from the user's. Done under that record's
-   * lock, so a setup or removal writing it meanwhile is not lost.
+   * out, and without the record it could not tell them from the user's. One write when the
+   * persistence has `clearPublicExcept` (`SharedFilePersistence` does); otherwise a clear and a
+   * write-back, both under the record's lock, which every read of the record also takes.
    * @lastreviewed null
    */
   private async clearPublicState(): Promise<void> {
     const key = PublicKeys.GIT_CREDENTIAL_RESETS;
     await exclusive(this.persistence, key, async () => {
+      if (this.persistence.clearPublicExcept) {
+        await this.persistence.clearPublicExcept([key]);
+        return;
+      }
       const kept = await this.persistence.get<unknown>(key);
       await this.persistence.clearPublic();
       if (kept !== undefined) {

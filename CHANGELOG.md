@@ -15,27 +15,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `answer(action, input)` speaks git's credential-helper protocol: `get` answers `username=b6p` and the stored token
   as `password` only for an https request whose host is exactly on the allowlist (the configured gateway's host when
   it is https, and the tenant hosts script pulls reached), and nothing otherwise; `store` and `erase` do nothing (one
-  401 must not delete the token every b6p operation shares). `setupGit()` writes, per allowed host, an empty
-  `credential.https://<host>.helper` (a reset, like gh) followed by `!b6p auth git-credential`, never doubling either;
-  `setupStatus()` reports per host whether git certainly asks b6p alone, matching entries exactly as git 2.53's
-  credential contexts do (`credentialContextMatch`: urlmatch normalization of case, ports and escapes, `*` labels,
-  path prefixes, and the partial-URL fallback, so `https://` applies to every https host; in doubt a foreign helper
-  counts as asked and a reset or b6p's entry as not), with the other helpers and the entries responsible;
-  `removeGit()` takes out b6p's entries (any URL spelling) and only the resets that are certainly b6p's
-  (`GitCredentialResets`, public state `b6p:git_credential_resets`: a reset is b6p's while its helper directly follows
-  it), each from the file it came from (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`, included files); one whose
-  ownership is ambiguous is kept and reported (`keptResets: [{ url, file, reason }]`). Each setup and removal holds
-  one git config lock throughout. A setup that fails or stops halfway is rolled back or settled by the next run. The
-  reset record survives `clearSettings()` and `clearAll()`. Needs git 2.26 or later. Exports `GitCredentialService`,
-  `GitCredentialHosts`, `GitCredentialResets`, `GIT_CONFIG_LOCK`, `GitCredential`, `gitConfigRunner`,
+  401 must not delete the token every b6p operation shares). `setupGit()` appends, per allowed host, a section holding
+  an empty `credential.https://<host>.helper` (a reset, like gh) followed by `!b6p auth git-credential`, as one edit
+  of the file git reports `--global` writes (`git var GIT_CONFIG_GLOBAL`), under git's own `<file>.lock`, never
+  doubling either; `setupStatus({ cwd })` reports per host whether git certainly asks b6p alone, reading the config in
+  effect there (system, global, command line and `GIT_CONFIG_COUNT`, and a repository's local and worktree config;
+  `scope: "global" | "global+here"`, never another repository's), matching entries exactly as git 2.53's credential
+  contexts do (`credentialContextMatch`: urlmatch normalization of case, ports and escapes, `*` labels, path
+  prefixes, and the partial-URL fallback, so `https://` and `[credential ""]` apply to every https host; in doubt a
+  foreign helper or an `includeIf` counts as asked and a reset or b6p's entry as not), with the other helpers and the
+  entries responsible; `cloneStatus(dir, { remote })` answers the same for one clone's remote host; `removeGit()`
+  takes out b6p's entries (any URL spelling) and only the pairs that are certainly b6p's (`GitCredentialResets`,
+  public state `b6p:git_credential_resets`), both lines in one edit under git's lock, so an interruption never leaves
+  b6p's helper without its reset and a reset another writer adds meanwhile is never swept in; one whose ownership is
+  ambiguous is kept and reported (`keptResets: [{ url, file, reason }]`). Each setup and removal holds one git config
+  lock throughout. The reset record survives `clearSettings()` and `clearAll()`, kept in the same write. Needs git
+  2.27.0 or later (the partial-URL fallback), and 2.42.0 for setup (`GIT_MATCHING_FLOOR`, `GIT_SETUP_FLOOR`). Exports
+  `GitCredentialService`, `GitCredentialHosts`, `GitCredentialResets`, `GIT_CONFIG_LOCK`, `GitCredential`,
+  `gitConfigRunner`, `editConfigFile`, `parseConfigFile`, `appendPair`, `pairsIn`, `removePair`, `parseGitVersion`,
   `credentialContextMatch`, `patternApplies`, `patternIsHost`, `configPathKey`, `parseCredentialRequest`,
   `credentialHostOf`, `requestedCredentialHost`, `Err.GitCredentialSetupError` and the result types.
-- **`Persistence.withLock(name, work)`** (optional): an exclusive lock across every process using the same store.
-  `SharedFilePersistence` implements it with a lockfile in its directory (stale after 30 s, a 10 s wait). Core uses it
-  for the git-credential host list, reset records and git config changes; without it those are serialized within the
-  process only. A stale lockfile is taken over by renaming it aside and deleting it only if it still holds the stamp
-  judged stale, so a lock another process has just taken is never removed; every failed attempt (`EPERM`, `EACCES`
-  included) waits the retry delay and counts against the wait.
+- **`Persistence.withLock(name, work)`** (optional): an exclusive lock across every process using the same store,
+  held for as long as `work` runs. `SharedFilePersistence` implements it with a heartbeat lockfile in its directory:
+  the holder refreshes it every second, it is stale once its heartbeat is 5 s old (or its process on this host has
+  exited), and a waiter gives up after 10 s. Takeovers are serialized and judged through one open handle, and release
+  retries a transient `EPERM`/`EBUSY`/`EACCES`. Core uses it for the git-credential host list, reset records and git
+  config changes; without it those are serialized within the process only.
+- **`Persistence.clearPublicExcept(keep)`** (optional): clear public state but the named keys in one write.
+  `SharedFilePersistence` implements it.
 
 ### Fixed
 

@@ -32,7 +32,8 @@ export interface GitCredentialContext extends PlatformContext {
    */
   readonly resets: GitCredentialResets;
   /**
-   * Runs `git config`, for reading, setting up and taking out the helper in the user's global config.
+   * Runs git (`git config`, `git var`, `git --version`) and edits config files under git's lock, for
+   * reading the config in effect, and setting up and taking out the helper in the user's global config.
    * @lastreviewed null
    */
   readonly gitConfig: GitConfigRunner;

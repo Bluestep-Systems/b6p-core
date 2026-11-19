@@ -106,6 +106,23 @@ export class SharedFilePersistence implements Persistence {
     await this.mutateState(() => ({}));
   }
 
+  /**
+   * Clear the public state file but `keep`'s keys, in one locked write.
+   * @lastreviewed null
+   */
+  async clearPublicExcept(keep: readonly string[]): Promise<void> {
+    await this.waitBootstrap();
+    await this.mutateState((state) => {
+      const kept: Record<string, unknown> = {};
+      for (const key of keep) {
+        if (key in state) {
+          kept[key] = state[key];
+        }
+      }
+      return kept;
+    });
+  }
+
   // ── Secret state ──────────────────────────────────────────────────
 
   async getSecret(key: string): Promise<string | undefined> {
@@ -249,8 +266,10 @@ export class SharedFilePersistence implements Persistence {
   /**
    * Run `work` holding `<configDir>/<name>.lock`, created exclusively and removed after, so the CLI
    * and the extension (and two CLI processes) take turns. Within this process the same lock is
-   * also queued, so two instances over the same directory do not poll each other. A lock left by a
-   * process that died is removed once it is 30 s old; waiting gives up after 10 s.
+   * also queued, so two instances over the same directory do not poll each other. The lock keeps a
+   * heartbeat for as long as `work` runs ({@link withFileLock}); one left by a process that died is
+   * taken over once its heartbeat is 5 s old, or at once when its process is gone; waiting gives up
+   * after 10 s.
    * @lastreviewed null
    */
   async withLock<T>(name: string, work: () => Promise<T>): Promise<T> {

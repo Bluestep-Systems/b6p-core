@@ -2,8 +2,9 @@ import * as path from "node:path";
 import { GitCredential } from "../constants/GitCredential";
 
 /**
- * One `credential.helper` or `credential.<url>.helper` entry of the user's global git config
- * (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config` and what they include), as git read it, in git's
+ * One `credential.helper` or `credential.<url>.helper` entry, or an `includeIf.<condition>.path`
+ * entry, of the git config in effect where it was read (system, global, the repository's local
+ * and worktree files, the command line and `GIT_CONFIG_COUNT`, and what they include), in git's
  * order.
  * @lastreviewed null
  */
@@ -23,24 +24,28 @@ export interface GitCredentialConfigEntry {
 }
 
 /**
- * A {@link GitCredentialConfigEntry} with its URL pattern: the subsection, or `null` for the
- * generic `credential.helper`.
+ * A {@link GitCredentialConfigEntry} with its scope (`system`, `global`, `local`, `worktree`,
+ * `command`), what it is (a credential helper, or a conditional include whose file may add one in
+ * another repository), and for a helper its URL pattern: the subsection (`""` for
+ * `[credential ""]`), or `null` for the generic `credential.helper`.
  * @lastreviewed null
  */
 export interface HelperEntry extends GitCredentialConfigEntry {
+  readonly scope: string;
+  readonly kind: "helper" | "includeif";
   readonly url: string | null;
 }
 
-const HELPER_KEY = /^credential\.(.+)\.helper$/i;
+const HELPER_KEY = /^credential\.(.*)\.helper$/i;
+const INCLUDEIF_KEY = /^includeif\..*\.path$/i;
 const GENERIC_HELPER_KEY = "credential.helper";
 const FILE_ORIGIN = "file:";
 
 /**
- * The `git config` arguments that list every credential entry of the global config, includes
- * followed, with scope and origin. `--global` is deliberately absent: git 2.53 reads only the file
- * it would write under `--global`, which misses `$XDG_CONFIG_HOME/git/config` beside
- * `~/.gitconfig`; every scope is read and {@link parseHelperEntries} keeps the `global` ones.
- * `--show-scope` needs git 2.26 or later.
+ * The `git config` arguments that list every credential and conditional-include entry of the
+ * config in effect, includes followed, with scope and origin. No scope option: git 2.53's
+ * `--global` reads only the file it would write, which misses `$XDG_CONFIG_HOME/git/config` beside
+ * `~/.gitconfig`, and status needs every scope.
  * @lastreviewed null
  */
 export const LIST_CREDENTIAL_ENTRIES: readonly string[] = [
@@ -49,12 +54,13 @@ export const LIST_CREDENTIAL_ENTRIES: readonly string[] = [
   "--show-origin",
   "--null",
   "--get-regexp",
-  "^credential\\.",
+  "^(credential|includeif)\\.",
 ];
 
 /**
- * The helper entries of `git config` output for {@link LIST_CREDENTIAL_ENTRIES}: each entry is
- * `<scope>\0<origin>\0<key>\n<value>\0` (no `\n` for a key with no value). Only `global` ones.
+ * The helper and conditional-include entries of `git config` output for
+ * {@link LIST_CREDENTIAL_ENTRIES}: each entry is `<scope>\0<origin>\0<key>\n<value>\0` (no `\n` for
+ * a key with no value), every scope kept.
  * @lastreviewed null
  */
 export function parseHelperEntries(stdout: string): HelperEntry[] {
@@ -62,20 +68,20 @@ export function parseHelperEntries(stdout: string): HelperEntry[] {
   const entries: HelperEntry[] = [];
   for (let i = 0; i + 2 < fields.length; i += 3) {
     const [scope, origin, record] = [fields[i], fields[i + 1], fields[i + 2]];
-    if (scope !== "global") {
-      continue;
-    }
     const newline = record.indexOf("\n");
     const key = newline === -1 ? record : record.slice(0, newline);
     const value = newline === -1 ? "" : record.slice(newline + 1);
     const url = HELPER_KEY.exec(key)?.[1];
-    if (url === undefined && key.toLowerCase() !== GENERIC_HELPER_KEY) {
+    const includeIf = INCLUDEIF_KEY.test(key);
+    if (url === undefined && !includeIf && key.toLowerCase() !== GENERIC_HELPER_KEY) {
       continue;
     }
     entries.push({
       key,
       value,
       file: origin.startsWith(FILE_ORIGIN) ? origin.slice(FILE_ORIGIN.length) : null,
+      scope,
+      kind: includeIf ? "includeif" : "helper",
       url: url ?? null,
     });
   }
@@ -449,7 +455,8 @@ export function patternIsHost(url: string, host: string): boolean {
  * - `configured`: git certainly asks b6p and no other helper.
  * - `alsoAsked`: the other helpers git may ask, in order, without repeats.
  * - `others`: the entries that keep b6p from being the only helper asked: each other helper git
- *   may ask, and the reset that may clear b6p when a b6p entry came before it.
+ *   may ask, each `includeIf` after the last reset (its file may add a helper in another
+ *   repository), and the reset that may clear b6p when a b6p entry came before it.
  * @lastreviewed null
  */
 export function askedFor(
@@ -461,6 +468,11 @@ export function askedFor(
   let surelyB6p = false;
   let clearedB6p: HelperEntry | null = null;
   for (const entry of entries) {
+    if (entry.kind === "includeif") {
+      // Its file is read only where its condition holds; in another repository it may add a helper here.
+      foreign.push(entry);
+      continue;
+    }
     const match = credentialContextMatch(entry.url, host);
     if (match === "no") {
       continue;
@@ -485,7 +497,7 @@ export function askedFor(
   }
   return {
     configured: surelyB6p && foreign.length === 0,
-    alsoAsked: [...new Set(foreign.map((e) => e.value))],
+    alsoAsked: [...new Set(foreign.filter((e) => e.kind === "helper").map((e) => e.value))],
     others,
   };
 }
@@ -514,27 +526,26 @@ function valuesOf(entries: readonly HelperEntry[], file: string, key: string, st
 }
 
 /**
- * How many empty values `key` (exact spelling) has in `file`.
+ * How many times `helper` directly follows an empty value among the values of `key` (exact
+ * spelling) in `file` (the pair setup writes), as git lists them.
  * @lastreviewed null
  */
-export function emptiesOf(entries: readonly HelperEntry[], file: string, key: string, style: ConfigPathStyle): number {
-  return valuesOf(entries, file, key, style).filter((value) => value === "").length;
-}
-
-/**
- * Whether `helper` directly follows an empty value among the values of `key` (exact spelling) in
- * `file`: the pair setup writes.
- * @lastreviewed null
- */
-export function pairedReset(
+export function pairsOf(
   entries: readonly HelperEntry[],
   file: string,
   key: string,
   helper: string,
   style: ConfigPathStyle
-): boolean {
+): number {
   const values = valuesOf(entries, file, key, style);
-  return values.some((value, i) => value === "" && values[i + 1] === helper);
+  let pairs = 0;
+  for (let i = 0; i + 1 < values.length; i++) {
+    if (values[i] === "" && values[i + 1] === helper) {
+      pairs++;
+      i++;
+    }
+  }
+  return pairs;
 }
 
 /**

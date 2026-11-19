@@ -3,22 +3,21 @@ import { PublicKeys } from "../persistence/PersistenceKeys";
 import type { Persistence } from "../providers";
 
 /**
- * Where b6p's reset under one key in one file stands.
+ * Where b6p's reset under one key in one file stands. b6p writes its reset and its helper as one
+ * pair, in one edit of the file, and removes the pair the same way, so the file never holds one
+ * without the other.
  *
- * - `installed`: b6p wrote the reset and `helper` straight after it. It stays b6p's only while
- *   `helper` directly follows an empty value among that key's values in that file; once it does
- *   not (the user took b6p's helper out, say), b6p drops the record and claims nothing.
- * - `adding`: b6p is about to add the reset, then `helper`; the key had `emptiesBefore` empty
- *   values. Settled as not done when it still has that many, as `installed` when it has one more
- *   and the pair is there, and as `unconfirmed` otherwise.
- * - `removing`: b6p is about to remove its reset, the key's only empty value (`emptiesBefore` is
- *   1), and then `helper`. Settled as done when the key has no empty value left, as `installed`
- *   when it still has that one and the pair is there, and as `unconfirmed` otherwise.
- * - `unconfirmed`: a change was interrupted and the file does not show which empty value is b6p's.
- *   Nothing is removed; the next setup or removal that covers the key reports it and forgets it.
+ * - `installed`: b6p wrote the pair. It stays b6p's only while `helper` directly follows an empty
+ *   value among that key's values in that file; once it does not (the user took b6p's helper out,
+ *   say), b6p drops the record and claims nothing.
+ * - `adding`: b6p is about to append the pair; the key then had `pairsBefore` such pairs in the
+ *   file. Settled as not done when it still has that many, as `installed` when it has one more, and
+ *   as `unconfirmed` otherwise.
+ * - `unconfirmed`: the file does not show which pair is b6p's. Nothing is removed for it; the next
+ *   setup or removal that covers the key reports it and forgets it.
  * @lastreviewed null
  */
-export type GitCredentialResetState = "installed" | "adding" | "removing" | "unconfirmed";
+export type GitCredentialResetState = "installed" | "adding" | "unconfirmed";
 
 /**
  * b6p's reset under one exact key in one file.
@@ -32,10 +31,10 @@ export interface GitCredentialResetRecord {
    */
   readonly helper: string;
   /**
-   * For `adding` and `removing`: how many empty values the key had in the file just before.
+   * For `adding`: how many reset-then-`helper` pairs the key had in the file just before.
    * @lastreviewed null
    */
-  readonly emptiesBefore?: number;
+  readonly pairsBefore?: number;
 }
 
 /**
@@ -45,7 +44,7 @@ export interface GitCredentialResetRecord {
  */
 export type GitCredentialResetsByFile = Record<string, Record<string, GitCredentialResetRecord>>;
 
-const STATES: ReadonlySet<string> = new Set(["installed", "adding", "removing", "unconfirmed"]);
+const STATES: ReadonlySet<string> = new Set(["installed", "adding", "unconfirmed"]);
 
 function isRecord(value: unknown): value is GitCredentialResetRecord {
   if (typeof value !== "object" || value === null) {
@@ -55,8 +54,9 @@ function isRecord(value: unknown): value is GitCredentialResetRecord {
   if (!STATES.has(r.state) || typeof r.helper !== "string") {
     return false;
   }
-  const counted = r.state === "adding" || r.state === "removing";
-  return counted ? Number.isInteger(r.emptiesBefore) && (r.emptiesBefore ?? -1) >= 0 : r.emptiesBefore === undefined;
+  return r.state === "adding"
+    ? Number.isInteger(r.pairsBefore) && (r.pairsBefore ?? -1) >= 0
+    : r.pairsBefore === undefined;
 }
 
 function clean(stored: unknown): GitCredentialResetsByFile {
@@ -87,9 +87,9 @@ export const GIT_CONFIG_LOCK = "b6p:git_credential_config";
 /**
  * Which `helper =` resets in the user's git config b6p wrote, so removal takes out only those and
  * never one the user wrote, whatever sits next to it. Public state `b6p:git_credential_resets`:
- * `{ "<file>": { "<exact key>": { state, helper, emptiesBefore? } } }`.
+ * `{ "<file>": { "<exact key>": { state, helper, pairsBefore? } } }`.
  *
- * A config change is written here before it is made (`adding`, `removing`) and again after it, so
+ * An addition is written here before it is made (`adding`) and again after it, so
  * a run that stopped between the two is settled by the next one from the file
  * ({@link GitCredentialResetState}). Each write is a locked read-modify-write
  * ({@link mutatePublic}), and the whole of a setup or removal runs inside {@link exclusive}.
@@ -102,11 +102,14 @@ export class GitCredentialResets {
   constructor(private readonly persistence: Persistence) {}
 
   /**
-   * Every record.
+   * Every record, read under the record's lock, so a write of it (or `B6PCore`'s clear, which keeps
+   * it) is never seen halfway.
    * @lastreviewed null
    */
   async all(): Promise<GitCredentialResetsByFile> {
-    return clean(await this.persistence.get<unknown>(PublicKeys.GIT_CREDENTIAL_RESETS));
+    return exclusive(this.persistence, PublicKeys.GIT_CREDENTIAL_RESETS, async () =>
+      clean(await this.persistence.get<unknown>(PublicKeys.GIT_CREDENTIAL_RESETS))
+    );
   }
 
   /**

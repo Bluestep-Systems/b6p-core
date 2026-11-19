@@ -124,8 +124,15 @@ export type { GatewayContext, GatewayFetch } from "./gateway/GatewayContext";
 export { gatewayTokenProblem, redactToken } from "./gateway/GatewayToken";
 
 // ─── git's credential helper ─────────────────────────────────────────
-export { GitCredentialService, parseCredentialRequest } from "./gitCredential/GitCredentialService";
+export {
+  GIT_MATCHING_FLOOR,
+  GIT_SETUP_FLOOR,
+  GitCredentialService,
+  parseCredentialRequest,
+  parseGitVersion,
+} from "./gitCredential/GitCredentialService";
 export type {
+  GitCredentialCloneOptions,
   GitCredentialHelperOptions,
   GitCredentialHost,
   GitCredentialHostSource,
@@ -136,10 +143,13 @@ export type {
   GitCredentialRemoveResult,
   GitCredentialSetupResult,
   GitCredentialSetupStatus,
+  GitCredentialStatusScope,
 } from "./gitCredential/GitCredentialService";
 export type { GitCredentialContext } from "./gitCredential/GitCredentialContext";
-export { gitConfigRunner } from "./gitCredential/GitConfigRunner";
-export type { GitConfigOutcome, GitConfigRunner } from "./gitCredential/GitConfigRunner";
+export { editConfigFile, gitConfigRunner } from "./gitCredential/GitConfigRunner";
+export type { GitConfigOutcome, GitConfigRunner, GitRunOptions } from "./gitCredential/GitConfigRunner";
+export { appendPair, pairsIn, parseConfigFile, removePair } from "./gitCredential/configFile";
+export type { ConfigFileEntry } from "./gitCredential/configFile";
 export { credentialHostOf, requestedCredentialHost } from "./gitCredential/hosts";
 export { configPathKey, credentialContextMatch, patternApplies, patternIsHost } from "./gitCredential/credentialConfig";
 export type {

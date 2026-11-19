@@ -55,12 +55,19 @@ export interface Persistence {
 
   /** Clear all public state. */
   clearPublic(): Promise<void>;
+  /**
+   * Clear all public state but the keys in `keep`, as one write, so a reader never sees those keys
+   * missing and a failure leaves them as they were. Optional: without it, core clears and writes
+   * the kept keys back under their lock, which a crash between the two can lose.
+   * @lastreviewed null
+   */
+  clearPublicExcept?(keep: readonly string[]): Promise<void>;
   /** Clear all secret state. */
   clearSecrets(): Promise<void>;
 
   /**
    * Run `work` while holding the exclusive lock called `name`, shared by every process using the
-   * same store (for example a lockfile beside it). Optional: without it, core serializes the
+   * same store (for example a lockfile beside it), and kept for as long as `work` runs, however long. Optional: without it, core serializes the
    * read-modify-writes that need it within the process only, and across processes they stay
    * last-writer-wins.
    * @lastreviewed null
