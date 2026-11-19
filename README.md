@@ -530,15 +530,17 @@ await core.gitCredential.removeGit(); // { removed, keptResets: [{ url, file, re
   `Persistence.withLock`, and each setup or removal holds one git config lock (`b6p:git_credential_config`) from
   reading the config to settling the last record, so two never interleave, in one process or several. A lockfile
   (`withFileLock`) works as git's `<file>.lock` does: created exclusively, its stamp (process id, host name, a
-  token) written through the same handle at once, held for as long as the work runs, and **never removed by another
+  token) written and the file registered for cleanup in one synchronous step, held for as long as the work runs, and **never removed by another
   process**, whatever its age or holder. Release removes it only while it holds this acquisition's token, retrying a
   transient `EPERM`/`EBUSY`/`EACCES`; a release still refused stays pending, and this process (only this one) removes
   that lock on its next acquisition of it and on exit. As git's tempfile.c does, b6p removes the locks it holds, and
-  git's `<config>.lock` while it is editing a config file (only while it is still the file it created), when the
-  process exits, gets SIGINT, SIGTERM or SIGHUP while no handler of the host's is listening (then stopping with that
-  signal; a host handler decides instead, and if it exits the locks go with the exit), or dies of an uncaught
-  exception. A lock is tracked from the moment it is created, so only a hard kill (SIGKILL, power loss) can leave an
-  empty one. A deleted `~/.b6p` is created again. After 10 s a waiter gives up with an error naming the
+  git's `<config>.lock` while it is editing a config file (only while it is still the file it created: the same
+  device and inode, and for b6p's lock its own stamp), when the process exits, gets SIGINT, SIGTERM or SIGHUP while
+  no handler of the host's is listening or has been seen (then stopping with that signal; a host handler decides
+  instead, and if it exits the locks go with the exit), or dies of an uncaught exception that nothing catches. Both
+  locks are created and tracked in one synchronous step, so only a hard kill (SIGKILL, power loss) can leave one. A
+  lock held by another is waited for; any other refusal to create one fails at once (on Windows, `EPERM`/`EBUSY`/
+  `EACCES` are waited for too). A deleted `~/.b6p` is created again. After 10 s a waiter gives up with an error naming the
   lockfile and its holder (or saying the lock is empty): "If no b6p or VS Code process is running, delete <path>." A pull whose host cannot be recorded still succeeds.
 - The helper command defaults to `GitCredential.DEFAULT_HELPER`; pass `{ helper }` to write another.
 - The token never reaches git's argv, a config file, a log line or an error message. Failures of `git config`, and

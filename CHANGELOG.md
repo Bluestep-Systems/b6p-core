@@ -39,9 +39,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`Persistence.withLock(name, work)`** (optional): an exclusive lock across every process using the same store,
   held for as long as `work` runs. `SharedFilePersistence` implements it with a lockfile in its directory that works
   as git's `<file>.lock` does: never removed by another process; released only while it holds its own token (a
-  refused release stays pending and is finished by the same process); removed from the moment it is created on exit,
-  on a fatal uncaught exception, and on SIGINT, SIGTERM or SIGHUP when the host has no handler for them; and a 10 s
-  wait that ends naming the lockfile and its holder. A deleted directory is created again. Core uses it for the git-credential host list, reset records and git
+  refused release stays pending and is finished by the same process); created, stamped and tracked in one synchronous
+  step, and removed on exit, on a fatal uncaught exception, and on SIGINT, SIGTERM or SIGHUP when the host has no
+  handler for them, while it is still the same file holding its stamp; a 10 s wait while another holds it (any other
+  refusal fails at once) that ends naming the lockfile and its holder. A deleted directory is created again. Core uses it for the git-credential host list, reset records and git
   config changes; without it those are serialized within the process only.
 - **`Persistence.clearPublicExcept(keep)`** (optional): clear public state but the named keys in one write.
   `SharedFilePersistence` implements it.

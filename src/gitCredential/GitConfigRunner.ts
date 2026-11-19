@@ -4,7 +4,7 @@ import { constants as fsConstants } from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { Err } from "../Err";
-import { trackOnExit, untrackOnExit } from "../persistence/exitCleanup";
+import { sameFile, trackOnExit, untrackOnExit, type ExitCleanupEntry } from "../persistence/exitCleanup";
 import type { ConfigPathStyle } from "./credentialConfig";
 
 /**
@@ -125,11 +125,21 @@ export async function resolveSymlink(file: string): Promise<string> {
 export async function editConfigFile(file: string, edit: (text: string) => string | null): Promise<boolean> {
   const target = await resolveSymlink(file);
   const lock = `${target}.lock`;
-  let handle: fsp.FileHandle | undefined;
+  let fd: number | undefined;
+  let cleanup: ExitCleanupEntry | undefined;
   for (let waited = 0; ; waited += 25) {
     try {
-      // Owner-only until the file's own mode is known: the copy is never more readable than the file.
-      handle = await fsp.open(lock, "wx", 0o600);
+      // Created and tracked in one synchronous run, so no exit or signal finds it untracked. Owner-only until the
+      // file's own mode is known: the copy is never more readable than the file.
+      fd = fsSync.openSync(lock, "wx", 0o600);
+      try {
+        cleanup = trackOnExit(lock, sameFile(lock, fsSync.fstatSync(fd, { bigint: true })));
+      } catch (error) {
+        closeQuietly(fd);
+        fd = undefined;
+        unlinkQuietly(lock);
+        throw error;
+      }
       break;
     } catch (error) {
       if (codeOf(error) !== "EEXIST" || waited >= 2_000) {
@@ -141,15 +151,6 @@ export async function editConfigFile(file: string, edit: (text: string) => strin
       await sleep(25);
     }
   }
-  const made = await handle.stat();
-  const cleanup = trackOnExit(lock, () => {
-    try {
-      const now = fsSync.statSync(lock);
-      return now.dev === made.dev && now.ino === made.ino;
-    } catch {
-      return false;
-    }
-  });
   try {
     // The mode is read only now, under the lock, so a change another writer made while b6p waited is the one kept.
     let mode: number | undefined;
@@ -161,7 +162,7 @@ export async function editConfigFile(file: string, edit: (text: string) => strin
       }
     }
     if (process.platform !== "win32") {
-      await handle.chmod(mode ?? 0o666 & ~process.umask());
+      fsSync.fchmodSync(fd, mode ?? 0o666 & ~process.umask());
     }
     let text = "";
     try {
@@ -173,15 +174,15 @@ export async function editConfigFile(file: string, edit: (text: string) => strin
     }
     const next = edit(text);
     if (next === null || next === text) {
-      await handle.close();
-      handle = undefined;
+      fsSync.closeSync(fd);
+      fd = undefined;
       await fsp.unlink(lock);
       untrackOnExit(cleanup);
       return false;
     }
-    await handle.writeFile(Buffer.from(next, "latin1"));
-    await handle.close();
-    handle = undefined;
+    fsSync.writeFileSync(fd, Buffer.from(next, "latin1"));
+    fsSync.closeSync(fd);
+    fd = undefined;
     for (let attempt = 0; ; attempt++) {
       try {
         await fsp.rename(lock, target);
@@ -196,10 +197,28 @@ export async function editConfigFile(file: string, edit: (text: string) => strin
       }
     }
   } catch (error) {
-    await handle?.close().catch(() => undefined);
+    if (fd !== undefined) {
+      closeQuietly(fd);
+    }
     await fsp.unlink(lock).catch(() => undefined);
     untrackOnExit(cleanup);
     throw error;
+  }
+}
+
+function closeQuietly(fd: number): void {
+  try {
+    fsSync.closeSync(fd);
+  } catch {
+    // Closed or not, the lock goes.
+  }
+}
+
+function unlinkQuietly(file: string): void {
+  try {
+    fsSync.unlinkSync(file);
+  } catch {
+    // Gone already.
   }
 }
 

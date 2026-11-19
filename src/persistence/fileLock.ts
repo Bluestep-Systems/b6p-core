@@ -3,7 +3,7 @@ import * as fsSync from "fs";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
-import { trackOnExit, untrackOnExit, type ExitCleanupEntry } from "./exitCleanup";
+import { sameFile, trackOnExit, untrackOnExit, type ExitCleanupEntry } from "./exitCleanup";
 
 /**
  * How {@link withFileLock} waits.
@@ -11,9 +11,9 @@ import { trackOnExit, untrackOnExit, type ExitCleanupEntry } from "./exitCleanup
  */
 export interface FileLockOptions {
   /**
-   * How long to wait for the lock before giving up (default 10 s). Every failed attempt counts
-   * against it, whatever the error: a lock held by another process, or a file system that refuses
-   * the lockfile (`EPERM`, `EACCES`, as a Windows sharing restriction does).
+   * How long to wait for the lock before giving up (default 10 s): while another process holds it,
+   * or, on Windows, while the file system refuses the lockfile (`EPERM`, `EBUSY`, `EACCES`, as a
+   * sharing restriction or antivirus does).
    * @lastreviewed null
    */
   readonly timeoutMs?: number;
@@ -44,6 +44,9 @@ const errorCode = (error: unknown): string | undefined =>
     : undefined;
 
 const TRANSIENT = new Set(["EPERM", "EBUSY", "EACCES"]);
+// What creating the lockfile may refuse and still succeed later: another holder, and on Windows a sharing or
+// antivirus refusal. Anything else (a read-only or full disk, a directory b6p may not write) fails at once.
+const RETRIED_OPEN = new Set(process.platform === "win32" ? ["EEXIST", ...TRANSIENT] : ["EEXIST"]);
 const RETRY_DELAYS_MS = [20, 50, 100, 200, 400] as const;
 
 /**
@@ -55,24 +58,42 @@ const RETRY_DELAYS_MS = [20, 50, 100, 200, 400] as const;
 const pendingRelease = new Map<string, Map<string, ExitCleanupEntry>>();
 
 /**
- * Whether the file at `lockPath` is still the lockfile this acquisition created: the same device and
- * inode as the handle that created it, once known; before that (the instant between `open` and
- * `stat`), a file holding nothing or this stamp, which no other process writes there.
+ * Take the lock in one synchronous run, as git does: create it exclusively, read its device and
+ * inode, write the stamp, close it and register it for exit cleanup, so no exit, signal or uncaught
+ * exception can land between the file appearing and its being tracked. Anything failing before the
+ * stamp is tracked closes and removes the file and throws; a failing close after that keeps the
+ * acquisition, since the lock is written, ours and tracked.
  * @lastreviewed null
  */
-function isMine(lockPath: string, stamp: string, made: { dev?: number; ino?: number }): () => boolean {
-  return () => {
-    try {
-      if (made.ino !== undefined) {
-        const now = fsSync.statSync(lockPath);
-        return now.dev === made.dev && now.ino === made.ino;
-      }
-      const text = fsSync.readFileSync(lockPath, "utf8");
-      return text === "" || text === stamp;
-    } catch {
-      return false;
+function acquireSync(lockPath: string, stamp: string): ExitCleanupEntry {
+  const fd = fsSync.openSync(lockPath, "wx");
+  let entry: ExitCleanupEntry;
+  try {
+    const made = fsSync.fstatSync(fd, { bigint: true });
+    const bytes = Buffer.from(stamp, "utf8");
+    for (let at = 0; at < bytes.length; ) {
+      at += fsSync.writeSync(fd, bytes, at, bytes.length - at);
     }
-  };
+    entry = trackOnExit(lockPath, sameFile(lockPath, made, stamp));
+  } catch (error) {
+    try {
+      fsSync.closeSync(fd);
+    } catch {
+      // Closed or not, the file goes.
+    }
+    try {
+      fsSync.unlinkSync(lockPath);
+    } catch {
+      // Gone already.
+    }
+    throw error;
+  }
+  try {
+    fsSync.closeSync(fd);
+  } catch {
+    // The stamp is written and tracked: the lock is ours, and release removes it as usual.
+  }
+  return entry;
 }
 
 // Remove `lockPath` if it holds `stamp`, retrying a transient refusal. Resolves whether it is gone (or not ours).
@@ -113,24 +134,26 @@ async function retryPending(lockPath: string): Promise<void> {
 
 /**
  * Run `work` while holding the lockfile `lockPath`, the way git holds `<file>.lock`: created
- * exclusively (`wx`), its stamp (`b6p-lock pid=<pid> host=<hostname> token=<hex>`) written through
- * the same handle at once, and removed after.
+ * exclusively (`wx`), its stamp (`b6p-lock pid=<pid> host=<hostname> token=<hex>`) written and the
+ * file registered for exit cleanup in one synchronous run, and removed after.
  *
  * - **Never removed by another process.** No age, clock or process check ever lets a waiter take a
  *   lock over. A lock whose holder died stays until a person deletes it, and the timeout says so.
  * - **Release** removes the lockfile only while it holds this acquisition's stamp, retrying a
  *   transient `EPERM`/`EBUSY`/`EACCES`. A release still refused is kept pending: this process
  *   removes that lock (and only this one may) on its next acquisition of it, and on exit.
- * - **Stopping.** From its creation (before the stamp is written), the lock is removed if the
- *   process exits, gets SIGINT, SIGTERM or SIGHUP with no handler of the host's, or dies of an
- *   uncaught exception (`exitCleanup.ts`, as git's tempfile.c does). Only a hard kill leaves one.
+ * - **Stopping.** From the moment it exists, the lock is removed if the process exits, gets SIGINT,
+ *   SIGTERM or SIGHUP with no handler of the host's, or dies of an uncaught exception
+ *   (`exitCleanup.ts`, as git's tempfile.c does), while it is still the same file (device and
+ *   inode) holding this stamp. Only a hard kill (SIGKILL, power loss) can leave one.
  * - **A missing directory** (a deleted `~/.b6p`) is created again (`ensureDir`) and the attempt
  *   retried.
- * - **Waiting.** Every failed attempt, whatever its error, sleeps `retryMs` and counts against
- *   `timeoutMs`.
+ * - **Waiting.** A lock held by another (and on Windows `EPERM`/`EBUSY`/`EACCES`) is retried
+ *   every `retryMs` until `timeoutMs`; any other refusal to create it fails at once.
  *
  * @throws {Error} when the lock is not acquired within `timeoutMs`, naming the lockfile and its
- *   holder (or saying it is empty), and saying to delete it when no b6p or VS Code process is running.
+ *   holder (or saying it is empty), and saying to delete it when no b6p or VS Code process is running;
+ *   at once when the file system refuses the lockfile for good (`EROFS`, `ENOSPC`, `EACCES` on POSIX).
  * @lastreviewed null
  */
 export async function withFileLock<T>(
@@ -145,30 +168,17 @@ export async function withFileLock<T>(
   const deadline = Date.now() + timeoutMs;
   const stamp = `b6p-lock pid=${process.pid} host=${os.hostname()} token=${crypto.randomBytes(12).toString("hex")}`;
   let lastCode: string | undefined;
+  let lastError: unknown;
   let holder: string | undefined;
   let entry: ExitCleanupEntry | undefined;
   await retryPending(lockPath);
   for (;;) {
     let again = false;
     try {
-      const handle = await fs.open(lockPath, "wx");
-      // Tracked before the stamp is written, so an exit in between removes this empty lock too.
-      const made: { dev?: number; ino?: number } = {};
-      entry = trackOnExit(lockPath, isMine(lockPath, stamp, made));
-      try {
-        const stat = await handle.stat();
-        made.dev = stat.dev;
-        made.ino = stat.ino;
-        await handle.writeFile(stamp);
-      } catch (error) {
-        await handle.close().catch(() => undefined);
-        await fs.unlink(lockPath).catch(() => undefined);
-        untrackOnExit(entry);
-        throw error;
-      }
-      await handle.close();
+      entry = acquireSync(lockPath, stamp);
       break;
     } catch (error) {
+      lastError = error;
       lastCode = errorCode(error);
     }
     if (lastCode === "ENOENT") {
@@ -179,13 +189,24 @@ export async function withFileLock<T>(
         lastCode = errorCode(error) ?? lastCode;
       }
     } else if (lastCode === "EEXIST") {
-      holder = await fs.readFile(lockPath, "utf8").catch(() => undefined);
+      holder = undefined;
+      try {
+        holder = await fs.readFile(lockPath, "utf8");
+      } catch (error) {
+        again = errorCode(error) === "ENOENT"; // Released between the two calls; any other refusal waits.
+      }
       if (holder === undefined) {
-        again = true; // Released between the two calls.
+        // Nothing more to learn: try again (at once if it was released).
       } else if (pendingRelease.get(lockPath)?.has(holder)) {
         await retryPending(lockPath);
         again = true;
       }
+    }
+    if (lastCode === undefined) {
+      throw lastError;
+    }
+    if (lastCode !== "ENOENT" && !RETRIED_OPEN.has(lastCode)) {
+      throw new Error(`The lock ${lockPath} could not be created: the file system refused it (${lastCode}).`);
     }
     if (Date.now() >= deadline) {
       throw new Error(timeoutMessage(lockPath, lastCode, holder));

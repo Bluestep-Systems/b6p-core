@@ -1327,36 +1327,65 @@ async function withPatchedFs(patches, body) {
 
 const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("a file system that keeps refusing the lock times out after the wait, retrying at the retry delay", async () => {
+/** Run `body` with `require("node:fs")` functions patched (each patch gets the original first). */
+async function withPatchedFsSync(patches, body) {
+  const fsSync = require("node:fs");
+  const saved = {};
+  for (const [name, patch] of Object.entries(patches)) {
+    saved[name] = fsSync[name];
+    const original = fsSync[name].bind(fsSync);
+    fsSync[name] = (...args) => patch(original, ...args);
+  }
+  try {
+    return await body();
+  } finally {
+    Object.assign(fsSync, saved);
+  }
+}
+
+test("creating the lock: a lasting refusal fails at once on POSIX; on Windows a sharing refusal is retried", async () => {
   const { withFileLock, FILE_LOCK_DEFAULTS } = require("../dist/persistence/fileLock.js");
   assert.strictEqual(FILE_LOCK_DEFAULTS.timeoutMs, 10_000);
   const dir = fs.mkdtempSync(path.join(tmp, "lock-"));
   const lock = path.join(dir, "state.lock");
-  const refuse = (code) => async () => {
+  let attempts = 0;
+  const refuse = (code) => (original, file, ...rest) => {
+    if (String(file) !== lock) {
+      return original(file, ...rest);
+    }
     attempts++;
     throw Object.assign(new Error(`${code}: refused`), { code });
   };
-  let attempts = 0;
-  for (const code of ["EPERM", "EACCES"]) {
+  const posix = process.platform !== "win32";
+  for (const code of ["EPERM", "EACCES", "EBUSY", "EROFS", "ENOSPC", "EDQUOT"]) {
     attempts = 0;
     const started = Date.now();
-    const error = await withPatchedFs({ open: refuse(code) }, () =>
-      withFileLock(lock, async () => "never", { timeoutMs: 300, retryMs: 25 }).then(
+    const error = await withPatchedFsSync({ openSync: refuse(code) }, () =>
+      withFileLock(lock, async () => "never", { timeoutMs: 2000, retryMs: 25 }).then(
         () => null,
         (e) => e
       )
     );
     const waited = Date.now() - started;
-    assert.ok(error && /Timed out/.test(error.message), `${code}: ${error && error.message}`);
-    assert.ok(error.message.includes(code), error.message);
-    assert.ok(waited >= 280, `${code}: gave up after ${waited} ms, not the wait`);
-    assert.ok(attempts <= 300 / 25 + 3, `${code}: ${attempts} attempts, so the retry delay was not kept`);
+    assert.ok(error && error.message.includes(code), `${code}: ${error && error.message}`);
+    if (posix || !["EPERM", "EACCES", "EBUSY"].includes(code)) {
+      assert.match(error.message, /could not be created/);
+      assert.ok(waited < 500 && attempts === 1, `${code}: ${attempts} attempts over ${waited} ms`);
+    } else {
+      assert.match(error.message, /Timed out/);
+      assert.ok(waited >= 1900 && attempts <= 2000 / 25 + 3, `${code}: ${attempts} attempts over ${waited} ms`);
+    }
   }
+  attempts = 0;
   // A dead holder's lock that cannot be moved or removed: the same, rather than a loop with no end.
   fs.writeFileSync(lock, lockStamp({ pid: deadPid() }));
   attempts = 0;
   const started = Date.now();
-  const outcome = await withPatchedFs({ unlink: refuse("EPERM"), rename: refuse("EPERM") }, () =>
+  const refuseAsync = (code) => async () => {
+    attempts++;
+    throw Object.assign(new Error(`${code}: refused`), { code });
+  };
+  const outcome = await withPatchedFs({ unlink: refuseAsync("EPERM"), rename: refuseAsync("EPERM") }, () =>
     Promise.race([
       withFileLock(lock, async () => "never", { timeoutMs: 300, retryMs: 25 }).then(
         () => "acquired",
@@ -2110,21 +2139,190 @@ test("SIGINT with a host handler that calls process.exit removes the lock on the
   }
 });
 
-test("an exit between creating the lock and writing its stamp removes the empty lock", async () => {
+/** Run `node -e code` with `args`; resolves { status, signal, stdout }. */
+function nodeChild(code, args = []) {
+  return new Promise((resolve) => {
+    const proc = require("node:child_process").spawn(process.execPath, ["-e", code, ...args], {
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    let stdout = "";
+    proc.stdout.on("data", (chunk) => (stdout += chunk));
+    proc.on("exit", (status, signal) => resolve({ status, signal, stdout }));
+  });
+}
+
+// A child starting `start` (with `F` the file to lock or edit) that stops on its own (exit or SIGINT) after `spins`
+// turns of the event loop: at some point of the acquisition, however the threads run.
+const stopAfterSpins = (requires, start, stop) =>
+  `${requires} const F = process.argv[1]; const spins = Number(process.argv[2]); ${start};` +
+  `let n = 0; const tick = () => { if (n++ >= spins) ${stop}; else setImmediate(tick); }; setImmediate(tick);`;
+
+test("an exit or SIGINT at any moment of an acquisition leaves no lock: b6p's and git's config lock", async () => {
+  const dist = path.join(__dirname, "..", "dist");
+  const fileLock = `const { withFileLock } = require(${JSON.stringify(path.join(dist, "persistence", "fileLock.js"))});`;
+  const runner = `const { editConfigFile } = require(${JSON.stringify(path.join(dist, "gitCredential", "GitConfigRunner.js"))});`;
+  const cases = [
+    ["b6p's lock, exit", fileLock, "withFileLock(F, () => new Promise(() => {})).catch(() => {})", "process.exit(0)", "l.lock"],
+    ["git's lock, exit", runner, `editConfigFile(F, (t) => t + "[x]\\n").catch(() => {})`, "process.exit(0)", "config.lock"],
+  ];
+  if (process.platform !== "win32") {
+    cases.push([
+      "git's lock, SIGINT",
+      runner,
+      `editConfigFile(F, (t) => t + "[x]\\n").catch(() => {})`,
+      `process.kill(process.pid, "SIGINT")`,
+      "config.lock",
+    ]);
+  }
+  for (const [name, requires, start, stop, left] of cases) {
+    const leaks = [];
+    for (let spins = 0; spins < 30; spins++) {
+      const dir = fs.mkdtempSync(path.join(tmp, "gap-"));
+      const target = path.join(dir, left === "l.lock" ? left : "config"); // b6p's lock itself, or git's config file
+      await nodeChild(stopAfterSpins(requires, start, stop), [target, String(spins)]);
+      if (fs.existsSync(path.join(dir, left))) {
+        leaks.push(spins);
+      }
+    }
+    assert.deepStrictEqual(leaks, [], `${name}: a lock left after stopping at spins ${leaks.join(", ")}`);
+  }
+});
+
+test("exit cleanup leaves a lock whose content is no longer this acquisition's stamp, even on the same inode", async () => {
   const fileLock = path.join(__dirname, "..", "dist", "persistence", "fileLock.js");
-  const lock = path.join(fs.mkdtempSync(path.join(tmp, "empty-")), "state.lock");
+  const lock = path.join(fs.mkdtempSync(path.join(tmp, "reuse-")), "state.lock");
+  const other = "b6p-lock pid=1 host=elsewhere token=another";
+  // The same inode now holding another acquisition's stamp, as a reused inode would.
   const code =
-    `const fsp = require("fs/promises"); const { withFileLock } = require(${JSON.stringify(fileLock)});` +
-    `const open = fsp.open; fsp.open = async (...a) => { const h = await open(...a);` +
-    `  h.writeFile = () => process.exit(3); return h; };` +
-    `withFileLock(${JSON.stringify(lock)}, async () => {});`;
-  const status = await new Promise((resolve) =>
-    require("node:child_process")
-      .spawn(process.execPath, ["-e", code], { stdio: "inherit" })
-      .on("exit", (s) => resolve(s))
+    `const fs = require("fs"); const { withFileLock } = require(${JSON.stringify(fileLock)});` +
+    `withFileLock(${JSON.stringify(lock)}, async () => { fs.writeFileSync(${JSON.stringify(lock)}, ${JSON.stringify(other)});` +
+    `  process.exit(0); });`;
+  const { status } = await nodeChild(code);
+  assert.strictEqual(status, 0);
+  assert.strictEqual(fs.readFileSync(lock, "utf8"), other, "another process's lock is left alone");
+});
+
+test("a host's once or self-removing signal handler registered first gets to finish: b6p does not re-raise", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
+  const fileLock = path.join(__dirname, "..", "dist", "persistence", "fileLock.js");
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    for (const how of ["once", "removes itself"]) {
+      const dir = fs.mkdtempSync(path.join(tmp, "sig-once-"));
+      const lock = path.join(dir, "state.lock");
+      const done = path.join(dir, "host-done");
+      const finish = `await new Promise((r) => setTimeout(r, 200)); fs.writeFileSync(${JSON.stringify(done)}, ""); process.exit(0);`;
+      const host =
+        how === "once"
+          ? `process.once(${JSON.stringify(signal)}, async () => { ${finish} });`
+          : `const h = async () => { process.removeListener(${JSON.stringify(signal)}, h); ${finish} }; process.on(${JSON.stringify(signal)}, h);`;
+      const code =
+        `const fs = require("fs"); ${host} const { withFileLock } = require(${JSON.stringify(fileLock)});` +
+        `setInterval(() => {}, 1000);` +
+        `withFileLock(${JSON.stringify(lock)}, async () => { setTimeout(() => process.kill(process.pid, ${JSON.stringify(signal)}), 50);` +
+        `  await new Promise(() => {}); });`;
+      const { status, signal: sig } = await nodeChild(code);
+      assert.deepStrictEqual({ status, sig }, { status: 0, sig: null }, `${signal}, ${how}: the host's handler decided`);
+      assert.ok(fs.existsSync(done), `${signal}, ${how}: the host's handler finished`);
+      assert.ok(!fs.existsSync(lock), `${signal}, ${how}: the lock went with the exit`);
+    }
+  }
+});
+
+test("an uncaught exception caught by a capture callback leaves the work its lock", async () => {
+  const fileLock = path.join(__dirname, "..", "dist", "persistence", "fileLock.js");
+  const lock = path.join(fs.mkdtempSync(path.join(tmp, "capture-")), "state.lock");
+  const code =
+    `const fs = require("fs"); const { withFileLock } = require(${JSON.stringify(fileLock)});` +
+    `process.setUncaughtExceptionCaptureCallback(() => {});` +
+    `withFileLock(${JSON.stringify(lock)}, async () => {` +
+    `  setTimeout(() => { throw new Error("boom"); }, 0);` +
+    `  await new Promise((r) => setTimeout(r, 200));` +
+    `  console.log("held " + fs.existsSync(${JSON.stringify(lock)}));` +
+    `}).then(() => console.log("released"));`;
+  const { status, stdout } = await nodeChild(code);
+  assert.strictEqual(status, 0);
+  assert.strictEqual(stdout, "held true\nreleased\n");
+  assert.ok(!fs.existsSync(lock));
+});
+
+test("a lock that cannot be read is waited for at the retry delay, not spun on", async () => {
+  const { withFileLock } = require("../dist/persistence/fileLock.js");
+  const lock = path.join(fs.mkdtempSync(path.join(tmp, "unreadable-")), "state.lock");
+  fs.mkdirSync(lock); // Exists (EEXIST), and reading it fails (EISDIR).
+  let reads = 0;
+  const error = await withPatchedFs(
+    {
+      readFile: (original, file, ...rest) => {
+        if (String(file) === lock) {
+          reads++;
+        }
+        return original(file, ...rest);
+      },
+    },
+    () => withFileLock(lock, async () => "never", { timeoutMs: 300, retryMs: 50 }).then(() => null, (e) => e)
   );
-  assert.strictEqual(status, 3, "stopped between create and write");
-  assert.ok(!fs.existsSync(lock), "the empty lock it made is gone");
+  assert.match(error.message, /Timed out/);
+  assert.ok(reads <= 300 / 50 + 3, `${reads} reads in 300 ms`);
+});
+
+test("a close that fails after the stamp is written keeps the acquisition: the work runs and the lock goes after", async () => {
+  const { withFileLock } = require("../dist/persistence/fileLock.js");
+  const lock = path.join(fs.mkdtempSync(path.join(tmp, "close-")), "state.lock");
+  let armed = true;
+  const failOnce = (close) =>
+    function (...args) {
+      const result = close.apply(this, args);
+      if (armed) {
+        armed = false;
+        throw Object.assign(new Error("EIO: close failed"), { code: "EIO" });
+      }
+      return result;
+    };
+  const failClose = (handle) => {
+    const close = handle.close.bind(handle);
+    handle.close = async () => {
+      await close();
+      if (armed) {
+        armed = false;
+        throw Object.assign(new Error("EIO: close failed"), { code: "EIO" });
+      }
+    };
+    return handle;
+  };
+  // The close of the lockfile's handle (an async acquire) or descriptor (a synchronous one) fails, once.
+  const outcome = await withPatchedFs({ open: async (original, ...a) => failClose(await original(...a)) }, () =>
+    withPatchedFsSync({ closeSync: (original, ...a) => failOnce(original)(...a) }, () =>
+      withFileLock(lock, async () => "ran", { timeoutMs: 500 }).then(
+        (v) => v,
+        (e) => e.message
+      )
+    )
+  );
+  assert.strictEqual(outcome, "ran");
+  assert.ok(!armed, "the close did fail");
+  assert.ok(!fs.existsSync(lock));
+});
+
+test("on POSIX a lock directory b6p may not write fails at once, naming the refusal", async () => {
+  if (process.platform === "win32" || process.getuid?.() === 0) {
+    return;
+  }
+  const { withFileLock } = require("../dist/persistence/fileLock.js");
+  const dir = fs.mkdtempSync(path.join(tmp, "readonly-"));
+  fs.chmodSync(dir, 0o500);
+  try {
+    const started = Date.now();
+    const error = await withFileLock(path.join(dir, "state.lock"), async () => "never", { timeoutMs: 3000 }).then(
+      () => null,
+      (e) => e
+    );
+    assert.match(error.message, /could not be created: the file system refused it \(EACCES\)/);
+    assert.ok(Date.now() - started < 1000, "not after the wait");
+  } finally {
+    fs.chmodSync(dir, 0o700);
+  }
 });
 
 test("a deleted ~/.b6p is created again: the next write succeeds instead of timing out", async () => {
