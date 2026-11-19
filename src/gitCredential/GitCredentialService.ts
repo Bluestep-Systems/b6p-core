@@ -4,7 +4,7 @@ import { GitCredential } from "../constants/GitCredential";
 import { Err } from "../Err";
 import { parseGatewayOrigin } from "../gateway/GatewayClient";
 import { gatewayTokenProblem } from "../gateway/GatewayToken";
-import { appendPair, pairsIn, parseConfigFile, removePair } from "./configFile";
+import { appendPair, keepsEntries, pairsIn, parseConfigFile, removePair } from "./configFile";
 import {
   askedFor,
   configPathKey,
@@ -593,19 +593,27 @@ export class GitCredentialService {
     const key = helperKeyFor(host);
     const pairsBefore = pairsOf(entries, file, key, helper, this.pathStyle);
     await this.ctx.resets.put(file, key, { state: "adding", helper, pairsBefore });
+    const bytes = asBytes(helper);
     try {
       await this.ctx.gitConfig.editFile(file, (text) => {
         const parsed = parseConfigFile(text);
         if (parsed === null) {
           throw new Err.GitCredentialSetupError(`git config file ${file} could not be read as git reads it.`, null);
         }
-        if (pairsIn(parsed, key, helper).length !== pairsBefore) {
+        if (pairsIn(parsed, key, bytes).length !== pairsBefore) {
           throw new Err.GitCredentialSetupError(`git config file ${file} changed while setup was writing it.`, null);
         }
-        const next = appendPair(text, `https://${host}`, helper);
+        const next = appendPair(text, `https://${host}`, bytes);
         const written = parseConfigFile(next);
-        if (written === null || pairsIn(written, key, helper).length !== pairsBefore + 1) {
-          throw new Err.GitCredentialSetupError("b6p's entries could not be written as git reads them.", null);
+        if (
+          written === null ||
+          !keepsEntries(parsed, written, 2) ||
+          pairsIn(written, key, bytes).length !== pairsBefore + 1
+        ) {
+          throw new Err.GitCredentialSetupError(
+            `b6p's entries could not be appended to git config file ${file} without changing an entry already there.`,
+            null
+          );
         }
         return next;
       });
@@ -648,7 +656,7 @@ export class GitCredentialService {
       const result: { outcome: "removed" | "gone" | GitCredentialKeptResetReason } = { outcome: "gone" };
       await this.ctx.gitConfig.editFile(claim.file, (text) => {
         const parsed = parseConfigFile(text);
-        const found = parsed === null ? [] : pairsIn(parsed, claim.key, claim.record.helper);
+        const found = parsed === null ? [] : pairsIn(parsed, asBytes(claim.key), asBytes(claim.record.helper));
         if (parsed === null || (found.length === 1 && !(found[0][0].ownLine && found[0][1].ownLine))) {
           result.outcome = "unconfirmed";
         } else if (found.length > 1) {
@@ -795,6 +803,9 @@ export class GitCredentialService {
     );
   }
 }
+
+// A string as the bytes of its UTF-8 encoding, one latin1 character each: the form config file edits work in.
+const asBytes = (text: string): string => Buffer.from(text, "utf8").toString("latin1");
 
 // The scopes setup can change: global files, and system ones that come before them.
 const isWritableScope = (entry: HelperEntry): boolean => entry.scope === "system" || entry.scope === "global";

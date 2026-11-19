@@ -266,10 +266,9 @@ export class SharedFilePersistence implements Persistence {
   /**
    * Run `work` holding `<configDir>/<name>.lock`, created exclusively and removed after, so the CLI
    * and the extension (and two CLI processes) take turns. Within this process the same lock is
-   * also queued, so two instances over the same directory do not poll each other. The lock keeps a
-   * heartbeat for as long as `work` runs ({@link withFileLock}); one left by a process that died is
-   * taken over once its heartbeat is 5 s old, or at once when its process is gone; waiting gives up
-   * after 10 s.
+   * also queued, so two instances over the same directory do not poll each other. The lock is held
+   * for as long as `work` runs ({@link withFileLock}); one is removed by a waiter only when its
+   * holder has certainly exited, never for its age; waiting gives up after 10 s, naming the lockfile.
    * @lastreviewed null
    */
   async withLock<T>(name: string, work: () => Promise<T>): Promise<T> {

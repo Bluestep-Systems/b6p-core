@@ -41,11 +41,13 @@ const isSpace = (c: string): boolean => c === " " || c === "\t" || c === "\n" ||
 
 /**
  * Parse a git config file's text. `null` where git would reject it (a bad header, an unknown escape,
- * an unterminated quote), so nothing is edited in a file git itself cannot read.
+ * an unterminated quote), so nothing is edited in a file git itself cannot read. The text is the
+ * file's bytes, one latin1 character each, as `editConfigFile` reads it (a JavaScript string of the
+ * same ASCII content parses the same way).
  * @lastreviewed null
  */
 export function parseConfigFile(text: string): ConfigFileEntry[] | null {
-  let pos = text.startsWith("﻿") ? 1 : 0;
+  let pos = text.startsWith("\xEF\xBB\xBF") ? 3 : text.startsWith("\uFEFF") ? 1 : 0;
   // get_next_char: CRLF reads as LF, the end of the text as a final LF.
   const next = (): string => {
     if (pos >= text.length) {
@@ -231,7 +233,8 @@ function parseValue(next: () => string): string | null {
 
 /**
  * The places in a parsed file where `helper` directly follows an empty value among `key`'s
- * values (the pair setup writes): each as the two entries, both alone on their lines.
+ * values (the pair setup writes), counted as git sees them, wherever they sit on their lines (a
+ * reset on its section's header line included): each as the two entries.
  * @lastreviewed null
  */
 export function pairsIn(
@@ -243,7 +246,7 @@ export function pairsIn(
   const pairs: [ConfigFileEntry, ConfigFileEntry][] = [];
   for (let i = 0; i + 1 < values.length; i++) {
     const [reset, after] = [values[i], values[i + 1]];
-    if (reset.value === "" && after.value === helper && reset.ownLine && after.ownLine) {
+    if (reset.value === "" && after.value === helper) {
       pairs.push([reset, after]);
       i++;
     }
@@ -257,10 +260,18 @@ function quoteValue(value: string): string {
 
 /**
  * `text` with a new `[credential "<url>"]` section appended, holding a reset and then `helper`.
+ * The file is first made to end cleanly: a last line without a newline gets one, and a last line
+ * ending in an unescaped `\` (a value continued onto the next line) is followed by an empty line,
+ * which ends the continued value with nothing added, so git reads every existing value as before.
  * @lastreviewed null
  */
 export function appendPair(text: string, url: string, helper: string): string {
-  const head = text === "" || text.endsWith("\n") ? text : `${text}\n`;
+  const body = text.endsWith("\r\n") ? text.slice(0, -2) : text.endsWith("\n") ? text.slice(0, -1) : text;
+  const continued = (/\\+$/.exec(body)?.[0].length ?? 0) % 2 === 1;
+  let head = text === "" || body !== text ? text : `${text}\n`;
+  if (continued) {
+    head += "\n";
+  }
   const sub = url.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   return `${head}[credential "${sub}"]\n\thelper =\n\thelper = ${quoteValue(helper)}\n`;
 }
@@ -311,4 +322,20 @@ function nextHeaderAfter(text: string, entries: readonly ConfigFileEntry[], from
     end = m.index;
   }
   return end;
+}
+
+/**
+ * Whether `after` holds every entry of `before`, keys and values as git reads them, in order, and
+ * then exactly `added` more.
+ * @lastreviewed null
+ */
+export function keepsEntries(
+  before: readonly ConfigFileEntry[],
+  after: readonly ConfigFileEntry[],
+  added: number
+): boolean {
+  return (
+    after.length === before.length + added &&
+    before.every((entry, i) => entry.key === after[i].key && entry.value === after[i].value)
+  );
 }

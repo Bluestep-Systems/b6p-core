@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import * as fsp from "node:fs/promises";
+import * as path from "node:path";
 import { Err } from "../Err";
 import type { ConfigPathStyle } from "./credentialConfig";
 
@@ -60,12 +61,12 @@ export interface GitConfigRunner {
    */
   globalFile(): Promise<string>;
   /**
-   * Edit the config file `file` the way git does (lockfile.c): create `<file>.lock` exclusively
-   * (waiting briefly while another git holds it), let `edit` turn the file's current text into the
-   * new text (`null` to leave it), write that to the lock and rename it over the file, keeping the
-   * file's mode. A symlinked file is edited at its target, as git does. Every git writer takes the
-   * same lock, so nothing another writer does lands between `edit`'s read and the write. Returns
-   * whether the file changed.
+   * Edit the config file `file` the way git does (lockfile.c): create `<file>.lock` exclusively,
+   * with the file's mode (waiting briefly while another git holds it), let `edit` turn the file's
+   * current bytes (one latin1 character each) into the new ones (`null` to leave it), write them to
+   * the lock and rename it over the file. A symlink is followed to its target, even a missing one,
+   * as git does, so it stays a link. Every git writer takes the same lock, so nothing another
+   * writer does lands between `edit`'s read and the write. Returns whether the file changed.
    * @lastreviewed null
    */
   editFile(file: string, edit: (text: string) => string | null): Promise<boolean>;
@@ -85,16 +86,53 @@ const codeOf = (error: unknown): string | undefined =>
     : undefined;
 
 /**
- * Edit a config file under git's lock protocol ({@link GitConfigRunner.editFile}).
+ * Where git writes when asked to write `file`: the target of a symlink, followed as lockfile.c
+ * `resolve_symlink` does (up to five links, a relative target taken from the link's directory), even
+ * when the target does not exist yet, so the link stays a link.
+ * @lastreviewed null
+ */
+export async function resolveSymlink(file: string): Promise<string> {
+  let at = file;
+  for (let depth = 0; depth < 5; depth++) {
+    let link: string;
+    try {
+      link = await fsp.readlink(at);
+    } catch {
+      break;
+    }
+    if (path.isAbsolute(link)) {
+      at = link;
+    } else {
+      const slash = Math.max(at.lastIndexOf("/"), process.platform === "win32" ? at.lastIndexOf("\\") : -1);
+      at = (slash === -1 ? "" : at.slice(0, slash + 1)) + link;
+    }
+  }
+  return at;
+}
+
+/**
+ * Edit a config file under git's lock protocol ({@link GitConfigRunner.editFile}). The file is read
+ * and written as bytes: `edit` gets each byte as one character (latin1) and must return text in the
+ * same form, so bytes that are not UTF-8 (a cp1252 name, say) pass through unchanged. The lock is
+ * created with the file's own mode and set to it before anything is written, so the copy is never
+ * more readable than the file.
  * @lastreviewed null
  */
 export async function editConfigFile(file: string, edit: (text: string) => string | null): Promise<boolean> {
-  const target = await fsp.realpath(file).catch(() => file);
+  const target = await resolveSymlink(file);
   const lock = `${target}.lock`;
+  let mode: number | undefined;
+  try {
+    mode = (await fsp.stat(target)).mode & 0o7777;
+  } catch (error) {
+    if (codeOf(error) !== "ENOENT") {
+      throw error;
+    }
+  }
   let handle: fsp.FileHandle | undefined;
   for (let waited = 0; ; waited += 25) {
     try {
-      handle = await fsp.open(lock, "wx", 0o666);
+      handle = await fsp.open(lock, "wx", mode ?? 0o666);
       break;
     } catch (error) {
       if (codeOf(error) !== "EEXIST" || waited >= 2_000) {
@@ -107,11 +145,12 @@ export async function editConfigFile(file: string, edit: (text: string) => strin
     }
   }
   try {
+    if (mode !== undefined && process.platform !== "win32") {
+      await handle.chmod(mode);
+    }
     let text = "";
-    let mode: number | undefined;
     try {
-      text = await fsp.readFile(target, "utf8");
-      mode = (await fsp.stat(target)).mode & 0o7777;
+      text = (await fsp.readFile(target)).toString("latin1");
     } catch (error) {
       if (codeOf(error) !== "ENOENT") {
         throw error;
@@ -124,10 +163,7 @@ export async function editConfigFile(file: string, edit: (text: string) => strin
       await fsp.unlink(lock);
       return false;
     }
-    await handle.writeFile(next, "utf8");
-    if (mode !== undefined && process.platform !== "win32") {
-      await handle.chmod(mode);
-    }
+    await handle.writeFile(Buffer.from(next, "latin1"));
     await handle.close();
     handle = undefined;
     for (let attempt = 0; ; attempt++) {
@@ -149,6 +185,19 @@ export async function editConfigFile(file: string, edit: (text: string) => strin
   }
 }
 
+// `vars` with a relative GIT_CONFIG_GLOBAL or GIT_CONFIG_SYSTEM made absolute against the process's directory, as
+// git resolves it, so every git b6p runs (whatever its cwd) and every record name the same file.
+function absoluteConfigVars(vars: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  let out = vars;
+  for (const name of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]) {
+    const value = vars[name];
+    if (value && !path.isAbsolute(value) && value !== "/dev/null") {
+      out = { ...out, [name]: path.resolve(process.cwd(), value) };
+    }
+  }
+  return out;
+}
+
 /**
  * The default {@link GitConfigRunner}: the `git` executable on PATH, with `env` (default
  * `process.env`) as its environment, so a test can point `HOME`, `XDG_CONFIG_HOME` or
@@ -161,7 +210,11 @@ export function gitConfigRunner(env?: NodeJS.ProcessEnv): GitConfigRunner {
       execFile(
         "git",
         [...args],
-        { windowsHide: true, ...(env ? { env } : {}), ...(options.cwd ? { cwd: options.cwd } : {}) },
+        {
+          windowsHide: true,
+          env: absoluteConfigVars(env ?? process.env),
+          ...(options.cwd ? { cwd: options.cwd } : {}),
+        },
         (error, stdout, stderr) => {
           if (error && typeof error.code !== "number") {
             resolve({ code: -1, stdout: "", stderr: String(stderr) });

@@ -146,9 +146,9 @@ export type {
   GitCredentialStatusScope,
 } from "./gitCredential/GitCredentialService";
 export type { GitCredentialContext } from "./gitCredential/GitCredentialContext";
-export { editConfigFile, gitConfigRunner } from "./gitCredential/GitConfigRunner";
+export { editConfigFile, gitConfigRunner, resolveSymlink } from "./gitCredential/GitConfigRunner";
 export type { GitConfigOutcome, GitConfigRunner, GitRunOptions } from "./gitCredential/GitConfigRunner";
-export { appendPair, pairsIn, parseConfigFile, removePair } from "./gitCredential/configFile";
+export { appendPair, keepsEntries, pairsIn, parseConfigFile, removePair } from "./gitCredential/configFile";
 export type { ConfigFileEntry } from "./gitCredential/configFile";
 export { credentialHostOf, requestedCredentialHost } from "./gitCredential/hosts";
 export { configPathKey, credentialContextMatch, patternApplies, patternIsHost } from "./gitCredential/credentialConfig";

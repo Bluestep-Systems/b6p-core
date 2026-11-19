@@ -32,12 +32,13 @@ export interface GitCredentialConfigEntry {
  */
 export interface HelperEntry extends GitCredentialConfigEntry {
   readonly scope: string;
-  readonly kind: "helper" | "includeif";
+  readonly kind: "helper" | "includeif" | "username";
   readonly url: string | null;
 }
 
 const HELPER_KEY = /^credential\.(.*)\.helper$/i;
 const INCLUDEIF_KEY = /^includeif\..*\.path$/i;
+const USERNAME_KEY = /^credential\.(?:(.*)\.)?username$/i;
 const GENERIC_HELPER_KEY = "credential.helper";
 const FILE_ORIGIN = "file:";
 
@@ -71,9 +72,10 @@ export function parseHelperEntries(stdout: string): HelperEntry[] {
     const newline = record.indexOf("\n");
     const key = newline === -1 ? record : record.slice(0, newline);
     const value = newline === -1 ? "" : record.slice(newline + 1);
-    const url = HELPER_KEY.exec(key)?.[1];
+    const username = USERNAME_KEY.exec(key);
+    const url = username ? username[1] : HELPER_KEY.exec(key)?.[1];
     const includeIf = INCLUDEIF_KEY.test(key);
-    if (url === undefined && !includeIf && key.toLowerCase() !== GENERIC_HELPER_KEY) {
+    if (!username && url === undefined && !includeIf && key.toLowerCase() !== GENERIC_HELPER_KEY) {
       continue;
     }
     entries.push({
@@ -81,7 +83,7 @@ export function parseHelperEntries(stdout: string): HelperEntry[] {
       value,
       file: origin.startsWith(FILE_ORIGIN) ? origin.slice(FILE_ORIGIN.length) : null,
       scope,
-      kind: includeIf ? "includeif" : "helper",
+      kind: includeIf ? "includeif" : username ? "username" : "helper",
       url: url ?? null,
     });
   }
@@ -328,7 +330,7 @@ function matchHost(have: string, pattern: string): boolean {
  * sets must equal the request's as written (case-sensitive), which is all git compares.
  * @lastreviewed null
  */
-function partialMatch(url: string, host: string): CredentialContextMatch {
+function partialMatch(url: string, host: string, usernameMayChange: boolean): CredentialContextMatch {
   const protoEnd = url.indexOf("://");
   const cp = protoEnd === -1 ? 0 : protoEnd + 3;
   const at = url.indexOf("@", cp);
@@ -365,8 +367,11 @@ function partialMatch(url: string, host: string): CredentialContextMatch {
     match = "maybe";
   }
   if (username !== undefined) {
-    if (username !== GitCredential.USERNAME) {
-      return "no"; // b6p answers only requests with no username or `b6p`.
+    // b6p answers only requests with no username or `b6p`; but this fallback compares the request's
+    // username as config has set it so far (credential.c `credential_config_callback`), so where a
+    // `credential.username` entry may have set another, the pattern may match.
+    if (username !== GitCredential.USERNAME && !usernameMayChange) {
+      return "no";
     }
     match = "maybe";
   }
@@ -391,16 +396,22 @@ function partialMatch(url: string, host: string): CredentialContextMatch {
  *   request.
  *
  * A request's path, the case of its host and a username in the remote URL are not known here, so
- * an entry that depends on them is `maybe`.
+ * an entry that depends on them is `maybe`. `usernameMayChange` (the config has a
+ * `credential.username` or `credential.<url>.username` entry) makes a partial pattern naming any
+ * user `maybe` too: the fallback compares the username config has set so far, which can be any.
  * @lastreviewed null
  */
-export function credentialContextMatch(url: string | null, host: string): CredentialContextMatch {
+export function credentialContextMatch(
+  url: string | null,
+  host: string,
+  usernameMayChange = false
+): CredentialContextMatch {
   if (url === null) {
     return "yes";
   }
   const pattern = normalizePattern(url);
   if (pattern === null) {
-    return partialMatch(url, host);
+    return partialMatch(url, host, usernameMayChange);
   }
   const target = splitPort(host.toLowerCase());
   if (pattern.scheme !== "https") {
@@ -467,13 +478,17 @@ export function askedFor(
   let foreign: HelperEntry[] = [];
   let surelyB6p = false;
   let clearedB6p: HelperEntry | null = null;
+  const usernameMayChange = entries.some((e) => e.kind === "username");
   for (const entry of entries) {
+    if (entry.kind === "username") {
+      continue;
+    }
     if (entry.kind === "includeif") {
       // Its file is read only where its condition holds; in another repository it may add a helper here.
       foreign.push(entry);
       continue;
     }
-    const match = credentialContextMatch(entry.url, host);
+    const match = credentialContextMatch(entry.url, host, usernameMayChange);
     if (match === "no") {
       continue;
     }
