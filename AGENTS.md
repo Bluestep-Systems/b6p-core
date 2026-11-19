@@ -110,6 +110,20 @@ are load-bearing rather than stylistic — each records something this repo undi
   it and adds its own confirmation; it does not rebuild the requests. `update` is one `PATCH` with `If-Match`
   (the `etag` from `detail`/`read`). `GatewayKnowledgeBaseAccess` keeps an exact kind match, treats an unknown
   kind as private, and never sends one back: setting access takes `public` or `private` only.
+- **`core.gitCredential` (`GitCredentialService`, `src/gitCredential/`) is git's credential helper, and answers
+  only an allowlist.** `GitCredentialContext` extends `PlatformContext` with the same non-prompting token source as
+  the gateway, `gatewayUrl()`, `hosts` (`GitCredentialHosts`, the tenant hosts a script pull reached with the token,
+  recorded by `ScriptService.pull` after the git half succeeds) and `gitConfig` (`git config --global`). `get`
+  answers only `protocol=https` with a host exactly on the list (`host[:port]`, port only when not 443, never
+  normalized onto an allowed host), never a request naming another username or carrying `url=`; anything else is an empty answer so git
+  asks its other helpers. Never widen the list by a host rule (such as `*.bluestep.net`): a pull that worked is the
+  proof for a tenant. `store` and `erase` are no-ops, so a single 401 never deletes the one stored token. Setup writes,
+  per host, an empty `credential.https://<host>.helper` (the reset, as gh does) then b6p's command, and never doubles
+  either; removal takes out b6p's entries and only the reset immediately before each (same URL, same file), never one
+  the user wrote. Reads cover every global file (`--includes --show-scope`, not `--global`, which reads only the
+  file it writes) and removals edit the origin file (`--file`). A plain `git push` in a draft does not build or
+  publish; do not add a server hook or helper behaviour that pretends otherwise: that stays `core.script.push`. The token goes only to the `get` answer: never into git
+  config's argv, a log line or an error.
 - **A prompt that overwrites or deletes puts its safe option first and passes
   `{ destructive: true, safeOption }`.** Prompt implementations answer `options[0]` on an empty
   answer and under auto-confirm (the CLI's `--yes`); with the destructive option first, `--yes`
@@ -133,7 +147,8 @@ as a git working tree, `GitIdentity` commit authors, `ServerCompile` reading the
 `schema/` (`SchemaService`, `core.schema`: super-only schema apply over the org's `/gql`, `SchemaContext` extends `PlatformContext`),
 `gateway/` (`GatewayService`, `GatewayClient`, `GatewayGit`, `GatewayTokenService`, `GatewayMarketplace`, `GatewayKb` —
 web-global's gateway over the `b6pt_` token, pure-JS git through it, the caller's own token
-management, marketplace clones and knowledge bases), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`),
+management, marketplace clones and knowledge bases), `gitCredential/` (`GitCredentialService`, git's credential
+helper over the same token), `persistence/`, `cache/` (`OrgCache`, `ScriptMetaDataStore`, `GitCredentialHosts`),
 `data/` (pure parsers and utilities, `ServerVersion`), `constants/`, `update/`, `testing/` (vscode-free doubles,
 including `FakeGateway`).
 

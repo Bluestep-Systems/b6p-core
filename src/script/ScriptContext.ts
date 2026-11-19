@@ -1,6 +1,7 @@
 import type { PlatformContext } from "../PlatformContext";
 import type { ScriptMetaDataStore } from "../cache/ScriptMetaDataStore";
 import type { OrgCache } from "../cache/OrgCache";
+import type { GitCredentialHosts } from "../cache/GitCredentialHosts";
 import type { FetchLike, ScriptRepoOptions } from "@bluestep-systems/b6p-core-bsjs-git";
 
 /**
@@ -24,6 +25,12 @@ import type { FetchLike, ScriptRepoOptions } from "@bluestep-systems/b6p-core-bs
 export interface ScriptContext extends PlatformContext {
   readonly scriptMetadataStore: ScriptMetaDataStore;
   readonly orgCache: OrgCache;
+  /**
+   * Where a pull records the tenant host it reached with the stored token, which b6p then answers
+   * git's credential requests for.
+   * @lastreviewed null
+   */
+  readonly gitCredentialHosts: GitCredentialHosts;
   /**
    * The file system git works on: the draft folder is a git working tree, and isomorphic-git needs a Node-style
    * `fs` (with `.promises`) rather than the {@link FileSystem} provider. Reads and writes the same disk as `fs`.

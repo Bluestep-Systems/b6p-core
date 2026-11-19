@@ -6,6 +6,9 @@ import type { AuthProvider, B6PProviders, FileSystem, Logger, Persistence, Progr
 import type { AuthParams } from "./types";
 import { ScriptMetaDataStore } from "./cache/ScriptMetaDataStore";
 import { OrgCache, type OrgCacheSettings } from "./cache/OrgCache";
+import { GitCredentialHosts } from "./cache/GitCredentialHosts";
+import { GitCredentialService } from "./gitCredential/GitCredentialService";
+import { gitConfigRunner } from "./gitCredential/GitConfigRunner";
 import type { PlatformContext } from "./PlatformContext";
 import { ScriptService } from "./script/ScriptService";
 import { UpdateService } from "./update/UpdateService";
@@ -99,6 +102,11 @@ export class B6PCore {
   readonly sessionManager: SessionManager;
   readonly scriptMetadataStore: ScriptMetaDataStore;
   readonly orgCache: OrgCache;
+  /**
+   * The tenant hosts script pulls reached with the stored token.
+   * @lastreviewed null
+   */
+  readonly gitCredentialHosts: GitCredentialHosts;
   readonly updateService: UpdateService | null = null;
 
   /**
@@ -119,6 +127,13 @@ export class B6PCore {
    * @lastreviewed null
    */
   readonly schema: SchemaService;
+
+  /**
+   * b6p as git's credential helper: answer git for the gateway and the tenant hosts script pulls
+   * reached, and set that up in (or take it out of) the user's global git config.
+   * @lastreviewed null
+   */
+  readonly gitCredential: GitCredentialService;
 
   private readonly _isDebugMode: () => boolean;
 
@@ -147,6 +162,7 @@ export class B6PCore {
       this._isDebugMode,
       this.prompt
     );
+    this.gitCredentialHosts = new GitCredentialHosts(this.persistence);
 
     // The shared half of every subsystem's dependency bundle, built once. A second
     // service spreads this same object and adds only what is specific to it, so the
@@ -167,6 +183,7 @@ export class B6PCore {
       ...platform,
       scriptMetadataStore: this.scriptMetadataStore,
       orgCache: this.orgCache,
+      gitCredentialHosts: this.gitCredentialHosts,
       gitFs: providers.gitFs ?? nodeFs,
       gitToken: async () => {
         const header = await this.auth.authHeaderValue();
@@ -183,17 +200,28 @@ export class B6PCore {
     // bootstrap or `auth.authHeaderValue()`. Its URL is read from core config on every
     // request (default gateway.bluestep.net) and validated by the client.
     const persistence = this.persistence;
+    const gatewayUrl = async (): Promise<string> => {
+      const configured = await persistence.get<unknown>(`settings.${SettingsKeys.GATEWAY_URL}`);
+      return configured === undefined || configured === null || configured === ""
+        ? Gateway.DEFAULT_URL
+        : String(configured);
+    };
     this.gateway = new GatewayService({
       ...platform,
       gatewayToken: gatewayTokenFrom(this.auth),
       gatewayTokenStore: gatewayTokenStoreFrom(this.auth),
-      gatewayUrl: async () => {
-        const configured = await persistence.get<unknown>(`settings.${SettingsKeys.GATEWAY_URL}`);
-        return configured === undefined || configured === null || configured === ""
-          ? Gateway.DEFAULT_URL
-          : String(configured);
-      },
+      gatewayUrl,
       fetchFn: providers.fetchFn ?? globalThis.fetch.bind(globalThis),
+    });
+
+    // git's credential helper reads the same stored token the gateway does (never prompting) and
+    // answers only the gateway's host and the tenant hosts recorded by successful script pulls.
+    this.gitCredential = new GitCredentialService({
+      ...platform,
+      token: gatewayTokenFrom(this.auth),
+      gatewayUrl,
+      hosts: this.gitCredentialHosts,
+      gitConfig: gitConfigRunner(),
     });
 
     // Initialize update service if configuration is provided

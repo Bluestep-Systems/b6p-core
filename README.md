@@ -84,6 +84,10 @@ between the local filesystem and the platform (the draft over git, `declarations
 holds the HTTP client, the git layer, `core.gateway.kb` (knowledge bases), `core.gateway.marketplace`
 and `core.gateway.tokens` for managing the caller's own access tokens; see [Gateway](#gateway) below.
 
+`core.gitCredential` ([`GitCredentialService`](src/gitCredential/GitCredentialService.ts)) — b6p as git's
+credential helper, so plain `git fetch`, `pull` and `push` use the stored token; see
+[git's credential helper](#gits-credential-helper) below.
+
 `core` itself — cross-cutting state that is not specific to any one subsystem:
 
 | Method                                                               | Purpose                                                   |
@@ -427,6 +431,52 @@ answers the contract's REST routes (the token routes included) and error codes, 
 (scopes, plus optional id, alias, owner and expiry; an expired token is `401 token-invalid`),
 `issuedTokens`, `issuedSecrets` (every secret ever accepted, revoked ones included, for leak
 checks), `failNext` and `route` (for mounting git smart-HTTP handlers).
+
+### git's credential helper
+
+`core.gitCredential` ([`GitCredentialService`](src/gitCredential/GitCredentialService.ts)) lets plain `git` in a
+knowledge-base clone (the gateway) or a script's `draft/` folder (a tenant's git proxy) use the stored `b6pt_`
+token without asking, the way `gh auth setup-git` does for github.com. Both git proxies take the token as the Basic
+password, so git needs nothing else: no CSRF token and no session.
+
+Plain `git pull` and `git push` then work in knowledge bases and in script drafts. A plain push in a draft lands the
+commit on the platform's draft branch but does not build or publish it: the platform's build and a snapshot publish
+still take `core.script.push` (the CLI's `b6p script push` or publish), which is unchanged.
+
+```ts
+// git runs `<helper> get|store|erase` with the request on stdin; the consumer passes it through:
+process.stdout.write(await core.gitCredential.answer(action, stdinText)); // then exit 0
+
+await core.gitCredential.allowedHosts(); // [{ host: "gateway.bluestep.net", source: "gateway" }, { host, source: "script-pull" }]
+await core.gitCredential.setupStatus(); // { hosts: [{ host, source, configured, alsoAsked }], configured, otherHelpers }
+await core.gitCredential.setupGit(); // per allowed host: credential.https://<host>.helper = "" then = !b6p auth git-credential
+await core.gitCredential.removeGit(); // { removed, keptResets }: takes those entries out again
+```
+
+- **What it answers for.** `get` answers `username=b6p` and `password=<token>` only for `protocol=https` and a host
+  exactly on the allowlist (`host[:port]`, the port only when not 443): the configured gateway's host when it is https,
+  and every tenant host a `core.script.pull` reached through its git proxy with the token
+  ([`GitCredentialHosts`](src/cache/GitCredentialHosts.ts), recorded after the git half of the pull succeeds). No host
+  rule such as `*.bluestep.net` is assumed. A lookalike host, another port, http, a request naming another username
+  or carrying a `url=` (git never sends one to a helper) gets an empty answer, so git asks its other helpers.
+- **`store` and `erase` do nothing.** The token enters only through the consumer's sign-in. git sends `erase` after
+  any 401, and one tenant refusing the token (or an outage answered with a 401) must not sign b6p out everywhere.
+- **Setup resets, like gh.** For each allowed host it writes `credential.https://<host>.helper` twice, an empty value
+  (git's reset, so no generic helper such as `store` or `cache` answers that host or is told to keep the token) and
+  then b6p's command. A host git already asks b6p first is left alone, so a second run changes nothing; otherwise
+  b6p's old entries are taken out first, so neither line is ever doubled. A tenant recorded later needs another run.
+  `setupStatus()` works out, per host, which helpers git will actually ask, resets included: `configured` is whether
+  b6p comes first, and `alsoAsked` lists helpers git still asks after it (a generic `credential.helper` that appears
+  later in the config than b6p's reset). `otherHelpers` lists the generic helpers.
+- **Every global config file.** Entries are read from `~/.gitconfig`, `$XDG_CONFIG_HOME/git/config` and the files
+  they `[include]`, and each removal edits the file the entry came from (`git config --file <origin>`).
+- **Removal** takes out every entry whose value is b6p's command and the reset setup wrote: the empty value
+  immediately before it, for the same URL, in the same file. A reset the user wrote stays. `git config` can only
+  remove by value, so when that file has another empty value for the same URL, b6p's reset is left too and the URL is
+  reported in `keptResets`.
+- The helper command defaults to `GitCredential.DEFAULT_HELPER`; pass `{ helper }` to write another.
+- The token never reaches git config's argv, a log line or an error message. Failures of `git config` are
+  `Err.GitCredentialSetupError` (`exitCode`).
 
 ## Development
 

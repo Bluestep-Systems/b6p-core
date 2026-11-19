@@ -123,6 +123,23 @@ export type {
 export type { GatewayContext, GatewayFetch } from "./gateway/GatewayContext";
 export { gatewayTokenProblem, redactToken } from "./gateway/GatewayToken";
 
+// ─── git's credential helper ─────────────────────────────────────────
+export { GitCredentialService, parseCredentialRequest } from "./gitCredential/GitCredentialService";
+export type {
+  GitCredentialHelperOptions,
+  GitCredentialHost,
+  GitCredentialHostSource,
+  GitCredentialHostStatus,
+  GitCredentialRemoveOptions,
+  GitCredentialRemoveResult,
+  GitCredentialSetupResult,
+  GitCredentialSetupStatus,
+} from "./gitCredential/GitCredentialService";
+export type { GitCredentialContext } from "./gitCredential/GitCredentialContext";
+export { gitConfigRunner } from "./gitCredential/GitConfigRunner";
+export type { GitConfigOutcome, GitConfigRunner } from "./gitCredential/GitConfigRunner";
+export { credentialHostOf, requestedCredentialHost } from "./gitCredential/hosts";
+
 // ─── Constants ───────────────────────────────────────────────────────
 export {
   ApiEndpoints,
@@ -133,6 +150,7 @@ export {
   FileExtensions,
   FolderNames,
   Gateway,
+  GitCredential,
   GitHubUrls,
   Http,
   MimeTypes,
@@ -164,6 +182,7 @@ export { SharedFilePersistence } from "./persistence/SharedFilePersistence";
 // ─── Caches ──────────────────────────────────────────────────────────
 export { OrgCache } from "./cache/OrgCache";
 export { ScriptMetaDataStore } from "./cache/ScriptMetaDataStore";
+export { GitCredentialHosts } from "./cache/GitCredentialHosts";
 
 // ─── Update service ──────────────────────────────────────────────────
 export { UpdateService } from "./update/UpdateService";

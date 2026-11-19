@@ -5,6 +5,26 @@ All notable changes to `@bluestep-systems/b6p-core` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`core.gitCredential`: b6p as git's credential helper** (ClickUp CU-1k5g91bqjd7). Plain `git pull` and `git push`
+  work in knowledge bases and script drafts with the stored token. A plain push in a draft lands the commit but does
+  not build or publish it; that still takes `b6p script push` or publish (`core.script.push`, unchanged).
+  `answer(action, input)` speaks git's credential-helper protocol: `get` answers `username=b6p` and the stored token
+  as `password` only for an https request whose host is exactly on the allowlist (the configured gateway's host when
+  it is https, and the tenant hosts script pulls reached), and nothing otherwise; `store` and `erase` do nothing (one
+  401 must not delete the token every b6p operation shares). `setupGit()` writes, per allowed host, an empty
+  `credential.https://<host>.helper` (a reset, like gh) followed by `!b6p auth git-credential`, never doubling either;
+  `setupStatus()` reports per host whether git asks b6p first and what it still asks after; `removeGit()` takes out
+  b6p's entries and the reset before each, from the file each came from (`~/.gitconfig`,
+  `$XDG_CONFIG_HOME/git/config`, included files), and never a reset the user wrote. Exports `GitCredentialService`,
+  `GitCredentialHosts`, `GitCredential`, `gitConfigRunner`, `parseCredentialRequest`, `credentialHostOf`,
+  `requestedCredentialHost`, `Err.GitCredentialSetupError` and the result types.
+- **A script pull records its tenant host** (`core.gitCredentialHosts`, public state `b6p:git_credential_hosts`)
+  once the git half of the pull succeeded with the stored token. A failure to record never fails the pull.
+
 ## [1.2.0] - 2026-11-18
 
 ### Added
