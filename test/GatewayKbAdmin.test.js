@@ -60,7 +60,7 @@ test("create sends only what was given and returns the typed detail (private by 
     assert.deepStrictEqual(JSON.parse(sent(fake, "POST")[0].body), { name: "docs" });
     assert.strictEqual(made.ref, "global/docs");
     assert.strictEqual(made.title, "docs");
-    assert.strictEqual(made.liveBranch, "master");
+    assert.strictEqual(made.liveBranch, "main");
     assert.deepStrictEqual(made.access, { kind: "private" });
     assert.ok(made.id.length > 0 && made.gitUrl.startsWith(fake.url));
   });
@@ -302,6 +302,96 @@ test("requestDetailed exposes status and ETag; request still returns the body al
     assert.strictEqual(detailed.etag, '"1"');
     assert.strictEqual(detailed.body.name, "docs");
     assert.strictEqual((await client.request("GET", path)).name, "docs");
+  });
+});
+
+test("scopes: a manage-only token can create and update but not read; a read-only token can read but not write", async () => {
+  await withAdmin(
+    async ({ kb }) => {
+      const made = await kb.create({ name: "docs" });
+      const e = await rejectsWith(kb.detail(made.id), Err.GatewayScopeError);
+      assert.strictEqual(e.scope, "kb:read");
+      const e2 = await rejectsWith(kb.read("docs"), Err.GatewayScopeError);
+      assert.strictEqual(e2.scope, "kb:read");
+      await kb.update(made.id, '"1"', { title: "T" });
+    },
+    ["kb:manage"]
+  );
+  await withAdmin(
+    async ({ fake, kb }) => {
+      fake.knowledgeBases = [
+        {
+          id: "00000000-0000-4000-8000-0000000000aa",
+          status: "ok",
+          ref: "global/docs",
+          scope: "global",
+          tenant: null,
+          name: "docs",
+          title: "Docs",
+          liveBranch: "main",
+          canPush: false,
+          gitUrl: `${fake.url}/git/global/docs.git`,
+        },
+      ];
+      const v = await kb.read("docs");
+      assert.strictEqual(v.etag, '"1"');
+      assert.strictEqual((await kb.detail(v.kb.id)).kb.name, "docs");
+      const e = await rejectsWith(kb.create({ name: "other" }), Err.GatewayScopeError);
+      assert.strictEqual(e.scope, "kb:manage");
+      const e2 = await rejectsWith(kb.update(v.kb.id, v.etag, { title: "x" }), Err.GatewayScopeError);
+      assert.strictEqual(e2.scope, "kb:manage");
+    },
+    ["kb:read"]
+  );
+});
+
+test("write side refuses any access with a key beyond kind, or any other kind, before anything is sent", async () => {
+  await withAdmin(async ({ fake, kb }) => {
+    const made = await kb.create({ name: "docs" });
+    const before = fake.requests.length;
+    const bad = [
+      { kind: "public", permissions: ["employees-only"] },
+      { kind: "private", extra: 1 },
+      { kind: "public", [Symbol("s")]: 1 },
+      { kind: "scoped" },
+      { kind: "Public" },
+      { kind: undefined },
+      {},
+      null,
+      "public",
+      [],
+      42,
+    ];
+    for (const access of bad) {
+      await rejectsWith(kb.create({ name: "x", access }), Err.GatewayInvalidArgumentError);
+      await rejectsWith(kb.update(made.id, '"1"', { access }), Err.GatewayInvalidArgumentError);
+    }
+    assert.strictEqual(fake.requests.length, before);
+    // the read-side parser's unknown for the same shape is the same shape the write side refuses
+    fake.knowledgeBases.find((k) => k.id === made.id).access = { kind: "public", permissions: [] };
+    const got = (await kb.detail(made.id)).kb.access;
+    assert.strictEqual(got.kind, "unknown");
+  });
+});
+
+test("a token-shaped id or ref is refused before any path, request, log line or message", async () => {
+  await withAdmin(async ({ fake, kb }) => {
+    const secret = "b6pt_synthetic_secret_0123456789";
+    const before = fake.requests.length;
+    for (const call of [
+      () => kb.detail(secret),
+      () => kb.detail(`x/${secret}`),
+      () => kb.update(secret, '"1"', { title: "x" }),
+      () => kb.read(secret),
+      () => kb.read(`global/${secret}`),
+      () => kb.read(`${secret}/docs`),
+    ]) {
+      const err = await rejectsWith(call(), Err.GatewayInvalidArgumentError);
+      assert.ok(!err.message.includes("synthetic"), err.message);
+    }
+    assert.strictEqual(fake.requests.length, before);
+    assert.ok(!logLines.some((l) => l.includes("synthetic_secret")));
+    assert.ok(!fake.requests.some((r) => r.path.includes("synthetic")));
   });
 });
 

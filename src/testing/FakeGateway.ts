@@ -189,8 +189,9 @@ export interface FakeGatewayRoute {
  * (via {@link route}) to a git client that brings its own HTTP stack.
  *
  * Built in: `GET /api/v1/knowledge-bases` (scope `kb:read`, `?scope=` and `?tenant=` filters),
- * the global knowledge-base admin routes (scope `kb:manage`: `POST /api/v1/knowledge-bases`,
- * `GET`/`PATCH /api/v1/knowledge-bases/{id}` with an `ETag` and a mandatory `If-Match`, `428`/`412`, a strict
+ * the global knowledge-base admin routes (`POST /api/v1/knowledge-bases` and `PATCH /api/v1/knowledge-bases/{id}`
+ * need `kb:manage`; `GET /api/v1/knowledge-bases/{id}` needs `kb:read`, as the content read does for a private KB),
+ * with an `ETag` and a mandatory `If-Match`, `428`/`412`, a strict
  * `access` of `{"kind":"public"|"private"}`, `409 name-taken`; see {@link accessUnsupported}),
  * `GET /api/v1/registry/repos` (scope `registry:read`), the self-service token routes
  * (`GET`/`POST /api/v1/tokens`, `DELETE /api/v1/tokens/{id}`, `POST /api/v1/tokens/{id}/rotate`,
@@ -451,7 +452,7 @@ export class FakeGateway {
         return;
       }
       if (url.pathname === Gateway.Paths.KNOWLEDGE_BASES ? method === "POST" : this.adminIdOf(url.pathname) !== null) {
-        if (this.authorize(req, res, Gateway.Scopes.KB_MANAGE)) {
+        if (this.authorize(req, res, method === "GET" ? Gateway.Scopes.KB_READ : Gateway.Scopes.KB_MANAGE)) {
           this.handleKbAdmin(method, url.pathname, body, req, res);
         }
         return;
@@ -492,7 +493,7 @@ export class FakeGateway {
   }
 
   /**
-   * The global knowledge-base admin routes, for a request already authorised with `kb:manage`. The knowledge
+   * The global knowledge-base admin routes, for a request already authorised for its scope (`kb:read` for `GET`, `kb:manage` otherwise). The knowledge
    * bases are the entries of {@link knowledgeBases}; a version starts at 1 and every change bumps it.
    * @lastreviewed null
    */
@@ -590,7 +591,7 @@ export class FakeGateway {
         tenant: null,
         name,
         title: title ?? name,
-        liveBranch: liveBranch ?? "master",
+        liveBranch: liveBranch ?? "main",
         canPush: true,
         gitUrl: `${this.url}/git/global/${name}.git`,
         access: access ?? { kind: "private" },

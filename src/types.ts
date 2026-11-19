@@ -903,7 +903,7 @@ export interface GatewayKnowledgeBaseVersion {
 
 /**
  * Body of `POST /api/v1/knowledge-bases`: register a global knowledge base (which creates its repository).
- * Only what is given is sent, so the gateway's defaults apply (title = name, live branch `master`, private).
+ * Only what is given is sent, so the gateway's defaults apply (title = name, live branch `main`, private).
  * @lastreviewed null
  */
 export interface GatewayKnowledgeBaseCreateRequest {

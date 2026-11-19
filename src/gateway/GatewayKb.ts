@@ -304,8 +304,12 @@ function detailFrom(body: unknown, what: string, status: number): GatewayKnowled
  */
 function accessBody(access: GatewayKnowledgeBaseAccessInput): { kind: "public" | "private" } {
   const kind: unknown = (access as { kind?: unknown } | null)?.kind;
-  if (kind !== "public" && kind !== "private") {
-    throw new Err.GatewayInvalidArgumentError('A knowledge base\'s access to set must be "public" or "private".');
+  // Exactly one key, `kind`: a permission object or any other member is not something this version can send.
+  const keys = typeof access === "object" && access !== null ? Reflect.ownKeys(access) : [];
+  if ((kind !== "public" && kind !== "private") || keys.length !== 1) {
+    throw new Err.GatewayInvalidArgumentError(
+      'A knowledge base\'s access to set must be exactly {kind: "public"} or {kind: "private"}.'
+    );
   }
   return { kind };
 }
@@ -567,7 +571,7 @@ export class GatewayKb {
   /**
    * Register a global knowledge base (`POST /api/v1/knowledge-bases`, scope `kb:manage`), which creates its
    * repository too. Only the fields given are sent, so the gateway's defaults apply (title = name, live branch
-   * `master`, private). Nothing prompts: making a knowledge base public is the caller's decision, and the
+   * `main`, private). Nothing prompts: making a knowledge base public is the caller's decision, and the
    * consumer should confirm it first (every commit reachable from the live branch, files since deleted
    * included, becomes readable by anyone).
    *
@@ -595,9 +599,10 @@ export class GatewayKb {
   }
 
   /**
-   * One global knowledge base by id (`GET /api/v1/knowledge-bases/{id}`, scope `kb:manage`) with the `ETag`
+   * One global knowledge base by id (`GET /api/v1/knowledge-bases/{id}`, scope `kb:read`) with the `ETag`
    * a change to it must name.
    *
+   * @throws {Err.GatewayInvalidArgumentError} `id` is empty or contains `b6pt_`; nothing sent
    * @throws {Err.GatewayNotFoundError} no such knowledge base, or not visible to this user
    * @throws {Err.GatewayUnexpectedResponseError} the answer is not a knowledge base, or carries no `ETag`
    * @throws {Err.GatewayError} a subclass for any other gateway failure
@@ -628,14 +633,18 @@ export class GatewayKb {
   /**
    * Find a global knowledge base by its name (`<name>` or `global/<name>`, case-insensitive like
    * {@link resolve}) and read it with its `ETag`: what an update needs, and the name and current access a
-   * consumer words its confirmation from. Resolving uses the listing, so the token needs `kb:read` as well as
-   * `kb:manage`.
+   * consumer words its confirmation from. Resolving uses the listing and the detail read, so the token needs `kb:read`
+   * only (the change itself needs `kb:manage`). A ref containing `b6pt_` is refused before anything is built.
    *
    * @throws {Err.GatewayKnowledgeBaseError} `bad-ref`, `not-found` or `ambiguous`; a global name only
    * @throws {Err.GatewayError} a subclass for any gateway failure
    * @lastreviewed null
    */
   async read(ref: string): Promise<GatewayKnowledgeBaseVersion> {
+    if (typeof ref === "string" && ref.includes(Gateway.TOKEN_PREFIX)) {
+      // Never quoted: it may be a pasted secret.
+      throw new Err.GatewayInvalidArgumentError("A knowledge base address must not contain an access token.");
+    }
     const parsed = parseRef(ref);
     if (parsed.tenant !== null) {
       throw new Err.GatewayKnowledgeBaseError(
@@ -691,6 +700,10 @@ export class GatewayKb {
   private pathOf(id: string): string {
     if (typeof id !== "string" || id.length === 0 || HIDDEN_CHARACTERS.test(id)) {
       throw new Err.GatewayInvalidArgumentError("A knowledge base id must be non-empty text.");
+    }
+    if (id.includes(Gateway.TOKEN_PREFIX)) {
+      // Never quoted, put in a path or logged: it may be a pasted secret.
+      throw new Err.GatewayInvalidArgumentError("A knowledge base id must not contain an access token.");
     }
     return `${Gateway.Paths.KNOWLEDGE_BASES}/${encodeURIComponent(id)}`;
   }
