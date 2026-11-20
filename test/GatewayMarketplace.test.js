@@ -83,7 +83,7 @@ async function withMarket(fn) {
     fetchFn: globalThis.fetch.bind(globalThis),
   });
   try {
-    await fn({ fake, service, core, extras, market: service.marketplace });
+    await fn({ fake, service, core, extras, market: service.marketplace, client: service.client });
   } finally {
     await fake.stop();
     backend.cleanup();
@@ -111,12 +111,22 @@ test("list returns typed repos with their tags", async () => {
   });
 });
 
-test("list keeps the server's order and accepts an empty description (the registry sends \"\" when absent)", async () => {
+test('list keeps the server\'s order and accepts an empty description (the registry sends "" when absent)', async () => {
   await withMarket(async ({ market, fake }) => {
-    const entry = (name) => ({ name, description: "", defaultBranch: "master", tags: ["v2", "v10"], gitUrl: fake.gitUrl("marketplace", name) });
+    const entry = (name) => ({
+      name,
+      description: "",
+      defaultBranch: "master",
+      tags: ["v2", "v10"],
+      gitUrl: fake.gitUrl("marketplace", name),
+    });
     fake.repos = [entry("zeta"), entry("alpha")];
     const repos = await market.list();
-    assert.deepStrictEqual(repos.map((r) => r.name), ["zeta", "alpha"], "not re-sorted");
+    assert.deepStrictEqual(
+      repos.map((r) => r.name),
+      ["zeta", "alpha"],
+      "not re-sorted"
+    );
     assert.strictEqual(repos[0].description, "");
     assert.deepStrictEqual(repos[0].tags, ["v2", "v10"], "tags not re-sorted");
   });
@@ -125,7 +135,9 @@ test("list keeps the server's order and accepts an empty description (the regist
 test("list hands every tag over in the server's order and truncates nothing, even past 1_000", async () => {
   await withMarket(async ({ market, fake }) => {
     const tags = Array.from({ length: 1_200 }, (_, i) => `1.0.${1_199 - i}`);
-    fake.repos = [{ name: "big", description: "d", defaultBranch: "master", tags, gitUrl: fake.gitUrl("marketplace", "big") }];
+    fake.repos = [
+      { name: "big", description: "d", defaultBranch: "master", tags, gitUrl: fake.gitUrl("marketplace", "big") },
+    ];
     const [repo] = await market.list();
     assert.deepStrictEqual(repo.tags, tags, "the client neither re-sorts nor caps the tags (the server owns both)");
   });
@@ -544,6 +556,198 @@ test("the marketplace has no push surface, and every request carried the token",
     for (const r of fake.requests) {
       assert.strictEqual(r.authorization, `Bearer ${TOKEN}`);
     }
+  });
+});
+
+// ── create ──────────────────────────────────────────────────────────────
+
+const posts = (fake) => fake.requests.filter((r) => r.method === "POST" && r.path === "/api/v1/registry/repos");
+
+test("create sends only the members given, answers 201 as created, and does not re-list", async () => {
+  await withMarket(async ({ fake, market }) => {
+    fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    const made = await market.create({ name: "kb" });
+    assert.strictEqual(made.created, true);
+    assert.strictEqual(made.repo.name, "kb");
+    assert.strictEqual(made.repo.defaultBranch, "main");
+    assert.deepStrictEqual(made.repo.tags, []);
+    assert.strictEqual(made.repo.gitUrl, fake.gitUrl("marketplace", "kb"));
+    assert.deepStrictEqual(JSON.parse(posts(fake)[0].body), { name: "kb" });
+    assert.strictEqual(posts(fake)[0].authorization, `Bearer ${TOKEN}`);
+    assert.strictEqual(fake.requests.filter((r) => r.method === "GET").length, 0);
+    // An empty repo is not in the listing until its first push.
+    assert.ok(!(await market.list()).some((r) => r.name === "kb"));
+  });
+});
+
+test("create sends description, website and topics when given, and an empty string stays an empty string", async () => {
+  await withMarket(async ({ fake, market }) => {
+    fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    const made = await market.create({
+      name: "kb",
+      description: "",
+      website: "https://example.com/kb",
+      topics: ["kb", "react"],
+    });
+    assert.deepStrictEqual(JSON.parse(posts(fake)[0].body), {
+      name: "kb",
+      description: "",
+      website: "https://example.com/kb",
+      topics: ["kb", "react"],
+    });
+    assert.strictEqual(made.repo.description, "");
+    await market.create({ name: "kb2", description: "Knowledge base", topics: [] });
+    assert.deepStrictEqual(JSON.parse(posts(fake)[1].body), { name: "kb2", description: "Knowledge base", topics: [] });
+  });
+});
+
+test("create never sends an undefined member as null", async () => {
+  await withMarket(async ({ fake, market }) => {
+    fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    await market.create({ name: "kb", description: undefined, website: undefined, topics: undefined });
+    const sent = JSON.parse(posts(fake)[0].body);
+    assert.deepStrictEqual(Object.keys(sent), ["name"]);
+    assert.ok(!posts(fake)[0].body.includes("null"));
+  });
+});
+
+test("create of an existing empty repo is adopted: 200 surfaces as created === false", async () => {
+  await withMarket(async ({ fake, market }) => {
+    fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    assert.strictEqual((await market.create({ name: "kb" })).created, true);
+    const again = await market.create({ name: "kb", description: "second try" });
+    assert.strictEqual(again.created, false);
+    assert.strictEqual(again.repo.description, "second try");
+  });
+});
+
+test("create of a repo that has history is GatewayRepoExistsError (409 repo-exists, a GatewayConflictError)", async () => {
+  await withMarket(async ({ fake, market }) => {
+    fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    const error = await rejectsWith(market.create({ name: "core" }), Err.GatewayRepoExistsError);
+    assert.ok(error instanceof Err.GatewayConflictError);
+    assert.strictEqual(error.status, 409);
+    assert.strictEqual(error.code, "repo-exists");
+  });
+});
+
+test("create maps every gateway failure to its own typed error", async () => {
+  await withMarket(async ({ fake, market }) => {
+    fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    const fail = async (failure, type) => {
+      fake.failNext({ method: "POST", ...failure });
+      return rejectsWith(market.create({ name: "kb" }), type);
+    };
+    const busy = await fail({ status: 409, body: { error: "rewrite-in-progress" } }, Err.GatewayRewriteInProgressError);
+    assert.ok(busy instanceof Err.GatewayConflictError);
+    assert.strictEqual(busy.code, "rewrite-in-progress");
+    const scope = await fail(
+      { status: 403, body: { error: "scope-missing", scope: "registry:push" } },
+      Err.GatewayScopeError
+    );
+    assert.strictEqual(scope.scope, "registry:push");
+    const notSuper = await fail({ status: 403, body: { error: "not-permitted" } }, Err.GatewayNotPermittedError);
+    assert.ok(!(notSuper instanceof Err.GatewayScopeError));
+    assert.strictEqual(notSuper.code, "not-permitted");
+    await fail({ status: 400, body: { error: "invalid-request" } }, Err.GatewayInvalidRequestError);
+    await fail({ status: 413, body: { error: "too-large" } }, Err.GatewayTooLargeError);
+    const forge = await fail({ status: 502, body: { error: "forge-unavailable" } }, Err.GatewayForgeUnavailableError);
+    assert.ok(forge instanceof Err.GatewayUnavailableError);
+    assert.strictEqual(forge.status, 502);
+    assert.strictEqual(forge.code, "forge-unavailable");
+    const registry = await fail({ status: 503, body: { error: "registry-unavailable" } }, Err.GatewayUnavailableError);
+    assert.ok(!(registry instanceof Err.GatewayForgeUnavailableError));
+    await fail({ status: 401, body: { error: "token-invalid" } }, Err.GatewayAuthError);
+  });
+});
+
+test("create without registry:push is GatewayScopeError from the fake's scope check", async () => {
+  await withMarket(async ({ market }) => {
+    const error = await rejectsWith(market.create({ name: "kb" }), Err.GatewayScopeError);
+    assert.strictEqual(error.scope, "registry:push");
+  });
+});
+
+test("create refuses what the gateway would refuse, before sending", async () => {
+  await withMarket(async ({ fake, market }) => {
+    fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    const refuse = (request) => rejectsWith(market.create(request), Err.GatewayInvalidArgumentError);
+    for (const name of ["", "KB", "-kb", "kb-", "k b", "a..b", "kb.git", "kb.wiki", "kb.rss", "kb.atom", ".", "..", "-", "x.WIKI", "KB.GIT", "a/b", "x".repeat(101), "k​b"]) {
+      await refuse({ name });
+    }
+    await refuse({});
+    await refuse({ name: "kb", description: "x".repeat(2049) });
+    await refuse({ name: "kb", description: "bell\u0007" });
+    await refuse({ name: "kb", description: null });
+    await refuse({ name: "kb", website: "ftp://example.com" });
+    await refuse({ name: "kb", website: "example.com" });
+    await refuse({ name: "kb", website: "https://exa mple.com" });
+    await refuse({ name: "kb", website: "https://example.com/é" });
+    await refuse({ name: "kb", website: `https://example.com/${"a".repeat(1010)}` });
+    await refuse({ name: "kb", website: null });
+    await refuse({ name: "kb", topics: ["Upper"] });
+    await refuse({ name: "kb", topics: ["-lead"] });
+    await refuse({ name: "kb", topics: ["a", "a"] });
+    await refuse({ name: "kb", topics: ["x".repeat(36)] });
+    await refuse({ name: "kb", topics: Array.from({ length: 26 }, (_, i) => `t${i}`) });
+    await refuse({ name: "kb", topics: "kb" });
+    await refuse({ name: "kb", topics: [1] });
+    await refuse({ name: "kb", topics: null });
+    assert.strictEqual(posts(fake).length, 0, "nothing was sent");
+  });
+});
+
+test("create accepts the edges the gateway accepts", async () => {
+  await withMarket(async ({ fake, market }) => {
+    fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    await market.create({
+      name: "a",
+    });
+    await market.create({ name: "x".repeat(100) });
+    await market.create({
+      name: "a.b_c-d",
+      description: "tab\tcr\r\nlf" + "y".repeat(2037),
+      topics: ["a.b-c", "x".repeat(35)],
+    });
+    await market.create({ name: "web1", website: "http://localhost:8080/p" });
+    await market.create({ name: "web2", website: "" });
+    await market.create({ name: "many", topics: Array.from({ length: 25 }, (_, i) => `t${i}`) });
+    assert.strictEqual(posts(fake).length, 6);
+  });
+});
+
+test("create accepts near-misses of the forge's reserved names", async () => {
+  await withMarket(async ({ fake, market }) => {
+    fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    for (const name of ["wiki", "kb-wiki", "kb.wiki.docs", "kb.rss2", "git", "atom", "my.gitx"]) {
+      assert.strictEqual((await market.create({ name })).created, true, name);
+    }
+  });
+});
+
+test("the fake refuses the reserved names with 400 like the gateway", async () => {
+  await withMarket(async ({ fake, client }) => {
+    fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    for (const name of ["kb.wiki", "kb.rss", "kb.atom", "kb.git", "-", "a..b"]) {
+      await rejectsWith(client.request("POST", "/api/v1/registry/repos", { body: { name } }), Err.GatewayInvalidRequestError);
+    }
+  });
+});
+
+test("create refuses an answer that is not the repo asked for", async () => {
+  await withMarket(async ({ fake, market }) => {
+    fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    fake.route({
+      method: "POST",
+      prefix: "/api/v1/registry/repos",
+      handler: (req, res) => {
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({ name: "other", description: "", defaultBranch: "main", tags: [], gitUrl: "https://g/x.git" })
+        );
+      },
+    });
+    await rejectsWith(market.create({ name: "kb" }), Err.GatewayUnexpectedResponseError);
   });
 });
 

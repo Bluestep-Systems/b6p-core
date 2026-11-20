@@ -193,7 +193,8 @@ export interface FakeGatewayRoute {
  * need `kb:manage`; `GET /api/v1/knowledge-bases/{id}` needs `kb:read`, as the content read does for a private KB),
  * with an `ETag` and a mandatory `If-Match`, `428`/`412`, a strict
  * `access` of `{"kind":"public"|"private"}`, `409 name-taken`; see {@link accessUnsupported}),
- * `GET /api/v1/registry/repos` (scope `registry:read`), the self-service token routes
+ * `GET /api/v1/registry/repos` (scope `registry:read`) and `POST /api/v1/registry/repos` (scope `registry:push`:
+ * `201`, `200` for an adopted empty repo, `409 repo-exists`, `400` for a bad name; see {@link emptyRepos}), the self-service token routes
  * (`GET`/`POST /api/v1/tokens`, `DELETE /api/v1/tokens/{id}`, `POST /api/v1/tokens/{id}/rotate`,
  * scope `tokens:self`, with `scope-escalation` and `alias-taken`), and `404 not-found` for anything else.
  * A rotation honours `Idempotency-Key`: a retry with the same presenting token and key within 10
@@ -253,6 +254,13 @@ export class FakeGateway {
    * @lastreviewed null
    */
   repos: GatewayMarketplaceRepo[] = [];
+  /**
+   * Repos made through `POST /api/v1/registry/repos`, by name. They are empty, so the listing does not show
+   * them; a second create of one of these names is adopted (`200`). A name in {@link repos} answers
+   * `409 repo-exists`.
+   * @lastreviewed null
+   */
+  readonly emptyRepos = new Map<string, GatewayMarketplaceRepo>();
   /**
    * Milliseconds each built-in route waits before answering (to observe concurrency).
    * @lastreviewed null
@@ -465,6 +473,12 @@ export class FakeGateway {
         sendJson(res, 200, list);
         return;
       }
+      if (method === "POST" && url.pathname === Gateway.Paths.REGISTRY_REPOS) {
+        if (this.authorize(req, res, Gateway.Scopes.REGISTRY_PUSH)) {
+          this.handleRepoCreate(body, res);
+        }
+        return;
+      }
       if (url.pathname === Gateway.Paths.TOKENS || url.pathname.startsWith(`${Gateway.Paths.TOKENS}/`)) {
         if (this.replayRotation(method, url.pathname, req, res)) {
           return;
@@ -481,6 +495,46 @@ export class FakeGateway {
     } finally {
       this.inFlight--;
     }
+  }
+
+  /**
+   * `POST /api/v1/registry/repos` for a request already authorised with `registry:push`: the contract's
+   * `201`/`200`/`409 repo-exists`/`400`, with the request's metadata echoed. Name checks are the contract's.
+   * @lastreviewed null
+   */
+  private handleRepoCreate(body: string, res: http.ServerResponse): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      parsed = null;
+    }
+    const record = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : null;
+    const name = record === null ? undefined : (record as { name?: unknown }).name;
+    if (
+      typeof name !== "string" ||
+      !/^[a-z0-9]([a-z0-9._-]{0,98}[a-z0-9])?$/.test(name) ||
+      name.includes("..") ||
+      /\.(git|wiki|rss|atom)$/i.test(name)
+    ) {
+      sendJson(res, 400, { error: "invalid-request", message: "The request is not a valid repo create." });
+      return;
+    }
+    if (this.repos.some((r) => r.name === name)) {
+      sendJson(res, 409, { error: "repo-exists", message: "A repo of that name already exists." });
+      return;
+    }
+    const description = (record as { description?: unknown }).description;
+    const repo: GatewayMarketplaceRepo = {
+      name,
+      description: typeof description === "string" ? description : "",
+      defaultBranch: "main",
+      tags: [],
+      gitUrl: this.gitUrl("marketplace", name),
+    };
+    const adopted = this.emptyRepos.has(name);
+    this.emptyRepos.set(name, repo);
+    sendJson(res, adopted ? 200 : 201, repo);
   }
 
   private adminIdOf(path: string): string | null {

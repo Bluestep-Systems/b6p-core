@@ -712,7 +712,9 @@ export type GatewayErrorCode =
   | "alias-taken"
   | "invalid-request"
   | "token-limit"
-  | "registry-unavailable";
+  | "registry-unavailable"
+  | "repo-exists"
+  | "rewrite-in-progress";
 
 /**
  * The JSON body of a gateway error response. On git routes the body is best-effort, so every
@@ -952,6 +954,61 @@ export interface GatewayMarketplaceRepo {
    * @lastreviewed null
    */
   gitUrl: string;
+}
+
+/**
+ * The editable metadata of a marketplace repo. Each member is optional: absent means "not given" (on create
+ * the gateway's default applies; a later edit will leave it unchanged). Never send `null`: omit the member.
+ * @lastreviewed null
+ */
+export interface GatewayMarketplaceRepoMetadata {
+  /**
+   * At most 2048 characters, no control characters but tab, CR and LF; `""` is allowed.
+   * @lastreviewed null
+   */
+  description?: string;
+  /**
+   * `""` or an absolute `http`/`https` URL with a host, printable ASCII, at most 1024 characters.
+   * @lastreviewed null
+   */
+  website?: string;
+  /**
+   * At most 25 topics, each `^[a-z0-9][-.a-z0-9]*$` and at most 35 characters, no duplicates (uppercase is
+   * refused, never lowercased).
+   * @lastreviewed null
+   */
+  topics?: string[];
+}
+
+/**
+ * Body of `POST /api/v1/registry/repos`: the repo's name and its metadata.
+ * @lastreviewed null
+ */
+export interface GatewayMarketplaceCreateRequest extends GatewayMarketplaceRepoMetadata {
+  /**
+   * `^[a-z0-9]([a-z0-9._-]{0,98}[a-z0-9])?$`, not ending `.git`, no `..`.
+   * @lastreviewed null
+   */
+  name: string;
+}
+
+/**
+ * What `POST /api/v1/registry/repos` did.
+ * @lastreviewed null
+ */
+export interface GatewayMarketplaceCreateResult {
+  /**
+   * The repo as the gateway answered. It is empty, so it is not in the listing until its first push; the
+   * `gitUrl` is where that push goes. `description` is the request's (`""` when omitted, even when adopted).
+   * @lastreviewed null
+   */
+  repo: GatewayMarketplaceRepo;
+  /**
+   * `true` when the gateway made the repo (`201`); `false` when it adopted an existing empty repo of that
+   * name (`200`, left by an earlier attempt that did not finish).
+   * @lastreviewed null
+   */
+  created: boolean;
 }
 
 /**

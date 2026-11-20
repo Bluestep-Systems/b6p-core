@@ -1117,6 +1117,30 @@ export namespace Err {
   }
 
   /**
+   * `409 repo-exists`: a marketplace repo of that name already exists with history, is archived, or differs
+   * only in case. Nothing was changed.
+   * @lastreviewed null
+   */
+  export class GatewayRepoExistsError extends GatewayConflictError {
+    constructor(message: string) {
+      super(message, "repo-exists");
+      this.name = "GatewayRepoExistsError";
+    }
+  }
+
+  /**
+   * `409 rewrite-in-progress`: another change holds the repo (its lock is busy, or was lost mid-way). Nothing
+   * is known to have changed; trying again shortly is safe.
+   * @lastreviewed null
+   */
+  export class GatewayRewriteInProgressError extends GatewayConflictError {
+    constructor(message: string) {
+      super(message, "rewrite-in-progress");
+      this.name = "GatewayRewriteInProgressError";
+    }
+  }
+
+  /**
    * `413 too-large`: the request body exceeds what the gateway accepts.
    * @lastreviewed null
    */
@@ -1136,6 +1160,18 @@ export namespace Err {
     constructor(message: string, status: number | null, code: string | null) {
       super(message, status, code);
       this.name = "GatewayUnavailableError";
+    }
+  }
+
+  /**
+   * `502 forge-unavailable`: the gateway answered, but the forge behind it failed (or a repo's protection could
+   * not be confirmed). A repo create may have left an empty repo behind; calling it again adopts and finishes it.
+   * @lastreviewed null
+   */
+  export class GatewayForgeUnavailableError extends GatewayUnavailableError {
+    constructor(message: string) {
+      super(message, 502, "forge-unavailable");
+      this.name = "GatewayForgeUnavailableError";
     }
   }
 

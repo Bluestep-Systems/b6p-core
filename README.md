@@ -237,6 +237,9 @@ Failures are typed, all extending `Err.GatewayError` (`status`, `code`):
 | `GatewayConflictError`                                                | `409 non-fast-forward`                                                                                                                                                                                                                                          |
 | `GatewayAliasTakenError`                                              | `409 alias-taken`                                                                                                                                                                                                                                               |
 | `GatewayTooLargeError`                                                | `413 too-large`                                                                                                                                                                                                                                                 |
+| `GatewayRepoExistsError`                                              | `409 repo-exists`: a marketplace repo of that name has history, is archived, or differs in case (a `GatewayConflictError`)                                                                                                                                       |
+| `GatewayRewriteInProgressError`                                       | `409 rewrite-in-progress`: another change holds the repo; retry shortly (a `GatewayConflictError`)                                                                                                                                                              |
+| `GatewayForgeUnavailableError`                                        | `502 forge-unavailable` (a `GatewayUnavailableError`); a repo create may have left an empty repo, and calling it again adopts it                                                                                                                                |
 | `GatewayUnavailableError`                                             | `502`/`503`/`504`, a network failure or a timeout                                                                                                                                                                                                               |
 | `GatewayUnexpectedResponseError`                                      | any other status, a redirect (`code: "redirect-refused"`, not followed), or a 2xx body that is not JSON                                                                                                                                                         |
 | `GatewayConfigError`                                                  | an unusable `gatewayUrl`, or a URL or request path that resolves off the gateway's origin                                                                                                                                                                       |
@@ -355,15 +358,24 @@ await core.gateway.tokens.rotate("laptop"); // → { replaced, token, rotatedCur
 
 `core.gateway.marketplace` ([`GatewayMarketplace`](src/gateway/GatewayMarketplace.ts)) lists the
 marketplace repos (name, description, default branch, tags, `gitUrl`; the body is validated) and
-pulls a plain working clone of one. It is unrelated to any script's sources or pins, and there is
-no push (the gateway refuses it for the marketplace).
+pulls a plain working clone of one, and creates a new one (`create`, below). It is unrelated to any
+script's sources or pins. Core has no push of its own: a marketplace repo is pushed with plain `git`.
 
 ```typescript
 const repos = await core.gateway.marketplace.list();
 const repo = await core.gateway.marketplace.get("core"); // GatewayNotFoundError if absent
 await core.gateway.marketplace.pull("core", { cwd }); // <cwd>/core at the default branch
 await core.gateway.marketplace.pull("core", { cwd, dir, ref: "v1.1.0" }); // a tag (detached head) or branch
+const { repo, created } = await core.gateway.marketplace.create({ name: "kb", description: "Knowledge base", topics: ["kb"] });
 ```
+
+`create` (`POST /api/v1/registry/repos`, scope `registry:push`, a fleet super) makes a private, empty repo with default
+branch `main`, protected, with the metadata given (`description`, `website`, `topics`; only what is given is sent, and the
+request is checked as the gateway checks it, so a bad one is `GatewayInvalidArgumentError` with nothing sent; names the forge reserves, `.`, `..`, `-` and any ending `.git`, `.wiki`, `.rss` or `.atom`, are refused too). `created`
+is `true` for a new repo (`201`) and `false` when an existing empty repo of that name was adopted (`200`). The repo is
+empty, so it is not in `list()` until its first push: `create` returns it from the answer, and the first push is
+`git push <repo.gitUrl> main` alone; its tags go in a second push (the gateway refuses `main` together with tags). `409 repo-exists`, `409 rewrite-in-progress` and
+`502 forge-unavailable` are `GatewayRepoExistsError`, `GatewayRewriteInProgressError` and `GatewayForgeUnavailableError`.
 
 `cwd` is the consumer's own working directory (core never reads `process.cwd()`); `dir` is relative to it.
 `list` leaves out a malformed entry rather than failing for every repo (`get` of that name is
