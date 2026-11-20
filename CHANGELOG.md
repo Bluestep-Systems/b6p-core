@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-20
+
 ### Added
 
 - **`core.gateway.marketplace.create(request)`: create a marketplace repo** (ClickUp CU-1k5g91bqxwh, needs the
