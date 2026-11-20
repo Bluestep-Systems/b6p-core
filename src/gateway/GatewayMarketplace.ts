@@ -162,6 +162,20 @@ function parseRepoEntry(value: JsonValue | undefined, subject: string, status: n
  * @lastreviewed null
  */
 const REPO_NAME = /^[a-z0-9]([a-z0-9._-]{0,98}[a-z0-9])?$/;
+/**
+ * Names Forgejo 15.0.5 refuses for a repo (`reservedRepoNames`, `reservedRepoPatterns`), compared ignoring case:
+ * `.`, `..`, `-`, and anything ending `.git`, `.wiki`, `.rss` or `.atom`. A name that only contains one of those
+ * words (`wiki`, `kb.wiki.docs`, `kb.rss2`) is fine.
+ * @lastreviewed null
+ */
+const RESERVED_NAMES: ReadonlySet<string> = new Set([".", "..", "-"]);
+const RESERVED_SUFFIXES: readonly string[] = [".git", ".wiki", ".rss", ".atom"];
+
+function forgeReserves(name: string): boolean {
+  const lower = name.toLowerCase();
+  return RESERVED_NAMES.has(lower) || RESERVED_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+}
+
 const TOPIC = /^[a-z0-9][-.a-z0-9]*$/;
 const MAX_DESCRIPTION = 2048;
 const MAX_WEBSITE = 1024;
@@ -317,7 +331,7 @@ export class GatewayMarketplace {
    * with nothing sent.
    *
    * The repo is empty, so it is NOT in {@link list} until its first push: the result carries the repo from
-   * the answer (do not list to find it). The first push is `git push --atomic <gitUrl> main[ --tags]`.
+   * the answer (do not list to find it). The first push is `git push --atomic <gitUrl> main` alone, then its tags in a second push.
    *
    * @returns `created` is `true` for a new repo (`201`), `false` when an existing empty one was adopted (`200`)
    * @throws {Err.GatewayInvalidArgumentError} the name or a metadata member is one the gateway would refuse; nothing sent
@@ -334,10 +348,10 @@ export class GatewayMarketplace {
    */
   async create(request: GatewayMarketplaceCreateRequest): Promise<GatewayMarketplaceCreateResult> {
     const { name } = request;
-    if (typeof name !== "string" || !REPO_NAME.test(name) || name.endsWith(".git") || name.includes("..")) {
+    if (typeof name !== "string" || !REPO_NAME.test(name) || name.includes("..") || forgeReserves(name)) {
       throw invalid(
         "name",
-        'must be lowercase letters, digits, ".", "_" or "-", start and end with a letter or digit, be at most 100 characters, not end ".git" and not contain ".."'
+        'must be lowercase letters, digits, ".", "_" or "-", start and end with a letter or digit, be at most 100 characters, not contain "..", and not be one the forge reserves (`.`, `..`, `-`, or ending `.git`, `.wiki`, `.rss`, `.atom`)'
       );
     }
     const body: Record<string, JsonValue> = { name, ...metadataBody(request) };

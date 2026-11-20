@@ -371,10 +371,10 @@ const { repo, created } = await core.gateway.marketplace.create({ name: "kb", de
 
 `create` (`POST /api/v1/registry/repos`, scope `registry:push`, a fleet super) makes a private, empty repo with default
 branch `main`, protected, with the metadata given (`description`, `website`, `topics`; only what is given is sent, and the
-request is checked as the gateway checks it, so a bad one is `GatewayInvalidArgumentError` with nothing sent). `created`
+request is checked as the gateway checks it, so a bad one is `GatewayInvalidArgumentError` with nothing sent; names the forge reserves, `.`, `..`, `-` and any ending `.git`, `.wiki`, `.rss` or `.atom`, are refused too). `created`
 is `true` for a new repo (`201`) and `false` when an existing empty repo of that name was adopted (`200`). The repo is
 empty, so it is not in `list()` until its first push: `create` returns it from the answer, and the first push is
-`git push --atomic <repo.gitUrl> main` (add `--tags` to carry tags). `409 repo-exists`, `409 rewrite-in-progress` and
+`git push <repo.gitUrl> main` alone; its tags go in a second push (the gateway refuses `main` together with tags). `409 repo-exists`, `409 rewrite-in-progress` and
 `502 forge-unavailable` are `GatewayRepoExistsError`, `GatewayRewriteInProgressError` and `GatewayForgeUnavailableError`.
 
 `cwd` is the consumer's own working directory (core never reads `process.cwd()`); `dir` is relative to it.

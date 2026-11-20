@@ -511,7 +511,12 @@ export class FakeGateway {
     }
     const record = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : null;
     const name = record === null ? undefined : (record as { name?: unknown }).name;
-    if (typeof name !== "string" || !/^[a-z0-9]([a-z0-9._-]{0,98}[a-z0-9])?$/.test(name)) {
+    if (
+      typeof name !== "string" ||
+      !/^[a-z0-9]([a-z0-9._-]{0,98}[a-z0-9])?$/.test(name) ||
+      name.includes("..") ||
+      /\.(git|wiki|rss|atom)$/i.test(name)
+    ) {
       sendJson(res, 400, { error: "invalid-request", message: "The request is not a valid repo create." });
       return;
     }

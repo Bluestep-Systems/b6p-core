@@ -13,7 +13,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   gateway's `POST /api/v1/registry/repos`, web-global CU-1k5g91bqxwg). Scope `registry:push`, a fleet super. Takes
   `{ name, description?, website?, topics? }` (`GatewayMarketplaceCreateRequest`; the optional part is
   `GatewayMarketplaceRepoMetadata`, which a later edit will reuse), sends only what is given, and checks it as the
-  gateway does before sending (`GatewayInvalidArgumentError`). Returns `{ repo, created }`: `created` is `true` for
+  gateway does before sending (`GatewayInvalidArgumentError`), including the names Forgejo reserves (`.`, `..`, `-`, and
+  any ending `.git`, `.wiki`, `.rss` or `.atom`, ignoring case). The first push of the new repo is `main` alone; its tags follow in a second push. Returns `{ repo, created }`: `created` is `true` for
   `201` and `false` when an existing empty repo was adopted (`200`). The new repo is not in `list()` until its first
   push, so the result carries it. New typed errors: `Err.GatewayRepoExistsError` (`409 repo-exists`) and
   `Err.GatewayRewriteInProgressError` (`409 rewrite-in-progress`), both `GatewayConflictError`s, and

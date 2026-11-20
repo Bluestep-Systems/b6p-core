@@ -83,7 +83,7 @@ async function withMarket(fn) {
     fetchFn: globalThis.fetch.bind(globalThis),
   });
   try {
-    await fn({ fake, service, core, extras, market: service.marketplace });
+    await fn({ fake, service, core, extras, market: service.marketplace, client: service.client });
   } finally {
     await fake.stop();
     backend.cleanup();
@@ -672,7 +672,7 @@ test("create refuses what the gateway would refuse, before sending", async () =>
   await withMarket(async ({ fake, market }) => {
     fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
     const refuse = (request) => rejectsWith(market.create(request), Err.GatewayInvalidArgumentError);
-    for (const name of ["", "KB", "-kb", "kb-", "k b", "a..b", "kb.git", "a/b", "x".repeat(101), "k​b"]) {
+    for (const name of ["", "KB", "-kb", "kb-", "k b", "a..b", "kb.git", "kb.wiki", "kb.rss", "kb.atom", ".", "..", "-", "x.WIKI", "KB.GIT", "a/b", "x".repeat(101), "k​b"]) {
       await refuse({ name });
     }
     await refuse({});
@@ -713,6 +713,24 @@ test("create accepts the edges the gateway accepts", async () => {
     await market.create({ name: "web2", website: "" });
     await market.create({ name: "many", topics: Array.from({ length: 25 }, (_, i) => `t${i}`) });
     assert.strictEqual(posts(fake).length, 6);
+  });
+});
+
+test("create accepts near-misses of the forge's reserved names", async () => {
+  await withMarket(async ({ fake, market }) => {
+    fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    for (const name of ["wiki", "kb-wiki", "kb.wiki.docs", "kb.rss2", "git", "atom", "my.gitx"]) {
+      assert.strictEqual((await market.create({ name })).created, true, name);
+    }
+  });
+});
+
+test("the fake refuses the reserved names with 400 like the gateway", async () => {
+  await withMarket(async ({ fake, client }) => {
+    fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    for (const name of ["kb.wiki", "kb.rss", "kb.atom", "kb.git", "-", "a..b"]) {
+      await rejectsWith(client.request("POST", "/api/v1/registry/repos", { body: { name } }), Err.GatewayInvalidRequestError);
+    }
   });
 });
 
