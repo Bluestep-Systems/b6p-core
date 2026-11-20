@@ -58,6 +58,7 @@ export namespace Gateway {
   export namespace Paths {
     export const KNOWLEDGE_BASES = "/api/v1/knowledge-bases";
     export const REGISTRY_REPOS = "/api/v1/registry/repos";
+    export const REGISTRY_TOMBSTONES = "/api/v1/registry/tombstones";
     export const GIT = "/api/v1/git";
     export const TOKENS = "/api/v1/tokens";
   }

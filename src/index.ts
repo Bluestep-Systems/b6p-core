@@ -281,6 +281,7 @@ export type {
   GatewayMarketplaceRepoMetadata,
   GatewayMarketplaceCreateRequest,
   GatewayMarketplaceCreateResult,
+  GatewayMarketplaceTombstone,
   GatewayMarketplaceRepoList,
   GatewayCreatedToken,
   GatewayExpiryCap,

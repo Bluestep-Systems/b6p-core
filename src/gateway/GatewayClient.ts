@@ -292,6 +292,14 @@ export function gatewayErrorFor(status: number, bodyText: string, what: string, 
           msg("a marketplace repo of that name already exists (with history, archived, or differing in case)")
         );
       }
+      if (code === "repo-archived") {
+        return new Err.GatewayRepoArchivedError(
+          msg("the marketplace repo is archived, so it cannot be pushed to, edited or renamed; unarchive it first")
+        );
+      }
+      if (code === "not-archived") {
+        return new Err.GatewayNotArchivedError(msg("the tombstone is not archived, so it is not purged"));
+      }
       if (code === "rewrite-in-progress") {
         return new Err.GatewayRewriteInProgressError(msg("another change holds the repo; nothing was changed"));
       }

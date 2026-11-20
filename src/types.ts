@@ -714,7 +714,9 @@ export type GatewayErrorCode =
   | "token-limit"
   | "registry-unavailable"
   | "repo-exists"
-  | "rewrite-in-progress";
+  | "rewrite-in-progress"
+  | "repo-archived"
+  | "not-archived";
 
 /**
  * The JSON body of a gateway error response. On git routes the body is best-effort, so every
@@ -954,11 +956,55 @@ export interface GatewayMarketplaceRepo {
    * @lastreviewed null
    */
   gitUrl: string;
+  /**
+   * The repo's website, `""` when it has none. A gateway that predates the repo lifecycle sends none: `""` then.
+   * @lastreviewed null
+   */
+  website: string;
+  /**
+   * The repo's topics in the forge's order, `[]` when it has none (or the gateway predates them).
+   * @lastreviewed null
+   */
+  topics: string[];
+  /**
+   * Whether the repo is archived: it can be fetched but not pushed to, edited or renamed (unarchive it first).
+   * `false` when the gateway predates the repo lifecycle and sends no flag.
+   * @lastreviewed null
+   */
+  archived: boolean;
+}
+
+/**
+ * One deleted marketplace repo, as `GET /api/v1/registry/tombstones` lists it. A delete renames the repo to its
+ * tombstone and archives it; nothing is destroyed until a purge.
+ * @lastreviewed null
+ */
+export interface GatewayMarketplaceTombstone {
+  /**
+   * The tombstone's name, `_deleted-<id>-<name>`: what {@link GatewayMarketplace.purge} takes.
+   * @lastreviewed null
+   */
+  tombstone: string;
+  /**
+   * The repo's name as the tombstone holds it (cut short when the name was long).
+   * @lastreviewed null
+   */
+  deletedName: string;
+  /**
+   * The forge's repo id.
+   * @lastreviewed null
+   */
+  id: number;
+  /**
+   * Whether the tombstone is archived (a purge needs it to be).
+   * @lastreviewed null
+   */
+  archived: boolean;
 }
 
 /**
  * The editable metadata of a marketplace repo. Each member is optional: absent means "not given" (on create
- * the gateway's default applies; a later edit will leave it unchanged). Never send `null`: omit the member.
+ * the gateway's default applies; on an edit it is left unchanged). Never send `null`: omit the member.
  * @lastreviewed null
  */
 export interface GatewayMarketplaceRepoMetadata {

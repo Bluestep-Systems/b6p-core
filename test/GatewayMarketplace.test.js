@@ -159,7 +159,11 @@ test("a malformed entry is skipped: it does not break list, get or pull for the 
       ["core"]
     );
     assert.strictEqual((await market.get("core")).name, "core");
-    const error = await rejectsWith(market.get("nodesc"), Err.GatewayUnexpectedResponseError);
+    // pull looks a name up in the listing, where the malformed entry is named
+    const error = await rejectsWith(
+      pullAt(market, "nodesc", path.join(tmp(), "n")),
+      Err.GatewayUnexpectedResponseError
+    );
     assert.ok(!/gateway\.invalid/.test(error.message));
     await rejectsWith(market.get("absent"), Err.GatewayNotFoundError);
     const dir = path.join(tmp(), "c");
@@ -238,8 +242,10 @@ test("an unsafe repo name blocks only a pull that would use it as a folder", asy
       assert.strictEqual(listed.length, malformed ? 0 : 1, `list for ${JSON.stringify(name)}`);
       const base = tmp();
       await rejectsWith(market.pull(name, { cwd: base }), Err.GatewayUnexpectedResponseError);
-      if (malformed) {
-        await rejectsWith(market.get(name), Err.GatewayUnexpectedResponseError);
+      // get() never sends a name the gateway could not hold (`nul` and `com1` can be marketplace names): not found
+      if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) {
+        await rejectsWith(market.get(name), Err.GatewayNotFoundError);
+        assert.ok(!fake.requests.some((r) => r.path.startsWith("/api/v1/registry/repos/")));
       }
       assert.deepStrictEqual(fs.readdirSync(base), [], `nothing created for ${JSON.stringify(name)}`);
       assert.ok(
@@ -263,8 +269,13 @@ test("an unsafe repo name blocks only a pull that would use it as a folder", asy
 });
 
 test("get finds a repo by name, and a missing name is GatewayNotFoundError", async () => {
-  await withMarket(async ({ market }) => {
-    assert.strictEqual((await market.get("extras")).name, "extras");
+  await withMarket(async ({ market, fake }) => {
+    const extras = await market.get("extras");
+    assert.strictEqual(extras.name, "extras");
+    assert.deepStrictEqual(
+      fake.requests.map((r) => `${r.method} ${r.path}`),
+      ["GET /api/v1/registry/repos/extras"]
+    );
     const error = await rejectsWith(market.get("nope"), Err.GatewayNotFoundError);
     assert.strictEqual(error.status, 404);
   });
@@ -404,6 +415,11 @@ test("control and format characters in any listing text field make the entry mal
       );
       const error = await rejectsWith(market.get("core"), Err.GatewayUnexpectedResponseError);
       assert.ok(!error.message.includes(value));
+      const pulled = await rejectsWith(
+        pullAt(market, "core", path.join(tmp(), "c")),
+        Err.GatewayUnexpectedResponseError
+      );
+      assert.ok(!pulled.message.includes(value));
     });
   }
   // ordinary Unicode text is fine
@@ -672,7 +688,26 @@ test("create refuses what the gateway would refuse, before sending", async () =>
   await withMarket(async ({ fake, market }) => {
     fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
     const refuse = (request) => rejectsWith(market.create(request), Err.GatewayInvalidArgumentError);
-    for (const name of ["", "KB", "-kb", "kb-", "k b", "a..b", "kb.git", "kb.wiki", "kb.rss", "kb.atom", ".", "..", "-", "x.WIKI", "KB.GIT", "a/b", "x".repeat(101), "k​b"]) {
+    for (const name of [
+      "",
+      "KB",
+      "-kb",
+      "kb-",
+      "k b",
+      "a..b",
+      "kb.git",
+      "kb.wiki",
+      "kb.rss",
+      "kb.atom",
+      ".",
+      "..",
+      "-",
+      "x.WIKI",
+      "KB.GIT",
+      "a/b",
+      "x".repeat(101),
+      "k​b",
+    ]) {
       await refuse({ name });
     }
     await refuse({});
@@ -729,7 +764,10 @@ test("the fake refuses the reserved names with 400 like the gateway", async () =
   await withMarket(async ({ fake, client }) => {
     fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
     for (const name of ["kb.wiki", "kb.rss", "kb.atom", "kb.git", "-", "a..b"]) {
-      await rejectsWith(client.request("POST", "/api/v1/registry/repos", { body: { name } }), Err.GatewayInvalidRequestError);
+      await rejectsWith(
+        client.request("POST", "/api/v1/registry/repos", { body: { name } }),
+        Err.GatewayInvalidRequestError
+      );
     }
   });
 });
@@ -748,6 +786,477 @@ test("create refuses an answer that is not the repo asked for", async () => {
       },
     });
     await rejectsWith(market.create({ name: "kb" }), Err.GatewayUnexpectedResponseError);
+  });
+});
+
+// ── repo lifecycle: get, edit, archive, unarchive, rename, delete, tombstones, purge ──
+
+const REPOS = "/api/v1/registry/repos";
+const TOMBSTONES = "/api/v1/registry/tombstones";
+const sent = (fake, method, p) => fake.requests.filter((r) => r.method === method && r.path === p);
+const withPush = (fn) =>
+  withMarket(async (ctx) => {
+    ctx.fake.grantToken(TOKEN, ["registry:read", "registry:push"]);
+    await fn(ctx);
+  });
+
+test("the repo view carries website, topics and archived in list, get and create", async () => {
+  await withPush(async ({ fake, market }) => {
+    fake.repos = [{ ...fake.repos[0], website: "https://example.com/core", topics: ["a", "b"], archived: true }];
+    const [listed] = await market.list();
+    assert.strictEqual(listed.website, "https://example.com/core");
+    assert.deepStrictEqual(listed.topics, ["a", "b"]);
+    assert.strictEqual(listed.archived, true);
+    assert.deepStrictEqual(await market.get("core"), listed);
+    const made = await market.create({ name: "kb", website: "https://example.com/kb", topics: ["kb"] });
+    assert.strictEqual(made.repo.website, "https://example.com/kb");
+    assert.deepStrictEqual(made.repo.topics, ["kb"]);
+    assert.strictEqual(made.repo.archived, false);
+  });
+});
+
+test("a gateway that sends none of the new members gets the defaults; a wrong shape is malformed", async () => {
+  await withPush(async ({ fake, market }) => {
+    const [core] = fake.repos;
+    assert.strictEqual(core.website, undefined);
+    const listed = (await market.list())[0];
+    assert.strictEqual(listed.website, "");
+    assert.deepStrictEqual(listed.topics, []);
+    assert.strictEqual(listed.archived, false);
+    for (const bad of [{ website: 7 }, { topics: "x" }, { topics: [1] }, { archived: "yes" }, { archived: null }]) {
+      fake.repos = [{ ...core, ...bad }, fake.repos[1]];
+      assert.deepStrictEqual(
+        (await market.list()).map((r) => r.name),
+        ["extras"],
+        JSON.stringify(bad)
+      );
+      await rejectsWith(market.get("core"), Err.GatewayUnexpectedResponseError);
+    }
+  });
+});
+
+test("get finds an empty repo that the listing does not show, and a name the gateway cannot hold is not found unsent", async () => {
+  await withPush(async ({ fake, market }) => {
+    await market.create({ name: "kb" });
+    assert.ok(!(await market.list()).some((r) => r.name === "kb"));
+    assert.strictEqual((await market.get("kb")).name, "kb");
+    fake.requests.length = 0;
+    for (const bad of ["KB", "a/b", "..", "kb.git", "kb.wiki", "", "-", "_deleted-1-kb"]) {
+      await rejectsWith(market.get(bad), Err.GatewayNotFoundError);
+    }
+    assert.strictEqual(fake.requests.length, 0);
+  });
+});
+
+test("get refuses an answer for another repo", async () => {
+  await withPush(async ({ fake, market }) => {
+    fake.repos = [{ ...fake.repos[0], name: "other" }];
+    fake.route({
+      method: "GET",
+      prefix: "/api/v1/registry/repos/core",
+      handler: (req, res) => {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(fake.repos[0]));
+      },
+    });
+    await rejectsWith(market.get("core"), Err.GatewayUnexpectedResponseError);
+  });
+});
+
+test("edit PATCHes only the members given and answers the repo the forge holds", async () => {
+  await withPush(async ({ fake, market }) => {
+    const edited = await market.edit("core", { description: "new", topics: ["x"], website: undefined });
+    assert.deepStrictEqual(JSON.parse(sent(fake, "PATCH", `${REPOS}/core`)[0].body), {
+      description: "new",
+      topics: ["x"],
+    });
+    assert.strictEqual(sent(fake, "PATCH", `${REPOS}/core`)[0].authorization, `Bearer ${TOKEN}`);
+    assert.strictEqual(edited.description, "new");
+    assert.deepStrictEqual(edited.topics, ["x"]);
+    assert.strictEqual(edited.website, "");
+    assert.strictEqual((await market.get("core")).description, "new");
+    await market.edit("core", { website: "", description: "" });
+    assert.deepStrictEqual(JSON.parse(sent(fake, "PATCH", `${REPOS}/core`)[1].body), { website: "", description: "" });
+  });
+});
+
+test("edit refuses what the gateway would refuse, before sending", async () => {
+  await withPush(async ({ fake, market }) => {
+    const refuse = (name, change) => rejectsWith(market.edit(name, change), Err.GatewayInvalidArgumentError);
+    await refuse("core", {});
+    await refuse("core", { description: undefined });
+    await refuse("core", { name: "other" });
+    await refuse("core", { archived: true });
+    await refuse("core", { description: 7 });
+    await refuse("core", { website: "ftp://x" });
+    await refuse("core", { topics: ["A"] });
+    await refuse("core", { topics: ["a", "a"] });
+    await refuse("core", null);
+    await refuse("core", ["x"]);
+    await refuse("Core", { description: "x" });
+    await refuse("a/b", { description: "x" });
+    await refuse("core.git", { description: "x" });
+    assert.strictEqual(fake.requests.length, 0);
+    // an undefined unknown member is left out, as every undefined member is
+    await market.edit("core", { description: "ok", archived: undefined });
+    assert.deepStrictEqual(JSON.parse(sent(fake, "PATCH", `${REPOS}/core`)[0].body), { description: "ok" });
+  });
+});
+
+test("archive and unarchive POST without a body and answer the repo; repeating either is fine", async () => {
+  await withPush(async ({ fake, market }) => {
+    const archived = await market.archive("core");
+    assert.strictEqual(archived.archived, true);
+    assert.strictEqual(sent(fake, "POST", `${REPOS}/core/archive`)[0].body, "");
+    assert.strictEqual((await market.archive("core")).archived, true);
+    assert.strictEqual((await market.get("core")).archived, true);
+    const back = await market.unarchive("core");
+    assert.strictEqual(back.archived, false);
+    assert.strictEqual(sent(fake, "POST", `${REPOS}/core/unarchive`).length, 1);
+    assert.strictEqual((await market.unarchive("core")).archived, false);
+    await rejectsWith(market.archive("nope"), Err.GatewayNotFoundError);
+    await rejectsWith(market.unarchive("nope"), Err.GatewayNotFoundError);
+    for (const bad of ["Core", "../core", "core.rss", ""]) {
+      await rejectsWith(market.archive(bad), Err.GatewayInvalidArgumentError);
+      await rejectsWith(market.unarchive(bad), Err.GatewayInvalidArgumentError);
+    }
+    assert.strictEqual(fake.requests.filter((r) => r.path.includes("%") || r.path.includes("..")).length, 0);
+  });
+});
+
+test("an archived repo refuses edit and rename as GatewayRepoArchivedError (409 repo-archived)", async () => {
+  await withPush(async ({ market }) => {
+    await market.archive("core");
+    for (const call of [market.edit("core", { description: "x" }), market.rename("core", "core2")]) {
+      const error = await rejectsWith(call, Err.GatewayRepoArchivedError);
+      assert.ok(error instanceof Err.GatewayConflictError);
+      assert.strictEqual(error.status, 409);
+      assert.strictEqual(error.code, "repo-archived");
+      assert.match(error.message, /unarchive/);
+    }
+    // delete and unarchive still work
+    assert.strictEqual((await market.unarchive("core")).archived, false);
+  });
+});
+
+test("rename POSTs the new name, answers the repo at it, and the old name is gone", async () => {
+  await withPush(async ({ fake, market }) => {
+    const renamed = await market.rename("core", "core-two");
+    assert.deepStrictEqual(JSON.parse(sent(fake, "POST", `${REPOS}/core/rename`)[0].body), { name: "core-two" });
+    assert.strictEqual(renamed.name, "core-two");
+    assert.strictEqual(renamed.gitUrl, fake.gitUrl("marketplace", "core-two"));
+    assert.deepStrictEqual(renamed.tags, ["v1", "v2"]);
+    await rejectsWith(market.get("core"), Err.GatewayNotFoundError);
+    assert.strictEqual((await market.get("core-two")).name, "core-two");
+    await rejectsWith(market.rename("core", "core-three"), Err.GatewayNotFoundError);
+    const taken = await rejectsWith(market.rename("core-two", "extras"), Err.GatewayRepoExistsError);
+    assert.strictEqual(taken.code, "repo-exists");
+  });
+});
+
+test("rename refuses a bad new name, the same name or a bad old name before sending", async () => {
+  await withPush(async ({ fake, market }) => {
+    const refuse = (a, b) => rejectsWith(market.rename(a, b), Err.GatewayInvalidArgumentError);
+    for (const bad of [
+      "Core2",
+      "a..b",
+      "x.git",
+      "X.WIKI",
+      "a.rss",
+      "a.atom",
+      ".",
+      "..",
+      "-",
+      "",
+      "a/b",
+      "x".repeat(101),
+    ]) {
+      await refuse("core", bad);
+    }
+    await refuse("core", "core");
+    await refuse("Core", "core2");
+    await refuse("core", undefined);
+    assert.strictEqual(fake.requests.length, 0);
+    // near-misses of the reserved names are fine
+    await market.rename("core", "kb.wiki.docs");
+    await market.rename("extras", "wiki");
+  });
+});
+
+test("rename refuses an answer that is not the repo at the new name", async () => {
+  await withPush(async ({ fake, market }) => {
+    fake.route({
+      method: "POST",
+      prefix: "/api/v1/registry/repos/core/rename",
+      handler: (req, res) => {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(fake.repos[0]));
+      },
+    });
+    await rejectsWith(market.rename("core", "core-two"), Err.GatewayUnexpectedResponseError);
+  });
+});
+
+test("delete answers the tombstone's name, the name is free again, and tombstones() lists it", async () => {
+  await withPush(async ({ fake, market }) => {
+    const tombstone = await market.delete("core");
+    assert.strictEqual(typeof tombstone, "string");
+    assert.match(tombstone, /^_deleted-[1-9][0-9]*-core$/);
+    assert.strictEqual(sent(fake, "DELETE", `${REPOS}/core`).length, 1);
+    assert.strictEqual(sent(fake, "DELETE", `${REPOS}/core`)[0].body, "");
+    await rejectsWith(market.get("core"), Err.GatewayNotFoundError);
+    assert.ok(!(await market.list()).some((r) => r.name === "core"));
+    const [listed, ...rest] = await market.tombstones();
+    assert.strictEqual(rest.length, 0);
+    assert.deepStrictEqual(listed, {
+      tombstone,
+      deletedName: "core",
+      id: Number(tombstone.split("-")[1]),
+      archived: true,
+    });
+    assert.strictEqual((await market.create({ name: "core" })).created, true);
+    await rejectsWith(market.delete("nope"), Err.GatewayNotFoundError);
+    await rejectsWith(market.delete("Core"), Err.GatewayInvalidArgumentError);
+    // an archived repo can be deleted, an empty one too
+    await market.archive("extras");
+    assert.match(await market.delete("extras"), /^_deleted-\d+-extras$/);
+    assert.match(await market.delete("core"), /^_deleted-\d+-core$/);
+  });
+});
+
+test("delete refuses an answer that names no tombstone of the repo", async () => {
+  const answer = (body) =>
+    withPush(async ({ fake, market }) => {
+      fake.route({
+        method: "DELETE",
+        prefix: "/api/v1/registry/repos/core",
+        handler: (req, res) => {
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify(body));
+        },
+      });
+      await rejectsWith(market.delete("core"), Err.GatewayUnexpectedResponseError);
+    });
+  await answer({ name: "core", tombstone: "core" });
+  await answer({ name: "extras", tombstone: "_deleted-4-extras" });
+  await answer({ name: "core" });
+  await answer([]);
+});
+
+test("tombstones leaves out a malformed entry and refuses a body that is not a list", async () => {
+  const good = { tombstone: "_deleted-42-kb", deletedName: "kb", id: 42, archived: true };
+  const listed = async (body) => {
+    let result;
+    await withPush(async ({ fake, market }) => {
+      fake.route({
+        method: "GET",
+        prefix: TOMBSTONES,
+        handler: (req, res) => {
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify(body));
+        },
+      });
+      result = await market.tombstones().then(
+        (found) => found,
+        (error) => error
+      );
+    });
+    return result;
+  };
+  assert.deepStrictEqual(
+    await listed({
+      tombstones: [
+        good,
+        { ...good, tombstone: "kb" },
+        { ...good, id: "42" },
+        { ...good, id: 0 },
+        { ...good, archived: 1 },
+        { ...good, deletedName: 3 },
+        "x",
+      ],
+    }),
+    [good]
+  );
+  assert.deepStrictEqual(await listed({ tombstones: [] }), []);
+  const bad = await listed({ nope: [] });
+  thrownMessages.push(bad.message);
+  assert.ok(bad instanceof Err.GatewayUnexpectedResponseError);
+});
+
+test("purge DELETEs the tombstone, which is then gone; the marketplace name rule does not apply to it", async () => {
+  await withPush(async ({ fake, market }) => {
+    const tombstone = await market.delete("core");
+    assert.strictEqual(await market.purge(tombstone), undefined);
+    assert.strictEqual(sent(fake, "DELETE", `${TOMBSTONES}/${tombstone}`).length, 1);
+    assert.deepStrictEqual(await market.tombstones(), []);
+    await rejectsWith(market.purge(tombstone), Err.GatewayNotFoundError);
+    // the tombstone rule: a long name cut to 100 characters is still a tombstone
+    const long = `_deleted-7-${"a".repeat(89)}`;
+    assert.strictEqual(long.length, 100);
+    fake.tombstones.set(long, { tombstone: long, deletedName: "a".repeat(89), id: 7, archived: true });
+    await market.purge(long);
+  });
+});
+
+test("purge refuses what is not a tombstone name before sending", async () => {
+  await withPush(async ({ fake, market }) => {
+    for (const bad of [
+      "kb",
+      "core",
+      "_deleted-kb",
+      "_deleted--kb",
+      "_deleted-0-kb",
+      "_deleted-01-kb",
+      "_deleted-1-KB",
+      "_deleted-1-",
+      "_deleted-1-a..b",
+      "_deleted-1-a/b",
+      "../_deleted-1-kb",
+      `_deleted-1-${"a".repeat(90)}`,
+      "_Deleted-1-kb",
+      "",
+      undefined,
+    ]) {
+      await rejectsWith(market.purge(bad), Err.GatewayInvalidArgumentError);
+    }
+    assert.strictEqual(fake.requests.length, 0);
+  });
+});
+
+test("a purge of an unarchived tombstone is GatewayNotArchivedError (409 not-archived)", async () => {
+  await withPush(async ({ fake, market }) => {
+    const tombstone = await market.delete("core");
+    fake.tombstones.get(tombstone).archived = false;
+    const error = await rejectsWith(market.purge(tombstone), Err.GatewayNotArchivedError);
+    assert.ok(error instanceof Err.GatewayConflictError);
+    assert.strictEqual(error.code, "not-archived");
+    assert.strictEqual((await market.tombstones()).length, 1);
+  });
+});
+
+test("a purge without the history-manager grant is GatewayNotPermittedError whose message says so", async () => {
+  await withPush(async ({ fake, market }) => {
+    const tombstone = await market.delete("core");
+    fake.historyManager = false;
+    const error = await rejectsWith(market.purge(tombstone), Err.GatewayNotPermittedError);
+    assert.strictEqual(error.status, 403);
+    assert.strictEqual(error.code, "not-permitted");
+    assert.match(error.message, /history-manager grant/);
+    assert.strictEqual((await market.tombstones()).length, 1, "nothing was purged");
+    // an ordinary write is not affected, and its message does not claim the grant
+    const other = await rejectsWith(
+      (fake.failNext({ method: "POST", status: 403, body: { error: "not-permitted" } }), market.archive("core")),
+      Err.GatewayNotPermittedError
+    );
+    assert.ok(!/history-manager/.test(other.message));
+  });
+});
+
+test("the lifecycle routes need registry:push, and get only registry:read", async () => {
+  await withMarket(async ({ fake, market }) => {
+    assert.strictEqual((await market.get("core")).name, "core");
+    const calls = [
+      () => market.edit("core", { description: "x" }),
+      () => market.archive("core"),
+      () => market.unarchive("core"),
+      () => market.rename("core", "core2"),
+      () => market.delete("core"),
+      () => market.tombstones(),
+      () => market.purge("_deleted-1-core"),
+    ];
+    for (const call of calls) {
+      const error = await rejectsWith(call(), Err.GatewayScopeError);
+      assert.strictEqual(error.scope, "registry:push");
+    }
+    fake.grantToken(TOKEN, ["registry:push"]);
+    const read = await rejectsWith(market.get("core"), Err.GatewayScopeError);
+    assert.strictEqual(read.scope, "registry:read");
+  });
+});
+
+test("every lifecycle call maps every gateway failure to its typed error", async () => {
+  await withPush(async ({ fake, market }) => {
+    const calls = [
+      ["GET", () => market.get("core")],
+      ["PATCH", () => market.edit("core", { description: "x" })],
+      ["POST", () => market.archive("core")],
+      ["POST", () => market.unarchive("core")],
+      ["POST", () => market.rename("core", "core2")],
+      ["DELETE", () => market.delete("core")],
+      ["GET", () => market.tombstones()],
+      ["DELETE", () => market.purge("_deleted-1-core")],
+    ];
+    const failures = [
+      [{ status: 400, body: { error: "invalid-request" } }, Err.GatewayInvalidRequestError, "invalid-request"],
+      [{ status: 401, body: { error: "token-invalid" } }, Err.GatewayAuthError, "token-invalid"],
+      [
+        { status: 403, body: { error: "scope-missing", scope: "registry:push" } },
+        Err.GatewayScopeError,
+        "scope-missing",
+      ],
+      [{ status: 403, body: { error: "not-permitted" } }, Err.GatewayNotPermittedError, "not-permitted"],
+      [{ status: 404, body: { error: "not-found" } }, Err.GatewayNotFoundError, "not-found"],
+      [{ status: 409, body: { error: "repo-archived" } }, Err.GatewayRepoArchivedError, "repo-archived"],
+      [{ status: 409, body: { error: "not-archived" } }, Err.GatewayNotArchivedError, "not-archived"],
+      [{ status: 409, body: { error: "repo-exists" } }, Err.GatewayRepoExistsError, "repo-exists"],
+      [
+        { status: 409, body: { error: "rewrite-in-progress" } },
+        Err.GatewayRewriteInProgressError,
+        "rewrite-in-progress",
+      ],
+      [{ status: 413, body: { error: "too-large" } }, Err.GatewayTooLargeError, "too-large"],
+      [{ status: 502, body: { error: "forge-unavailable" } }, Err.GatewayForgeUnavailableError, "forge-unavailable"],
+      [{ status: 503, body: { error: "registry-unavailable" } }, Err.GatewayUnavailableError, "registry-unavailable"],
+    ];
+    for (const [method, call] of calls) {
+      for (const [failure, type, code] of failures) {
+        fake.failNext({ method, ...failure });
+        const error = await rejectsWith(call(), type);
+        assert.strictEqual(error.code, code);
+        assert.strictEqual(error.status, failure.status);
+      }
+    }
+  });
+});
+
+test("a repo-archived push through the git layer is the same typed error", async () => {
+  const { gatewayErrorFor } = require("../dist/gateway/GatewayClient.js");
+  const error = gatewayErrorFor(409, '{"error":"repo-archived","message":"archived"}', "POST x");
+  assert.ok(error instanceof Err.GatewayRepoArchivedError);
+  thrownMessages.push(error.message);
+});
+
+test("lifecycle answers that are not the contract's are GatewayUnexpectedResponseError", async () => {
+  for (const body of ["null", "[]", '{"name":"core"}', '{"name":7}']) {
+    await withPush(async ({ fake, market }) => {
+      fake.route({
+        method: "POST",
+        prefix: "/api/v1/registry/repos/core/archive",
+        handler: (req, res) => {
+          res.setHeader("content-type", "application/json");
+          res.end(body);
+        },
+      });
+      await rejectsWith(market.archive("core"), Err.GatewayUnexpectedResponseError);
+    });
+  }
+});
+
+test("the fake refuses what the gateway refuses on the lifecycle routes", async () => {
+  await withPush(async ({ fake, client }) => {
+    const call = (method, p, body) =>
+      client.requestDetailed(method, p, body === undefined ? {} : { body }).then(
+        (a) => a.status,
+        (e) => e.status
+      );
+    assert.strictEqual(await call("PATCH", `${REPOS}/core`, {}), 400);
+    assert.strictEqual(await call("PATCH", `${REPOS}/core`, { archived: true }), 400);
+    assert.strictEqual(await call("POST", `${REPOS}/core/rename`, { name: "core" }), 400);
+    assert.strictEqual(await call("POST", `${REPOS}/core/rename`, { name: "X" }), 400);
+    assert.strictEqual(await call("GET", `${REPOS}/Core`), 404);
+    assert.strictEqual(await call("GET", `${REPOS}/nope`), 404);
+    assert.strictEqual(await call("DELETE", `${TOMBSTONES}/nope`), 404);
+    assert.strictEqual(await call("GET", `${REPOS}/core/archive`), 404);
   });
 });
 
