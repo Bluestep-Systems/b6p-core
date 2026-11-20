@@ -238,6 +238,8 @@ Failures are typed, all extending `Err.GatewayError` (`status`, `code`):
 | `GatewayAliasTakenError`                                              | `409 alias-taken`                                                                                                                                                                                                                                               |
 | `GatewayTooLargeError`                                                | `413 too-large`                                                                                                                                                                                                                                                 |
 | `GatewayRepoExistsError`                                              | `409 repo-exists`: a marketplace repo of that name has history, is archived, or differs in case (a `GatewayConflictError`)                                                                                                                                       |
+| `GatewayRepoArchivedError`                                            | `409 repo-archived`: the marketplace repo is archived, so it cannot be pushed to, edited or renamed; unarchive it first (a `GatewayConflictError`) |
+| `GatewayNotArchivedError`                                             | `409 not-archived`: a purge of a tombstone that is not archived (a `GatewayConflictError`) |
 | `GatewayRewriteInProgressError`                                       | `409 rewrite-in-progress`: another change holds the repo; retry shortly (a `GatewayConflictError`)                                                                                                                                                              |
 | `GatewayForgeUnavailableError`                                        | `502 forge-unavailable` (a `GatewayUnavailableError`); a repo create may have left an empty repo, and calling it again adopts it                                                                                                                                |
 | `GatewayUnavailableError`                                             | `502`/`503`/`504`, a network failure or a timeout                                                                                                                                                                                                               |
@@ -367,6 +369,15 @@ const repo = await core.gateway.marketplace.get("core"); // GatewayNotFoundError
 await core.gateway.marketplace.pull("core", { cwd }); // <cwd>/core at the default branch
 await core.gateway.marketplace.pull("core", { cwd, dir, ref: "v1.1.0" }); // a tag (detached head) or branch
 const { repo, created } = await core.gateway.marketplace.create({ name: "kb", description: "Knowledge base", topics: ["kb"] });
+
+// The rest of a repo's lifecycle (registry:push, a fleet super):
+await core.gateway.marketplace.edit("kb", { website: "https://bluestep.net/kb" }); // only the members given change
+await core.gateway.marketplace.archive("kb"); // fetch still works; push, edit and rename are 409 repo-archived
+await core.gateway.marketplace.unarchive("kb");
+const renamed = await core.gateway.marketplace.rename("kb", "kb-core"); // then point the clone's remote at renamed.gitUrl
+const tombstone = await core.gateway.marketplace.delete("kb-core"); // "_deleted-42-kb-core"; nothing is destroyed
+const deleted = await core.gateway.marketplace.tombstones(); // [{ tombstone, deletedName, id, archived }]
+await core.gateway.marketplace.purge(tombstone); // for good; also needs the history-manager grant
 ```
 
 `create` (`POST /api/v1/registry/repos`, scope `registry:push`, a fleet super) makes a private, empty repo with default
@@ -376,6 +387,18 @@ is `true` for a new repo (`201`) and `false` when an existing empty repo of that
 empty, so it is not in `list()` until its first push: `create` returns it from the answer, and the first push is
 `git push <repo.gitUrl> main` alone; its tags go in a second push (the gateway refuses `main` together with tags). `409 repo-exists`, `409 rewrite-in-progress` and
 `502 forge-unavailable` are `GatewayRepoExistsError`, `GatewayRewriteInProgressError` and `GatewayForgeUnavailableError`.
+
+A repo carries `website`, `topics` and `archived` besides its name, description, default branch, tags and `gitUrl`. `get`
+(`GET /api/v1/registry/repos/{name}`, scope `registry:read`) finds an empty repo as well, which the listing does not. `edit`
+(`PATCH`) changes only the members given, and refuses on the client an edit that names none or names anything but `description`,
+`website` and `topics`. `archive` and `unarchive` are idempotent; an archived repo can be fetched, deleted and unarchived, and
+`edit` and `rename` on it are `GatewayRepoArchivedError`. `rename` checks the new name as `create` does and keeps the repo's
+metadata, tags and protection; the gateway answers a git client on the old URL with a `301`, and a consumer should set its
+remote to the answer's `gitUrl`. `delete` renames the repo to its tombstone (`_deleted-<forge repo id>-<name>`) and archives it,
+destroying nothing, and returns that name; the name is free for `create` again. `tombstones` lists them, and `purge` destroys one
+for good (`GatewayNotArchivedError` if it is not archived; `GatewayNotPermittedError` without the history-manager grant, and its
+message says a purge needs it). npm packages are untouched by every one of these routes. Retry a `GatewayRewriteInProgressError`
+shortly.
 
 `cwd` is the consumer's own working directory (core never reads `process.cwd()`); `dir` is relative to it.
 `list` leaves out a malformed entry rather than failing for every repo (`get` of that name is

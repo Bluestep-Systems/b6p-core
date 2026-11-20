@@ -7,6 +7,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The marketplace repo lifecycle on `core.gateway.marketplace`** (ClickUp CU-1k5g91bqyr1, umbrella
+  CU-1k5g91bqxwf; needs the gateway routes of web-global #126, live after its next release). `edit(name, metadata)`
+  (`PATCH`, only the members given change; an edit naming none, or any member but `description`, `website` and
+  `topics`, fails on the client with `GatewayInvalidArgumentError`), `archive(name)`, `unarchive(name)` (both
+  idempotent), `rename(name, newName)` (the new name is checked as `create` checks a name, reserved names included),
+  `delete(name)` (tombstones the repo and returns the tombstone's name, `_deleted-<id>-<name>`), `tombstones()`
+  (`GatewayMarketplaceTombstone[]`) and `purge(tombstone)` (destroys a tombstone for good; needs the
+  history-manager grant, and its argument is checked against the tombstone rule, not the repo name rule). Every
+  write needs `registry:push` and a fleet super. New typed errors, both `GatewayConflictError`s:
+  `Err.GatewayRepoArchivedError` (`409 repo-archived`) and `Err.GatewayNotArchivedError` (`409 not-archived`).
+  `FakeGateway` serves every route (`tombstones`, `historyManager`).
+
+### Changed
+
+- **`GatewayMarketplaceRepo` gains `website`, `topics` and `archived`**, on `list`, `get`, `create` and every write.
+  A gateway that sends none of them gets `""`, `[]` and `false`; one that sends a member of the wrong shape makes
+  the entry malformed. Code that builds a `GatewayMarketplaceRepo` itself must now give the three members.
+- **`get(name)` now calls `GET /api/v1/registry/repos/{name}`** instead of filtering the listing: its signature is
+  unchanged, and it finds an empty repo (one just created) the listing does not show. A name no marketplace repo
+  can have (`KB`, `a/b`, a name the forge reserves) is `GatewayNotFoundError` without a request. `pull` still looks
+  the name up in the listing, so an empty repo is still not pulled.
+
 ## [1.4.0] - 2026-11-20
 
 ### Added

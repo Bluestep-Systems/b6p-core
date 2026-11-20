@@ -8,6 +8,7 @@ import type {
   GatewayMarketplaceCreateResult,
   GatewayMarketplaceRepo,
   GatewayMarketplaceRepoMetadata,
+  GatewayMarketplaceTombstone,
   JsonValue,
 } from "../types";
 import type { GatewayClient } from "./GatewayClient";
@@ -154,7 +155,19 @@ function parseRepoEntry(value: JsonValue | undefined, subject: string, status: n
   if (typeof gitUrl !== "string" || gitUrl === "") {
     throw bad("no gitUrl");
   }
-  return { name, description, defaultBranch, tags, gitUrl };
+  // The repo lifecycle's members. A gateway from before it sends none: they default. One that is sent in
+  // the wrong shape is a malformed entry.
+  const { website = "", topics = [], archived = false } = value;
+  if (typeof website !== "string" || INVISIBLE.test(website)) {
+    throw bad("no usable website");
+  }
+  if (!Array.isArray(topics) || !topics.every((t): t is string => typeof t === "string" && !INVISIBLE.test(t))) {
+    throw bad("topics that are not a list of plain strings");
+  }
+  if (typeof archived !== "boolean") {
+    throw bad("an archived flag that is not true or false");
+  }
+  return { name, description, defaultBranch, tags, gitUrl, website, topics, archived };
 }
 
 /**
@@ -176,11 +189,42 @@ function forgeReserves(name: string): boolean {
   return RESERVED_NAMES.has(lower) || RESERVED_SUFFIXES.some((suffix) => lower.endsWith(suffix));
 }
 
+/**
+ * Whether `name` is a marketplace repo name the gateway accepts in a path or body: the name rule, no `..`, and
+ * none the forge reserves.
+ * @lastreviewed null
+ */
+function isRepoName(name: unknown): name is string {
+  return typeof name === "string" && REPO_NAME.test(name) && !name.includes("..") && !forgeReserves(name);
+}
+
+const NAME_RULE =
+  'must be lowercase letters, digits, ".", "_" or "-", start and end with a letter or digit, be at most 100 characters, not contain "..", and not be one the forge reserves (`.`, `..`, `-`, or ending `.git`, `.wiki`, `.rss` or `.atom`)';
+
+/**
+ * A tombstone's name as the gateway parses it: `_deleted-<forge repo id>-<name>`, at most 100 characters, no `..`.
+ * It begins with `_`, so it is never a marketplace name and {@link isRepoName} does not apply to it.
+ * @lastreviewed null
+ */
+const TOMBSTONE = /^_deleted-([1-9][0-9]{0,18})-([a-z0-9._-]+)$/;
+
+function isTombstoneName(name: unknown): name is string {
+  return typeof name === "string" && name.length <= 100 && !name.includes("..") && TOMBSTONE.test(name);
+}
+
 const TOPIC = /^[a-z0-9][-.a-z0-9]*$/;
 const MAX_DESCRIPTION = 2048;
 const MAX_WEBSITE = 1024;
 const MAX_TOPICS = 25;
 const MAX_TOPIC_LENGTH = 35;
+
+/**
+ * A caller's name for a message: only when it is plain printable text, else a placeholder.
+ * @lastreviewed null
+ */
+function shown(name: unknown): string {
+  return typeof name === "string" && name.length <= 100 && /^[\x21-\x7e]+$/.test(name) ? name : "that";
+}
 
 function invalid(field: string, why: string): Err.GatewayInvalidArgumentError {
   return new Err.GatewayInvalidArgumentError(`The marketplace repo ${field} ${why}; nothing was sent.`);
@@ -255,6 +299,31 @@ function metadataBody(metadata: GatewayMarketplaceRepoMetadata): Record<string, 
   return body;
 }
 
+const METADATA_MEMBERS: ReadonlySet<string> = new Set(["description", "website", "topics"]);
+
+/**
+ * One tombstone entry of `GET /api/v1/registry/tombstones`; `undefined` when it is not well formed.
+ * @lastreviewed null
+ */
+function parseTombstone(value: JsonValue | undefined): GatewayMarketplaceTombstone | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const { tombstone, deletedName, id, archived } = value;
+  if (
+    !isTombstoneName(tombstone) ||
+    typeof deletedName !== "string" ||
+    INVISIBLE.test(deletedName) ||
+    typeof id !== "number" ||
+    !Number.isInteger(id) ||
+    id <= 0 ||
+    typeof archived !== "boolean"
+  ) {
+    return undefined;
+  }
+  return { tombstone, deletedName, id, archived };
+}
+
 /**
  * `refs/heads/x` and `refs/tags/x` are accepted and mean `x`, so the same options work on a second
  * pull (the clone's own branch is the short name).
@@ -283,7 +352,7 @@ function sameUrl(a: string, b: string): boolean {
 
 /**
  * Marketplace repositories on web-global's gateway: browse them, pull a plain working clone, and
- * create a new (empty) repo. Core has no push of its own (a repo is pushed with plain `git`), and a
+ * manage their lifecycle (create, edit, archive, rename, delete, purge). Core has no push of its own (a repo is pushed with plain `git`), and a
  * pull never reads or changes any script's sources or pins.
  * @lastreviewed null
  */
@@ -305,22 +374,263 @@ export class GatewayMarketplace {
   }
 
   /**
-   * One marketplace repo by name.
-   * @throws {Err.GatewayNotFoundError} no repo has that name (or it is not visible to this user)
-   * @throws {Err.GatewayUnexpectedResponseError} the entry for that name is malformed
+   * One marketplace repo by name (`GET /api/v1/registry/repos/{name}`, scope `registry:read`). Unlike
+   * {@link list}, it finds an empty repo too (one just created and not yet pushed to), and it carries the
+   * repo's `website`, `topics` and `archived`. A name the gateway could never hold (not a marketplace repo name,
+   * or one the forge reserves) is not found, with nothing sent.
+   * @throws {Err.GatewayNotFoundError} no repo has exactly that name (a renamed repo's old name is not found
+   *   either)
+   * @throws {Err.GatewayUnexpectedResponseError} the answer is malformed, or is for another repo
+   * @throws {Err.GatewayError} a subclass for any other gateway failure
    * @lastreviewed null
    */
   async get(name: string): Promise<GatewayMarketplaceRepo> {
-    const { repos, malformed } = await this.entries();
-    const found = repos.find((repo) => repo.name === name);
-    if (found) {
-      return found;
+    if (!isRepoName(name)) {
+      throw new Err.GatewayNotFoundError(`No marketplace repo is named ${shown(name)}.`, "not-found");
     }
-    const broken = malformed.get(name);
-    if (broken) {
-      throw broken;
+    const path = this.repoPath(name);
+    const answer = await this.client.requestDetailed(Http.Methods.GET, path);
+    return this.repoAnswer(Http.Methods.GET, path, answer, name);
+  }
+
+  /**
+   * Change a marketplace repo's metadata (`PATCH /api/v1/registry/repos/{name}`, scope `registry:push`, a fleet
+   * super). Only the members given change; one left out (or `undefined`) stays as it is. The members are checked as
+   * `create` checks them, and a change that names none (or any member but `description`, `website` and `topics`)
+   * fails here with nothing sent, as the gateway refuses it as `400`.
+   * @returns the repo as the forge now holds it
+   * @throws {Err.GatewayInvalidArgumentError} the name or a member is one the gateway would refuse; nothing sent
+   * @throws {Err.GatewayNotFoundError} `404`: no repo has exactly that name
+   * @throws {Err.GatewayRepoArchivedError} `409 repo-archived`: unarchive it first
+   * @throws {Err.GatewayRewriteInProgressError} `409 rewrite-in-progress`: retry shortly
+   * @throws {Err.GatewayInvalidRequestError} `400`
+   * @throws {Err.GatewayTooLargeError} `413`
+   * @throws {Err.GatewayScopeError} the token lacks `registry:push`
+   * @throws {Err.GatewayNotPermittedError} `403 not-permitted`: the owner is not a fleet super
+   * @throws {Err.GatewayForgeUnavailableError} `502 forge-unavailable`
+   * @throws {Err.GatewayUnexpectedResponseError} the answer is not the repo asked for
+   * @throws {Err.GatewayError} a subclass for any other gateway failure
+   * @lastreviewed null
+   */
+  async edit(name: string, metadata: GatewayMarketplaceRepoMetadata): Promise<GatewayMarketplaceRepo> {
+    this.requireName("name", name);
+    if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
+      throw invalid("change", "must be an object of the members to change");
     }
-    throw new Err.GatewayNotFoundError(`No marketplace repo is named ${name}.`, "not-found");
+    for (const [member, value] of Object.entries(metadata)) {
+      if (value !== undefined && !METADATA_MEMBERS.has(member)) {
+        throw invalid("change", `may not name "${member}": only description, website and topics can be edited`);
+      }
+    }
+    const body = metadataBody(metadata);
+    if (Object.keys(body).length === 0) {
+      throw invalid("change", "names no member to change (give description, website or topics)");
+    }
+    const path = this.repoPath(name);
+    const answer = await this.client.requestDetailed(Http.Methods.PATCH, path, { body });
+    return this.repoAnswer(Http.Methods.PATCH, path, answer, name);
+  }
+
+  /**
+   * Archive a marketplace repo (`POST /api/v1/registry/repos/{name}/archive`, scope `registry:push`, a fleet
+   * super): it can still be fetched, deleted and unarchived, but not pushed to, edited or renamed. Archiving an
+   * archived repo changes nothing and is not an error. npm packages are unaffected.
+   * @returns the repo, `archived` true
+   * @throws {Err.GatewayInvalidArgumentError} the name is not a marketplace repo name; nothing sent
+   * @throws {Err.GatewayNotFoundError} `404`
+   * @throws {Err.GatewayRewriteInProgressError} `409 rewrite-in-progress`: retry shortly
+   * @throws {Err.GatewayScopeError} the token lacks `registry:push`
+   * @throws {Err.GatewayNotPermittedError} `403 not-permitted`: the owner is not a fleet super
+   * @throws {Err.GatewayForgeUnavailableError} `502 forge-unavailable`
+   * @throws {Err.GatewayError} a subclass for any other gateway failure
+   * @lastreviewed null
+   */
+  async archive(name: string): Promise<GatewayMarketplaceRepo> {
+    return this.setArchived(name, "archive");
+  }
+
+  /**
+   * Unarchive a marketplace repo (`POST /api/v1/registry/repos/{name}/unarchive`), so it can be pushed to,
+   * edited and renamed again. Unarchiving a repo that is not archived changes nothing and is not an error.
+   * Same errors as {@link archive}.
+   * @returns the repo, `archived` false
+   * @lastreviewed null
+   */
+  async unarchive(name: string): Promise<GatewayMarketplaceRepo> {
+    return this.setArchived(name, "unarchive");
+  }
+
+  /**
+   * Rename a marketplace repo (`POST /api/v1/registry/repos/{name}/rename`, scope `registry:push`, a fleet
+   * super). Its metadata, tags and branch protection move with it, the gateway answers a git client on the old
+   * URL with a `301` to the new one, and npm packages are unaffected. The new name is checked as `create` checks a
+   * name (reserved names included) and must differ from the old one; both fail here with nothing sent.
+   *
+   * A consumer with a clone of the repo should point its remote at the returned repo's `gitUrl`.
+   * @returns the repo at its new name
+   * @throws {Err.GatewayInvalidArgumentError} either name is one the gateway would refuse, or they are the same
+   * @throws {Err.GatewayNotFoundError} `404`: no repo has exactly the old name
+   * @throws {Err.GatewayRepoArchivedError} `409 repo-archived`: unarchive it first
+   * @throws {Err.GatewayRepoExistsError} `409 repo-exists`: a repo already holds the new name (any case)
+   * @throws {Err.GatewayRewriteInProgressError} `409 rewrite-in-progress`: retry shortly
+   * @throws {Err.GatewayInvalidRequestError} `400`: the forge does not accept the new name
+   * @throws {Err.GatewayScopeError} the token lacks `registry:push`
+   * @throws {Err.GatewayNotPermittedError} `403 not-permitted`: the owner is not a fleet super
+   * @throws {Err.GatewayForgeUnavailableError} `502 forge-unavailable`
+   * @throws {Err.GatewayUnexpectedResponseError} the answer is not the repo at the new name
+   * @throws {Err.GatewayError} a subclass for any other gateway failure
+   * @lastreviewed null
+   */
+  async rename(name: string, newName: string): Promise<GatewayMarketplaceRepo> {
+    this.requireName("name", name);
+    this.requireName("new name", newName);
+    if (name === newName) {
+      throw invalid("new name", "is the repo's own name; nothing was sent");
+    }
+    const path = `${this.repoPath(name)}/rename`;
+    const answer = await this.client.requestDetailed(Http.Methods.POST, path, { body: { name: newName } });
+    return this.repoAnswer(Http.Methods.POST, path, answer, newName);
+  }
+
+  /**
+   * Delete a marketplace repo (`DELETE /api/v1/registry/repos/{name}`, scope `registry:push`, a fleet super):
+   * the gateway renames it to its tombstone and archives it. Nothing is destroyed (history, tags and npm packages
+   * stay), the name is free for `create` again, and a git client on the old URL gets `404`. A purge of the
+   * tombstone is what destroys it.
+   * @returns the tombstone's name (`_deleted-<id>-<name>`), which {@link purge} takes
+   * @throws {Err.GatewayInvalidArgumentError} the name is not a marketplace repo name; nothing sent
+   * @throws {Err.GatewayNotFoundError} `404`
+   * @throws {Err.GatewayRepoExistsError} `409 repo-exists`: a repo already holds the tombstone's name
+   * @throws {Err.GatewayRewriteInProgressError} `409 rewrite-in-progress`: retry shortly
+   * @throws {Err.GatewayScopeError} the token lacks `registry:push`
+   * @throws {Err.GatewayNotPermittedError} `403 not-permitted`: the owner is not a fleet super
+   * @throws {Err.GatewayForgeUnavailableError} `502 forge-unavailable`
+   * @throws {Err.GatewayUnexpectedResponseError} the answer names no tombstone of this repo
+   * @throws {Err.GatewayError} a subclass for any other gateway failure
+   * @lastreviewed null
+   */
+  async delete(name: string): Promise<string> {
+    this.requireName("name", name);
+    const path = this.repoPath(name);
+    const answer = await this.client.requestDetailed(Http.Methods.DELETE, path);
+    const wrong = (what: string): Err.GatewayUnexpectedResponseError =>
+      new Err.GatewayUnexpectedResponseError(`DELETE ${path}: the answer ${what}.`, answer.status, null);
+    if (!isRecord(answer.body)) {
+      throw wrong("has the wrong shape");
+    }
+    if (answer.body.name !== name) {
+      throw wrong("is for another repo than the one asked for");
+    }
+    const { tombstone } = answer.body;
+    if (!isTombstoneName(tombstone)) {
+      throw wrong("names no tombstone");
+    }
+    return tombstone;
+  }
+
+  /**
+   * The deleted marketplace repos still awaiting a purge (`GET /api/v1/registry/tombstones`, scope
+   * `registry:push`, a fleet super), sorted by tombstone name as the gateway sends them. An entry of the wrong
+   * shape is left out. There is no restore.
+   * @throws {Err.GatewayUnexpectedResponseError} the body is not a tombstone list at all
+   * @throws {Err.GatewayScopeError} the token lacks `registry:push`
+   * @throws {Err.GatewayNotPermittedError} `403 not-permitted`: the owner is not a fleet super
+   * @throws {Err.GatewayError} a subclass for any other gateway failure
+   * @lastreviewed null
+   */
+  async tombstones(): Promise<GatewayMarketplaceTombstone[]> {
+    const body = await this.client.getJson(Gateway.Paths.REGISTRY_TOMBSTONES);
+    if (!isRecord(body) || !Array.isArray(body.tombstones)) {
+      throw new Err.GatewayUnexpectedResponseError("The tombstone list is not the expected shape.", 200, null);
+    }
+    const found: GatewayMarketplaceTombstone[] = [];
+    for (const entry of body.tombstones) {
+      const parsed = parseTombstone(entry);
+      if (parsed !== undefined) {
+        found.push(parsed);
+      }
+    }
+    return found;
+  }
+
+  /**
+   * Purge a tombstone for good (`DELETE /api/v1/registry/tombstones/{tombstone}`): the gateway deletes the
+   * archived repo from the forge, history and tags with it. There is no undo and no waiting period, and the purge
+   * is audited. npm packages are unaffected. The caller must be a fleet super holding `registry:push` AND the
+   * history-manager grant.
+   *
+   * `tombstone` is the name {@link delete} returned or {@link tombstones} lists (`_deleted-<id>-<name>`), not a
+   * marketplace repo name: it is checked against the tombstone rule, not the repo name rule.
+   * @throws {Err.GatewayInvalidArgumentError} not a tombstone name; nothing sent
+   * @throws {Err.GatewayNotFoundError} `404`: no such tombstone
+   * @throws {Err.GatewayNotArchivedError} `409 not-archived`: the tombstone is not archived
+   * @throws {Err.GatewayRewriteInProgressError} `409 rewrite-in-progress`: retry shortly
+   * @throws {Err.GatewayScopeError} the token lacks `registry:push`
+   * @throws {Err.GatewayNotPermittedError} `403 not-permitted`: the owner is not a fleet super or lacks the
+   *   history-manager grant (the message says both are needed)
+   * @throws {Err.GatewayForgeUnavailableError} `502 forge-unavailable`
+   * @throws {Err.GatewayError} a subclass for any other gateway failure
+   * @lastreviewed null
+   */
+  async purge(tombstone: string): Promise<void> {
+    if (!isTombstoneName(tombstone)) {
+      throw invalid("tombstone", "must be a tombstone name, `_deleted-<id>-<name>` (as `delete` returns it)");
+    }
+    try {
+      await this.client.requestDetailed(
+        Http.Methods.DELETE,
+        `${Gateway.Paths.REGISTRY_TOMBSTONES}/${encodeURIComponent(tombstone)}`
+      );
+    } catch (error) {
+      if (error instanceof Err.GatewayNotPermittedError && error.code === "not-permitted") {
+        throw new Err.GatewayNotPermittedError(
+          `${error.message} A purge needs a fleet super holding registry:push and the history-manager grant.`,
+          error.code,
+          error.reason,
+          error.presentingExpiresAt,
+          error.scope
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async setArchived(name: string, action: "archive" | "unarchive"): Promise<GatewayMarketplaceRepo> {
+    this.requireName("name", name);
+    const path = `${this.repoPath(name)}/${action}`;
+    const answer = await this.client.requestDetailed(Http.Methods.POST, path);
+    return this.repoAnswer(Http.Methods.POST, path, answer, name);
+  }
+
+  private requireName(field: string, name: unknown): asserts name is string {
+    if (!isRepoName(name)) {
+      throw invalid(field, NAME_RULE);
+    }
+  }
+
+  private repoPath(name: string): string {
+    return `${Gateway.Paths.REGISTRY_REPOS}/${encodeURIComponent(name)}`;
+  }
+
+  /**
+   * The repo an answer carries, which must be the one the request was about.
+   * @lastreviewed null
+   */
+  private repoAnswer(
+    method: string,
+    path: string,
+    answer: { status: number; body: JsonValue | undefined },
+    expected: string
+  ): GatewayMarketplaceRepo {
+    const repo = parseRepoEntry(answer.body, `The answer to ${method} ${path}`, answer.status);
+    if (repo.name !== expected) {
+      throw new Err.GatewayUnexpectedResponseError(
+        `The answer to ${method} ${path} is for a repo with another name than the one asked for.`,
+        answer.status,
+        null
+      );
+    }
+    return repo;
   }
 
   /**
@@ -374,6 +684,23 @@ export class GatewayMarketplace {
     return { repo, created: answer.status === 201 };
   }
 
+  /**
+   * A repo by name from the listing: what {@link pull} clones. An empty repo is not listed, and so is not pulled.
+   * @lastreviewed null
+   */
+  private async listed(name: string): Promise<GatewayMarketplaceRepo> {
+    const { repos, malformed } = await this.entries();
+    const found = repos.find((repo) => repo.name === name);
+    if (found) {
+      return found;
+    }
+    const broken = malformed.get(name);
+    if (broken) {
+      throw broken;
+    }
+    throw new Err.GatewayNotFoundError(`No marketplace repo is named ${shown(name)}.`, "not-found");
+  }
+
   private async entries(): Promise<{
     repos: GatewayMarketplaceRepo[];
     malformed: Map<string, Err.GatewayUnexpectedResponseError>;
@@ -408,7 +735,7 @@ export class GatewayMarketplace {
    * tracks it; a clone on a tag is `up-to-date` only while the gateway's tag still points at the
    * checked-out commit. Nothing is merged, rebased or overwritten, and nothing is pushed.
    *
-   * @param name the repo's name from {@link list}
+   * @param name the repo's name from {@link list}: an empty repo is not listed, so it is not pulled
    * @throws {Err.GatewayNotFoundError} no such repo
    * @throws {Err.GatewayConfigError} the folder is relative and `cwd` is missing or not absolute
    * @throws {Err.GatewayUnexpectedResponseError} the name cannot be a folder name (with no `dir`)
@@ -420,7 +747,7 @@ export class GatewayMarketplace {
    * @lastreviewed null
    */
   async pull(name: string, options: GatewayMarketplacePullOptions): Promise<GatewayMarketplacePullResult> {
-    const repo = await this.get(name);
+    const repo = await this.listed(name);
     if (options.dir === undefined && !isPlainSegment(repo.name)) {
       throw new Err.GatewayUnexpectedResponseError(
         `The marketplace repo name "${repo.name}" cannot be used as a folder name.`,

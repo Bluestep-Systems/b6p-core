@@ -1129,6 +1129,29 @@ export namespace Err {
   }
 
   /**
+   * `409 repo-archived`: a marketplace repo is archived, so it cannot be pushed to, edited or renamed. It can
+   * still be fetched, deleted and unarchived: unarchive it first. Nothing was changed.
+   * @lastreviewed null
+   */
+  export class GatewayRepoArchivedError extends GatewayConflictError {
+    constructor(message: string) {
+      super(message, "repo-archived");
+      this.name = "GatewayRepoArchivedError";
+    }
+  }
+
+  /**
+   * `409 not-archived`: a purge named a tombstone that is not archived, so it is not purged. Nothing was changed.
+   * @lastreviewed null
+   */
+  export class GatewayNotArchivedError extends GatewayConflictError {
+    constructor(message: string) {
+      super(message, "not-archived");
+      this.name = "GatewayNotArchivedError";
+    }
+  }
+
+  /**
    * `409 rewrite-in-progress`: another change holds the repo (its lock is busy, or was lost mid-way). Nothing
    * is known to have changed; trying again shortly is safe.
    * @lastreviewed null

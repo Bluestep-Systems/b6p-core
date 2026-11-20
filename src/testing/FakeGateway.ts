@@ -8,6 +8,7 @@ import type {
   GatewayKnowledgeBaseAccess,
   GatewayKnowledgeBaseList,
   GatewayMarketplaceRepo,
+  GatewayMarketplaceTombstone,
   GatewayMarketplaceRepoList,
   GatewayMintedTokenBody,
   GatewayTokenList,
@@ -194,7 +195,11 @@ export interface FakeGatewayRoute {
  * with an `ETag` and a mandatory `If-Match`, `428`/`412`, a strict
  * `access` of `{"kind":"public"|"private"}`, `409 name-taken`; see {@link accessUnsupported}),
  * `GET /api/v1/registry/repos` (scope `registry:read`) and `POST /api/v1/registry/repos` (scope `registry:push`:
- * `201`, `200` for an adopted empty repo, `409 repo-exists`, `400` for a bad name; see {@link emptyRepos}), the self-service token routes
+ * `201`, `200` for an adopted empty repo, `409 repo-exists`, `400` for a bad name; see {@link emptyRepos}), the
+ * repo lifecycle (`GET`, `PATCH` and `DELETE /api/v1/registry/repos/{name}`, `POST .../archive`, `.../unarchive`
+ * and `.../rename`, `GET /api/v1/registry/tombstones`, `DELETE /api/v1/registry/tombstones/{tombstone}`: `404`,
+ * `409 repo-archived`, `409 repo-exists`, `409 not-archived`, `403 not-permitted` for a purge without
+ * {@link historyManager}; see {@link tombstones}), the self-service token routes
  * (`GET`/`POST /api/v1/tokens`, `DELETE /api/v1/tokens/{id}`, `POST /api/v1/tokens/{id}/rotate`,
  * scope `tokens:self`, with `scope-escalation` and `alias-taken`), and `404 not-found` for anything else.
  * A rotation honours `Idempotency-Key`: a retry with the same presenting token and key within 10
@@ -262,6 +267,18 @@ export class FakeGateway {
    */
   readonly emptyRepos = new Map<string, GatewayMarketplaceRepo>();
   /**
+   * The tombstones a `DELETE /api/v1/registry/repos/{name}` left, by tombstone name (`_deleted-<id>-<name>`). A spec
+   * can set one's `archived` to `false` to see `409 not-archived` on a purge.
+   * @lastreviewed null
+   */
+  readonly tombstones = new Map<string, GatewayMarketplaceTombstone>();
+  /**
+   * Whether the caller of `DELETE /api/v1/registry/tombstones/{tombstone}` holds the history-manager grant. When
+   * `false` the purge answers `403 not-permitted`, worded as the gateway words it. Defaults to `true`.
+   * @lastreviewed null
+   */
+  historyManager = true;
+  /**
    * Milliseconds each built-in route waits before answering (to observe concurrency).
    * @lastreviewed null
    */
@@ -280,6 +297,8 @@ export class FakeGateway {
   readonly issuedSecrets: string[] = [];
 
   private inFlight = 0;
+  private repoSerial = 41;
+  private readonly repoIds = new Map<string, number>();
   private readonly kbVersions = new Map<string, number>();
   private kbSerial = 0;
   private readonly tokens = new Map<string, FakeGatewayToken>();
@@ -465,6 +484,14 @@ export class FakeGateway {
         }
         return;
       }
+      const lifecycle = this.lifecycleRoute(method, url.pathname);
+      if (lifecycle) {
+        const read = method === "GET" && lifecycle.name !== undefined && lifecycle.action === undefined;
+        if (this.authorize(req, res, read ? Gateway.Scopes.REGISTRY_READ : Gateway.Scopes.REGISTRY_PUSH)) {
+          this.handleLifecycle(method, lifecycle, body, res);
+        }
+        return;
+      }
       if (method === "GET" && url.pathname === Gateway.Paths.REGISTRY_REPOS) {
         if (!this.authorize(req, res, Gateway.Scopes.REGISTRY_READ)) {
           return;
@@ -524,17 +551,186 @@ export class FakeGateway {
       sendJson(res, 409, { error: "repo-exists", message: "A repo of that name already exists." });
       return;
     }
-    const description = (record as { description?: unknown }).description;
+    const { description, website, topics } = record as { description?: unknown; website?: unknown; topics?: unknown };
     const repo: GatewayMarketplaceRepo = {
       name,
       description: typeof description === "string" ? description : "",
       defaultBranch: "main",
       tags: [],
       gitUrl: this.gitUrl("marketplace", name),
+      website: typeof website === "string" ? website : "",
+      topics: Array.isArray(topics) ? topics.filter((t): t is string => typeof t === "string") : [],
+      archived: false,
     };
     const adopted = this.emptyRepos.has(name);
     this.emptyRepos.set(name, repo);
     sendJson(res, adopted ? 200 : 201, repo);
+  }
+
+  /**
+   * The repo lifecycle route a request is, or `undefined`. A repo name that could never be a marketplace repo name
+   * is still a lifecycle route (it answers `404` after the token check), as on the gateway.
+   * @lastreviewed null
+   */
+  private lifecycleRoute(method: string, pathname: string): LifecycleRoute | undefined {
+    const tombstones = Gateway.Paths.REGISTRY_TOMBSTONES;
+    if (pathname === tombstones && method === "GET") {
+      return { tombstones: true };
+    }
+    if (pathname.startsWith(`${tombstones}/`) && method === "DELETE") {
+      return { tombstone: safeDecode(pathname.slice(tombstones.length + 1)) };
+    }
+    const repos = `${Gateway.Paths.REGISTRY_REPOS}/`;
+    if (!pathname.startsWith(repos)) {
+      return undefined;
+    }
+    const [name, action, ...more] = pathname.slice(repos.length).split("/");
+    if (more.length > 0 || name === "") {
+      return undefined;
+    }
+    const decoded = safeDecode(name);
+    if (action === undefined) {
+      return method === "GET" || method === "PATCH" || method === "DELETE" ? { name: decoded } : undefined;
+    }
+    if (method === "POST" && (action === "archive" || action === "unarchive" || action === "rename")) {
+      return { name: decoded, action };
+    }
+    return undefined;
+  }
+
+  private find(name: string): GatewayMarketplaceRepo | undefined {
+    return this.repos.find((r) => r.name === name) ?? this.emptyRepos.get(name);
+  }
+
+  private idOf(name: string): number {
+    let id = this.repoIds.get(name);
+    if (id === undefined) {
+      id = ++this.repoSerial;
+      this.repoIds.set(name, id);
+    }
+    return id;
+  }
+
+  private handleLifecycle(method: string, route: LifecycleRoute, body: string, res: http.ServerResponse): void {
+    const fail = (status: number, error: string, message: string): void => sendJson(res, status, { error, message });
+    if (route.tombstones) {
+      sendJson(res, 200, {
+        tombstones: [...this.tombstones.values()].sort((a, b) => (a.tombstone < b.tombstone ? -1 : 1)),
+      });
+      return;
+    }
+    if (route.tombstone !== undefined) {
+      const found = this.tombstones.get(route.tombstone);
+      if (!found) {
+        fail(404, "not-found", "Not found.");
+      } else if (!this.historyManager) {
+        fail(
+          403,
+          "not-permitted",
+          "Purging a deleted marketplace repo needs a super user holding the history-manager grant"
+        );
+      } else if (!found.archived) {
+        fail(409, "not-archived", "This tombstone is not archived, so it is not purged; archive it first");
+      } else {
+        this.tombstones.delete(route.tombstone);
+        res.writeHead(204).end();
+      }
+      return;
+    }
+    const name = route.name ?? "";
+    const repo = reservedOrInvalid(name) ? undefined : this.find(name);
+    if (!repo) {
+      fail(404, "not-found", "Not found.");
+      return;
+    }
+    const archivedRefusal = (): void =>
+      fail(
+        409,
+        "repo-archived",
+        "This repository is archived: it can be fetched, but not pushed to, edited or renamed; unarchive it first"
+      );
+    if (method === "GET") {
+      sendJson(res, 200, repo);
+    } else if (method === "PATCH") {
+      const record = parseObject(body);
+      const members = record === null ? [] : Object.keys(record);
+      if (
+        record === null ||
+        members.length === 0 ||
+        members.some((m) => !["description", "website", "topics"].includes(m))
+      ) {
+        fail(
+          400,
+          "invalid-request",
+          record !== null && members.length === 0 ? "Nothing to change" : "The request is not a valid edit."
+        );
+      } else if (repo.archived) {
+        archivedRefusal();
+      } else {
+        const { description, website, topics } = record as {
+          description?: unknown;
+          website?: unknown;
+          topics?: unknown;
+        };
+        if (typeof description === "string") {
+          repo.description = description;
+        }
+        if (typeof website === "string") {
+          repo.website = website;
+        }
+        if (Array.isArray(topics)) {
+          repo.topics = topics.filter((t): t is string => typeof t === "string");
+        }
+        sendJson(res, 200, repo);
+      }
+    } else if (method === "DELETE") {
+      const id = this.idOf(name);
+      let tombstone = `_deleted-${id}-${name}`.slice(0, 100);
+      while (/\.(git|wiki|rss|atom)$/.test(tombstone)) {
+        tombstone = tombstone.slice(0, -1);
+      }
+      this.repos = this.repos.filter((r) => r !== repo);
+      this.emptyRepos.delete(name);
+      this.tombstones.set(tombstone, {
+        tombstone,
+        deletedName: tombstone.slice(`_deleted-${id}-`.length),
+        id,
+        archived: true,
+      });
+      sendJson(res, 200, { name, tombstone });
+    } else if (route.action === "rename") {
+      const record = parseObject(body);
+      const newName = record === null ? undefined : record.name;
+      if (
+        record === null ||
+        Object.keys(record).length !== 1 ||
+        typeof newName !== "string" ||
+        reservedOrInvalid(newName) ||
+        newName === name
+      ) {
+        fail(400, "invalid-request", "The request is not a valid rename.");
+      } else if (repo.archived) {
+        archivedRefusal();
+      } else if (
+        [...this.repos, ...this.emptyRepos.values()].some((r) => r.name.toLowerCase() === newName.toLowerCase())
+      ) {
+        fail(409, "repo-exists", "A repo already holds that name.");
+      } else {
+        const wasEmpty = this.emptyRepos.get(name) === repo;
+        if (wasEmpty) {
+          this.emptyRepos.delete(name);
+          this.emptyRepos.set(newName, repo);
+        }
+        this.repoIds.set(newName, this.idOf(name));
+        this.repoIds.delete(name);
+        repo.name = newName;
+        repo.gitUrl = this.gitUrl("marketplace", newName);
+        sendJson(res, 200, repo);
+      }
+    } else {
+      repo.archived = route.action === "archive";
+      sendJson(res, 200, repo);
+    }
   }
 
   private adminIdOf(path: string): string | null {
@@ -1001,6 +1197,47 @@ function headerOf(req: http.IncomingMessage, name: string): string | undefined {
 
 function replayKey(presenter: string, key: string): string {
   return `${presenter}\n${key}`;
+}
+
+/**
+ * What a lifecycle request addresses: a repo (`name`, with an `action` for the `POST` routes), the tombstone list,
+ * or one tombstone.
+ * @lastreviewed null
+ */
+interface LifecycleRoute {
+  name?: string;
+  action?: "archive" | "unarchive" | "rename";
+  tombstones?: true;
+  tombstone?: string;
+}
+
+function safeDecode(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+function parseObject(body: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A name no marketplace repo can have: the name rule, no `..`, or one the forge reserves.
+ * @lastreviewed null
+ */
+function reservedOrInvalid(name: string): boolean {
+  return (
+    !/^[a-z0-9]([a-z0-9._-]{0,98}[a-z0-9])?$/.test(name) || name.includes("..") || /\.(git|wiki|rss|atom)$/i.test(name)
+  );
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
