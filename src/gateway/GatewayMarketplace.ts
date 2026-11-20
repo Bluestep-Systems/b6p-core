@@ -2,7 +2,14 @@ import * as nodeFs from "node:fs";
 import * as path from "node:path";
 import { Gateway } from "../constants/Gateway";
 import { Err } from "../Err";
-import type { GatewayMarketplaceRepo, JsonValue } from "../types";
+import { Http } from "../constants/Http";
+import type {
+  GatewayMarketplaceCreateRequest,
+  GatewayMarketplaceCreateResult,
+  GatewayMarketplaceRepo,
+  GatewayMarketplaceRepoMetadata,
+  JsonValue,
+} from "../types";
 import type { GatewayClient } from "./GatewayClient";
 import type { GatewayGit } from "./GatewayGit";
 
@@ -115,8 +122,17 @@ function isPlainSegment(segment: string): boolean {
  * @lastreviewed null
  */
 function parseRepo(value: JsonValue | undefined, index: number): GatewayMarketplaceRepo {
+  return parseRepoEntry(value, `The marketplace listing's entry ${index}`, 200);
+}
+
+/**
+ * {@link parseRepo} for any answer carrying one entry: `subject` opens each message ("The create answer"),
+ * `status` is the HTTP status it came with.
+ * @lastreviewed null
+ */
+function parseRepoEntry(value: JsonValue | undefined, subject: string, status: number): GatewayMarketplaceRepo {
   const bad = (what: string): Err.GatewayUnexpectedResponseError =>
-    new Err.GatewayUnexpectedResponseError(`The marketplace listing's entry ${index} has ${what}.`, 200, null);
+    new Err.GatewayUnexpectedResponseError(`${subject} has ${what}.`, status, null);
   if (!isRecord(value)) {
     throw bad("the wrong shape");
   }
@@ -124,7 +140,9 @@ function parseRepo(value: JsonValue | undefined, index: number): GatewayMarketpl
   if (typeof name !== "string" || INVISIBLE.test(name)) {
     throw bad("no usable name");
   }
-  if (typeof description !== "string" || INVISIBLE.test(description)) {
+  // A description may hold tab, CR and LF (the create contract allows them): a create that has made the
+  // repo must not then fail on the answer.
+  if (typeof description !== "string" || INVISIBLE.test(description.replace(/[\t\r\n]/g, ""))) {
     throw bad("no usable description");
   }
   if (typeof defaultBranch !== "string" || defaultBranch === "" || INVISIBLE.test(defaultBranch)) {
@@ -137,6 +155,90 @@ function parseRepo(value: JsonValue | undefined, index: number): GatewayMarketpl
     throw bad("no gitUrl");
   }
   return { name, description, defaultBranch, tags, gitUrl };
+}
+
+/**
+ * A marketplace repo name as the gateway accepts it (contract 6.x, `POST /api/v1/registry/repos`).
+ * @lastreviewed null
+ */
+const REPO_NAME = /^[a-z0-9]([a-z0-9._-]{0,98}[a-z0-9])?$/;
+const TOPIC = /^[a-z0-9][-.a-z0-9]*$/;
+const MAX_DESCRIPTION = 2048;
+const MAX_WEBSITE = 1024;
+const MAX_TOPICS = 25;
+const MAX_TOPIC_LENGTH = 35;
+
+function invalid(field: string, why: string): Err.GatewayInvalidArgumentError {
+  return new Err.GatewayInvalidArgumentError(`The marketplace repo ${field} ${why}; nothing was sent.`);
+}
+
+/**
+ * Check `metadata` as the gateway will and return the members given as a request body fragment. An absent
+ * (`undefined`) member is left out, never sent as `null`.
+ * @throws {Err.GatewayInvalidArgumentError} a member the gateway would refuse as `400 invalid-request`
+ * @lastreviewed null
+ */
+function metadataBody(metadata: GatewayMarketplaceRepoMetadata): Record<string, JsonValue> {
+  const body: Record<string, JsonValue> = {};
+  const { description, website, topics } = metadata as { [key: string]: unknown };
+  if (description !== undefined) {
+    if (typeof description !== "string") {
+      throw invalid("description", "must be a string (omit it to leave it out)");
+    }
+    if (description.length > MAX_DESCRIPTION) {
+      throw invalid("description", `is longer than ${MAX_DESCRIPTION} characters`);
+    }
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(description)) {
+      throw invalid("description", "has a control character (only tab, CR and LF are allowed)");
+    }
+    body.description = description;
+  }
+  if (website !== undefined) {
+    if (typeof website !== "string") {
+      throw invalid("website", "must be a string (omit it to leave it out)");
+    }
+    if (website !== "") {
+      let url: URL | undefined;
+      try {
+        url = new URL(website);
+      } catch {
+        url = undefined;
+      }
+      if (
+        website.length > MAX_WEBSITE ||
+        !/^[\x21-\x7e]+$/.test(website) ||
+        url === undefined ||
+        (url.protocol !== "http:" && url.protocol !== "https:") ||
+        url.hostname === ""
+      ) {
+        throw invalid(
+          "website",
+          `is not "" or an absolute http(s) URL of printable ASCII, at most ${MAX_WEBSITE} characters`
+        );
+      }
+    }
+    body.website = website;
+  }
+  if (topics !== undefined) {
+    if (!Array.isArray(topics) || !topics.every((t): t is string => typeof t === "string")) {
+      throw invalid("topics", "must be a list of strings");
+    }
+    if (topics.length > MAX_TOPICS) {
+      throw invalid("topics", `has more than ${MAX_TOPICS} entries`);
+    }
+    if (new Set(topics).size !== topics.length) {
+      throw invalid("topics", "has a duplicate");
+    }
+    if (topics.some((t) => t.length > MAX_TOPIC_LENGTH || !TOPIC.test(t))) {
+      throw invalid(
+        "topics",
+        `has an entry that is not lowercase letters, digits, "-" or "." (starting with a letter or digit), at most ${MAX_TOPIC_LENGTH} characters`
+      );
+    }
+    body.topics = [...topics];
+  }
+  return body;
 }
 
 /**
@@ -166,9 +268,9 @@ function sameUrl(a: string, b: string): boolean {
 }
 
 /**
- * Marketplace repositories on web-global's gateway: browse them and pull a plain working clone.
- * There is no push (the gateway refuses it for the marketplace), and a pull never reads or
- * changes any script's sources or pins.
+ * Marketplace repositories on web-global's gateway: browse them, pull a plain working clone, and
+ * create a new (empty) repo. Core has no push of its own (a repo is pushed with plain `git`), and a
+ * pull never reads or changes any script's sources or pins.
  * @lastreviewed null
  */
 export class GatewayMarketplace {
@@ -205,6 +307,57 @@ export class GatewayMarketplace {
       throw broken;
     }
     throw new Err.GatewayNotFoundError(`No marketplace repo is named ${name}.`, "not-found");
+  }
+
+  /**
+   * Create a marketplace repo (`POST /api/v1/registry/repos`, scope `registry:push`, a fleet super): the gateway
+   * makes it private and empty with default branch `main`, sets the metadata given and protects `main`.
+   * An existing empty repo of the same name (left by an earlier attempt) is adopted rather than refused.
+   * Only the members given are sent. The request is checked as the gateway checks it, so a bad one fails here
+   * with nothing sent.
+   *
+   * The repo is empty, so it is NOT in {@link list} until its first push: the result carries the repo from
+   * the answer (do not list to find it). The first push is `git push --atomic <gitUrl> main[ --tags]`.
+   *
+   * @returns `created` is `true` for a new repo (`201`), `false` when an existing empty one was adopted (`200`)
+   * @throws {Err.GatewayInvalidArgumentError} the name or a metadata member is one the gateway would refuse; nothing sent
+   * @throws {Err.GatewayInvalidRequestError} `400`, the gateway refused the request
+   * @throws {Err.GatewayTooLargeError} `413`
+   * @throws {Err.GatewayScopeError} the token lacks `registry:push` (`scope`)
+   * @throws {Err.GatewayNotPermittedError} `403 not-permitted`: the owner is not a fleet super
+   * @throws {Err.GatewayRepoExistsError} `409 repo-exists`: a repo of that name has history, is archived, or differs in case
+   * @throws {Err.GatewayRewriteInProgressError} `409 rewrite-in-progress`: another change holds the repo; retry shortly
+   * @throws {Err.GatewayForgeUnavailableError} `502 forge-unavailable`: an empty repo may be left; calling again adopts it
+   * @throws {Err.GatewayUnexpectedResponseError} the answer is not a repo named as asked
+   * @throws {Err.GatewayError} a subclass for any other gateway failure
+   * @lastreviewed null
+   */
+  async create(request: GatewayMarketplaceCreateRequest): Promise<GatewayMarketplaceCreateResult> {
+    const { name } = request;
+    if (typeof name !== "string" || !REPO_NAME.test(name) || name.endsWith(".git") || name.includes("..")) {
+      throw invalid(
+        "name",
+        'must be lowercase letters, digits, ".", "_" or "-", start and end with a letter or digit, be at most 100 characters, not end ".git" and not contain ".."'
+      );
+    }
+    const body: Record<string, JsonValue> = { name, ...metadataBody(request) };
+    const answer = await this.client.requestDetailed(Http.Methods.POST, Gateway.Paths.REGISTRY_REPOS, { body });
+    if (answer.status !== 200 && answer.status !== 201) {
+      throw new Err.GatewayUnexpectedResponseError(
+        `POST ${Gateway.Paths.REGISTRY_REPOS}: the gateway answered ${answer.status}, not 201 or 200.`,
+        answer.status,
+        null
+      );
+    }
+    const repo = parseRepoEntry(answer.body, "The create answer", answer.status);
+    if (repo.name !== name) {
+      throw new Err.GatewayUnexpectedResponseError(
+        "The create answer is for a repo with another name than the one asked for.",
+        answer.status,
+        null
+      );
+    }
+    return { repo, created: answer.status === 201 };
   }
 
   private async entries(): Promise<{

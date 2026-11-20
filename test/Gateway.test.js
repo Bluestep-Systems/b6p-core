@@ -227,10 +227,16 @@ const MAPPINGS = [
     Err.GatewayLiveBranchUnprotectedError,
     { code: "live-branch-unprotected" },
   ],
+  [{ status: 409, body: { error: "repo-exists", message: "m" } }, Err.GatewayRepoExistsError, { code: "repo-exists" }],
+  [
+    { status: 409, body: { error: "rewrite-in-progress", message: "m" } },
+    Err.GatewayRewriteInProgressError,
+    { code: "rewrite-in-progress" },
+  ],
   [{ status: 413, body: { error: "too-large", message: "m" } }, Err.GatewayTooLargeError, { code: "too-large" }],
   [
     { status: 502, body: { error: "forge-unavailable", message: "m" } },
-    Err.GatewayUnavailableError,
+    Err.GatewayForgeUnavailableError,
     { code: "forge-unavailable" },
   ],
   [{ status: 503, body: "<html>busy</html>" }, Err.GatewayUnavailableError, { code: null }],

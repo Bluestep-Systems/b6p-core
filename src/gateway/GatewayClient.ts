@@ -287,6 +287,14 @@ export function gatewayErrorFor(status: number, bodyText: string, what: string, 
           )
         );
       }
+      if (code === "repo-exists") {
+        return new Err.GatewayRepoExistsError(
+          msg("a marketplace repo of that name already exists (with history, archived, or differing in case)")
+        );
+      }
+      if (code === "rewrite-in-progress") {
+        return new Err.GatewayRewriteInProgressError(msg("another change holds the repo; nothing was changed"));
+      }
       // Only the git routes' conflicts (a push that does not build on the head; a bodyless 409 from
       // the git proxy) are about a branch head. Any other 409 code is some other conflict.
       if (code === null || code === "non-fast-forward") {
@@ -315,6 +323,10 @@ export function gatewayErrorFor(status: number, bodyText: string, what: string, 
       }
       return new Err.GatewayUnavailableError(msg("the gateway or the forge behind it is unavailable"), status, code);
     case 502:
+      if (code === "forge-unavailable") {
+        return new Err.GatewayForgeUnavailableError(msg("the gateway or the forge behind it is unavailable"));
+      }
+      return new Err.GatewayUnavailableError(msg("the gateway or the forge behind it is unavailable"), status, code);
     case 504:
       return new Err.GatewayUnavailableError(msg("the gateway or the forge behind it is unavailable"), status, code);
     default:
