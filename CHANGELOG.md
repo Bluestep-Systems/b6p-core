@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-20
+
 ### Added
 
 - **The marketplace repo lifecycle on `core.gateway.marketplace`** (ClickUp CU-1k5g91bqyr1, umbrella
@@ -25,7 +27,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **`GatewayMarketplaceRepo` gains `website`, `topics` and `archived`**, on `list`, `get`, `create` and every write.
   A gateway that sends none of them gets `""`, `[]` and `false`; one that sends a member of the wrong shape makes
-  the entry malformed. Code that builds a `GatewayMarketplaceRepo` itself must now give the three members.
+  the entry malformed. Code that builds a `GatewayMarketplaceRepo` itself must now give the three members. Against a
+  gateway older than web-global 26.11.20.02, `archived: false` is a default, not the repo's state.
 - **`get(name)` now calls `GET /api/v1/registry/repos/{name}`** instead of filtering the listing: its signature is
   unchanged, and it finds an empty repo (one just created) the listing does not show. A name no marketplace repo
   can have (`KB`, `a/b`, a name the forge reserves) is `GatewayNotFoundError` without a request. `pull` still looks
